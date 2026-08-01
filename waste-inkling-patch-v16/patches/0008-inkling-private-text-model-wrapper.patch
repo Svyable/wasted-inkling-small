@@ -1,0 +1,710 @@
+diff --git a/Makefile b/Makefile
+--- a/Makefile
++++ b/Makefile
+@@ -1,4 +1,4 @@
+-SRC := src/model.c src/arch.c src/inkling.c src/inkling_config.c src/inkling_attention.c src/inkling_layer.c src/kda.c src/backend.c src/ecache.c src/version.c \
++SRC := src/model.c src/arch.c src/inkling.c src/inkling_config.c src/inkling_attention.c src/inkling_layer.c src/inkling_model.c src/kda.c src/backend.c src/ecache.c src/version.c \
+        src/tokenizer.c src/waste.c
+ 
+-test_inkling$(EXE): tests/test_inkling.o src/arch.o src/inkling.o src/inkling_config.o src/inkling_attention.o src/inkling_layer.o
++test_inkling$(EXE): tests/test_inkling.o src/arch.o src/inkling.o src/inkling_config.o src/inkling_attention.o src/inkling_layer.o src/inkling_model.o
+diff --git a/src/inkling_model.h b/src/inkling_model.h
+new file mode 100644
+--- /dev/null
++++ b/src/inkling_model.h
+@@ -0,0 +1,89 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++#ifndef WASTE_INKLING_MODEL_H
++#define WASTE_INKLING_MODEL_H
++
++#include <stddef.h>
++
++#include "inkling_layer.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef int (*waste_inkling_row_get_fn)(void *ctx, int row, int cols,
++                                         float *out);
++
++typedef struct {
++    /* Either a resident row-major table or a callback must be supplied for
++     * each of embedding and unembedding. The two tables are independent in
++     * official Inkling checkpoints. */
++    const float *embedding;       /* [vocab][hidden], optional */
++    const float *embed_norm;      /* [hidden] */
++    const float *final_norm;      /* [hidden] */
++    const float *unembedding;     /* [unembedding_rows][hidden], optional */
++    int unembedding_rows;
++    const waste_inkling_layer_weights *layer; /* [n_layers] */
++
++    waste_inkling_row_get_fn embedding_get;
++    void *embedding_ctx;
++    waste_inkling_row_get_fn unembedding_get;
++    void *unembedding_ctx;
++} waste_inkling_model_weights;
++
++typedef struct {
++    waste_inkling_layer_state layer[WASTE_INKLING_MAX_LAYERS];
++    float *buffer;
++    size_t buffer_floats;
++    int context_capacity;
++    int next_position;
++} waste_inkling_model_state;
++
++typedef struct {
++    float *x;
++    float *row;
++    waste_inkling_layer_scratch layer;
++    float *buffer;
++    int *ibuffer;
++    size_t buffer_floats;
++    size_t ibuffer_ints;
++} waste_inkling_model_scratch;
++
++/* Exact caller-owned storage requirements. Local attention uses at most the
++ * smaller of context_capacity and sliding_window; global attention uses the
++ * requested context_capacity. Returns zero for invalid input or overflow. */
++size_t waste_inkling_model_state_floats(const waste_inkling_config *cfg,
++                                        int context_capacity);
++size_t waste_inkling_model_scratch_floats(const waste_inkling_config *cfg,
++                                          int context_capacity);
++size_t waste_inkling_model_scratch_ints(const waste_inkling_config *cfg);
++
++int waste_inkling_model_state_init(waste_inkling_model_state *state,
++                                   const waste_inkling_config *cfg,
++                                   int context_capacity,
++                                   float *buffer, size_t buffer_floats);
++int waste_inkling_model_scratch_init(waste_inkling_model_scratch *scratch,
++                                     const waste_inkling_config *cfg,
++                                     int context_capacity,
++                                     float *buffer, size_t buffer_floats,
++                                     int *ibuffer, size_t ibuffer_ints);
++void waste_inkling_model_reset(waste_inkling_model_state *state,
++                               const waste_inkling_config *cfg);
++
++/* Execute one token and write exactly cfg->unpadded_vocab logits. Position
++ * must be sequential and below both context_capacity and cfg->max_context.
++ * Routed experts can still be supplied through the layer callback, keeping
++ * this wrapper compatible with WASTE's streamed expert banks. */
++int waste_inkling_model_step(
++    const waste_inkling_config *cfg,
++    const waste_inkling_model_weights *weights,
++    waste_inkling_model_state *state,
++    waste_inkling_model_scratch *scratch,
++    int token, int position, float *logits, size_t logits_count,
++    waste_inkling_expert_get_fn expert_get, void *expert_ctx);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/src/inkling_model.c b/src/inkling_model.c
+new file mode 100644
+--- /dev/null
++++ b/src/inkling_model.c
+@@ -0,0 +1,240 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++#include "inkling_model.h"
++
++#include <math.h>
++#include <stdint.h>
++#include <string.h>
++
++static int addz(size_t *a, size_t b)
++{
++    if (!a || b > SIZE_MAX - *a) return -1;
++    *a += b;
++    return 0;
++}
++
++static int mulz(size_t a, size_t b, size_t *out)
++{
++    if (!out || (a && b > SIZE_MAX / a)) return -1;
++    *out = a * b;
++    return 0;
++}
++
++static int layer_capacity(const waste_inkling_config *cfg, int layer,
++                          int context_capacity)
++{
++    if (!cfg || layer < 0 || layer >= cfg->n_layers || context_capacity < 1)
++        return 0;
++    if (!cfg->layer[layer].is_local) return context_capacity;
++    return context_capacity < cfg->sliding_window
++         ? context_capacity : cfg->sliding_window;
++}
++
++static void rmsnorm(float *out, const float *x, const float *weight,
++                    int n, float eps)
++{
++    double ss = 0.0;
++    for (int i = 0; i < n; i++) ss += (double)x[i] * x[i];
++    const float scale = 1.0f / sqrtf((float)(ss / n) + eps);
++    for (int i = 0; i < n; i++) out[i] = x[i] * scale * weight[i];
++}
++
++static float dot(const float *a, const float *b, int n)
++{
++    double sum = 0.0;
++    for (int i = 0; i < n; i++) sum += (double)a[i] * b[i];
++    return (float)sum;
++}
++
++size_t waste_inkling_model_state_floats(const waste_inkling_config *cfg,
++                                        int context_capacity)
++{
++    if (!cfg || context_capacity < 1 || context_capacity > cfg->max_context)
++        return 0;
++    size_t total = 0;
++    for (int i = 0; i < cfg->n_layers; i++) {
++        const waste_inkling_layer_cfg *l = &cfg->layer[i];
++        const int cap = layer_capacity(cfg, i, context_capacity);
++        size_t kv, kv2, conv;
++        if (!cap || mulz((size_t)cap, (size_t)l->num_kv_heads * l->head_dim, &kv) ||
++            mulz(kv, 2u, &kv2) ||
++            mulz((size_t)cfg->conv_kernel,
++                 2u * (size_t)l->num_kv_heads * l->head_dim +
++                 2u * (size_t)cfg->hidden, &conv) ||
++            addz(&total, kv2) || addz(&total, conv))
++            return 0;
++    }
++    return total;
++}
++
++size_t waste_inkling_model_scratch_floats(const waste_inkling_config *cfg,
++                                          int context_capacity)
++{
++    if (!cfg || context_capacity < 1 || context_capacity > cfg->max_context)
++        return 0;
++    size_t largest = 0;
++    for (int i = 0; i < cfg->n_layers; i++) {
++        const size_t n = waste_inkling_layer_scratch_floats(
++            cfg, i, layer_capacity(cfg, i, context_capacity));
++        if (!n) return 0;
++        if (n > largest) largest = n;
++    }
++    size_t total = 0;
++    if (mulz((size_t)cfg->hidden, 2, &total) || addz(&total, largest)) return 0;
++    return total;
++}
++
++size_t waste_inkling_model_scratch_ints(const waste_inkling_config *cfg)
++{
++    return waste_inkling_layer_scratch_ints(cfg);
++}
++
++int waste_inkling_model_state_init(waste_inkling_model_state *s,
++                                   const waste_inkling_config *cfg,
++                                   int context_capacity,
++                                   float *buffer, size_t nfloat)
++{
++    if (!s || !cfg || !buffer) return -1;
++    const size_t need = waste_inkling_model_state_floats(cfg, context_capacity);
++    if (!need || nfloat < need) return -1;
++    memset(s, 0, sizeof *s);
++    memset(buffer, 0, need * sizeof(float));
++    float *p = buffer;
++    for (int i = 0; i < cfg->n_layers; i++) {
++        const waste_inkling_layer_cfg *l = &cfg->layer[i];
++        const int cap = layer_capacity(cfg, i, context_capacity);
++        const size_t kdim = (size_t)l->num_kv_heads * l->head_dim;
++        const size_t kv = (size_t)cap * kdim;
++        const size_t kc = kdim * cfg->conv_kernel;
++        const size_t hc = (size_t)cfg->hidden * cfg->conv_kernel;
++        float *k_cache = p; p += kv;
++        float *v_cache = p; p += kv;
++        float *k_conv = p; p += kc;
++        float *v_conv = p; p += kc;
++        float *attn_conv = p; p += hc;
++        float *mlp_conv = p; p += hc;
++        if (waste_inkling_layer_state_init(&s->layer[i], cfg, i, cap,
++                k_cache, v_cache, k_conv, v_conv, attn_conv, mlp_conv))
++            return -1;
++    }
++    if ((size_t)(p - buffer) != need) return -1;
++    s->buffer = buffer;
++    s->buffer_floats = need;
++    s->context_capacity = context_capacity;
++    return 0;
++}
++
++int waste_inkling_model_scratch_init(waste_inkling_model_scratch *s,
++                                     const waste_inkling_config *cfg,
++                                     int context_capacity,
++                                     float *buffer, size_t nfloat,
++                                     int *ibuffer, size_t nint)
++{
++    if (!s || !cfg || !buffer || !ibuffer) return -1;
++    const size_t need = waste_inkling_model_scratch_floats(cfg, context_capacity);
++    const size_t ineed = waste_inkling_model_scratch_ints(cfg);
++    if (!need || nfloat < need || nint < ineed) return -1;
++    memset(s, 0, sizeof *s);
++    s->x = buffer;
++    s->row = buffer + cfg->hidden;
++    float *layer_buf = buffer + 2u * (size_t)cfg->hidden;
++    const size_t layer_n = need - 2u * (size_t)cfg->hidden;
++    /* Initialize with the largest-capacity layer. Layer scratch pointers are
++     * rebound before each step because projection dimensions differ. */
++    int best = 0;
++    size_t best_n = 0;
++    for (int i = 0; i < cfg->n_layers; i++) {
++        size_t n = waste_inkling_layer_scratch_floats(
++            cfg, i, layer_capacity(cfg, i, context_capacity));
++        if (n > best_n) { best_n = n; best = i; }
++    }
++    if (waste_inkling_layer_scratch_init(&s->layer, cfg, best,
++            layer_capacity(cfg, best, context_capacity), layer_buf, layer_n,
++            ibuffer, nint)) return -1;
++    s->buffer = buffer;
++    s->ibuffer = ibuffer;
++    s->buffer_floats = need;
++    s->ibuffer_ints = ineed;
++    return 0;
++}
++
++void waste_inkling_model_reset(waste_inkling_model_state *s,
++                               const waste_inkling_config *cfg)
++{
++    if (!s || !cfg) return;
++    if (s->buffer && s->buffer_floats)
++        memset(s->buffer, 0, s->buffer_floats * sizeof(float));
++    for (int i = 0; i < cfg->n_layers; i++)
++        waste_inkling_attention_reset(&s->layer[i].attention);
++    s->next_position = 0;
++}
++
++static int get_row(const float *table, int rows, int cols,
++                   waste_inkling_row_get_fn get, void *ctx,
++                   int row, float *out)
++{
++    if (!out || row < 0 || row >= rows || cols <= 0) return -1;
++    if (table) {
++        memcpy(out, table + (size_t)row * cols, (size_t)cols * sizeof(float));
++        return 0;
++    }
++    return get ? get(ctx, row, cols, out) : -1;
++}
++
++int waste_inkling_model_step(
++    const waste_inkling_config *cfg,
++    const waste_inkling_model_weights *w,
++    waste_inkling_model_state *state,
++    waste_inkling_model_scratch *scratch,
++    int token, int position, float *logits, size_t logits_count,
++    waste_inkling_expert_get_fn expert_get, void *expert_ctx)
++{
++    if (!cfg || !w || !state || !scratch || !logits ||
++        !w->embed_norm || !w->final_norm || !w->layer ||
++        token < 0 || token >= cfg->vocab || position < 0 ||
++        position != state->next_position ||
++        position >= state->context_capacity || position >= cfg->max_context ||
++        cfg->unpadded_vocab <= 0 || logits_count < (size_t)cfg->unpadded_vocab ||
++        !(cfg->logits_width_multiplier > 0.0f))
++        return -1;
++    if (!w->embedding && !w->embedding_get) return -1;
++    if (!w->unembedding && !w->unembedding_get) return -1;
++    if (w->unembedding && w->unembedding_rows < cfg->unpadded_vocab) return -1;
++
++    if (get_row(w->embedding, cfg->vocab, cfg->hidden,
++                w->embedding_get, w->embedding_ctx,
++                token, scratch->row)) return -1;
++    rmsnorm(scratch->x, scratch->row, w->embed_norm,
++            cfg->hidden, cfg->rms_eps);
++
++    float *layer_buf = scratch->buffer + 2u * (size_t)cfg->hidden;
++    const size_t layer_n = scratch->buffer_floats - 2u * (size_t)cfg->hidden;
++    for (int i = 0; i < cfg->n_layers; i++) {
++        const int cap = layer_capacity(cfg, i, state->context_capacity);
++        if (waste_inkling_layer_scratch_init(&scratch->layer, cfg, i, cap,
++                layer_buf, layer_n, scratch->ibuffer, scratch->ibuffer_ints) ||
++            waste_inkling_layer_step(cfg, i, &w->layer[i], &state->layer[i],
++                scratch->x, position, &scratch->layer, expert_get, expert_ctx))
++            return -1;
++    }
++
++    rmsnorm(scratch->row, scratch->x, w->final_norm,
++            cfg->hidden, cfg->rms_eps);
++    const float inv_width = 1.0f / cfg->logits_width_multiplier;
++    for (int i = 0; i < cfg->hidden; i++) scratch->row[i] *= inv_width;
++
++    for (int v = 0; v < cfg->unpadded_vocab; v++) {
++        const float *row;
++        if (w->unembedding) {
++            row = w->unembedding + (size_t)v * cfg->hidden;
++        } else {
++            if (w->unembedding_get(w->unembedding_ctx, v, cfg->hidden,
++                                   scratch->x)) return -1;
++            row = scratch->x;
++        }
++        logits[v] = dot(row, scratch->row, cfg->hidden);
++    }
++    state->next_position++;
++    return 0;
++}
+diff --git a/tests/test_inkling_model_c.py b/tests/test_inkling_model_c.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_inkling_model_c.py
+@@ -0,0 +1,315 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 SQLite Cloud, Inc.
++
++import ctypes
++import shutil
++import subprocess
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++
++import torch
++
++REPO = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(REPO / "tests"))
++
++from test_inkling_attention_c import rmsnorm
++from test_inkling_config_c import Args, Config
++from test_inkling_layer_c import (
++    FP, ExpertCallback, InklingLayerCDifferentialTest, LayerState,
++    Scratch as LayerScratch, Weights as LayerWeights, array,
++)
++
++RowCallback = ctypes.CFUNCTYPE(
++    ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, FP
++)
++
++
++class ModelWeights(ctypes.Structure):
++    _fields_ = [
++        ("embedding", FP),
++        ("embed_norm", FP),
++        ("final_norm", FP),
++        ("unembedding", FP),
++        ("unembedding_rows", ctypes.c_int),
++        ("layer", ctypes.POINTER(LayerWeights)),
++        ("embedding_get", RowCallback),
++        ("embedding_ctx", ctypes.c_void_p),
++        ("unembedding_get", RowCallback),
++        ("unembedding_ctx", ctypes.c_void_p),
++    ]
++
++
++class ModelState(ctypes.Structure):
++    _fields_ = [
++        ("layer", LayerState * 128),
++        ("buffer", FP),
++        ("buffer_floats", ctypes.c_size_t),
++        ("context_capacity", ctypes.c_int),
++        ("next_position", ctypes.c_int),
++    ]
++
++
++class ModelScratch(ctypes.Structure):
++    _fields_ = [
++        ("x", FP),
++        ("row", FP),
++        ("layer", LayerScratch),
++        ("buffer", FP),
++        ("ibuffer", ctypes.POINTER(ctypes.c_int)),
++        ("buffer_floats", ctypes.c_size_t),
++        ("ibuffer_ints", ctypes.c_size_t),
++    ]
++
++
++def as_tensor(values, n):
++    return torch.tensor(list(values)[:n], dtype=torch.float32)
++
++
++class InklingModelCDifferentialTest(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cc = shutil.which("cc")
++        if not cc:
++            raise unittest.SkipTest("C compiler unavailable")
++        cls.td = tempfile.TemporaryDirectory()
++        lib_path = Path(cls.td.name) / "libinkling_model.so"
++        subprocess.run(
++            [
++                cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
++                f"-I{REPO / 'src'}",
++                str(REPO / "src" / "inkling_model.c"),
++                str(REPO / "src" / "inkling_layer.c"),
++                str(REPO / "src" / "inkling_attention.c"),
++                str(REPO / "src" / "inkling_config.c"),
++                str(REPO / "src" / "inkling.c"),
++                "-lm", "-o", str(lib_path),
++            ],
++            check=True, capture_output=True,
++        )
++        cls.lib = ctypes.CDLL(str(lib_path))
++        cls.lib.waste_inkling_config_build.argtypes = [ctypes.POINTER(Config), ctypes.POINTER(Args)]
++        cls.lib.waste_inkling_config_build.restype = ctypes.c_int
++        cls.lib.waste_inkling_model_state_floats.argtypes = [ctypes.POINTER(Config), ctypes.c_int]
++        cls.lib.waste_inkling_model_state_floats.restype = ctypes.c_size_t
++        cls.lib.waste_inkling_model_scratch_floats.argtypes = [ctypes.POINTER(Config), ctypes.c_int]
++        cls.lib.waste_inkling_model_scratch_floats.restype = ctypes.c_size_t
++        cls.lib.waste_inkling_model_scratch_ints.argtypes = [ctypes.POINTER(Config)]
++        cls.lib.waste_inkling_model_scratch_ints.restype = ctypes.c_size_t
++        cls.lib.waste_inkling_model_state_init.argtypes = [
++            ctypes.POINTER(ModelState), ctypes.POINTER(Config), ctypes.c_int,
++            FP, ctypes.c_size_t,
++        ]
++        cls.lib.waste_inkling_model_state_init.restype = ctypes.c_int
++        cls.lib.waste_inkling_model_scratch_init.argtypes = [
++            ctypes.POINTER(ModelScratch), ctypes.POINTER(Config), ctypes.c_int,
++            FP, ctypes.c_size_t, ctypes.POINTER(ctypes.c_int), ctypes.c_size_t,
++        ]
++        cls.lib.waste_inkling_model_scratch_init.restype = ctypes.c_int
++        cls.lib.waste_inkling_model_reset.argtypes = [ctypes.POINTER(ModelState), ctypes.POINTER(Config)]
++        cls.lib.waste_inkling_model_step.argtypes = [
++            ctypes.POINTER(Config), ctypes.POINTER(ModelWeights),
++            ctypes.POINTER(ModelState), ctypes.POINTER(ModelScratch),
++            ctypes.c_int, ctypes.c_int, FP, ctypes.c_size_t,
++            ExpertCallback, ctypes.c_void_p,
++        ]
++        cls.lib.waste_inkling_model_step.restype = ctypes.c_int
++
++    @classmethod
++    def tearDownClass(cls):
++        cls.td.cleanup()
++
++    def build_fixture(self):
++        helper = InklingLayerCDifferentialTest(methodName="runTest")
++        cfg, local_keep = helper.build_config()
++        weights = (LayerWeights * cfg.n_layers)()
++        common = []
++        extras = []
++        keep = [local_keep]
++        for layer in range(cfg.n_layers):
++            w, tensors, layer_keep = helper.make_common(layer, cfg)
++            torch.manual_seed(900 + layer)
++            if layer < cfg.dense_layers:
++                extra = {
++                    "dense_gate": torch.randn(cfg.dense_intermediate, cfg.hidden) * 0.09,
++                    "dense_up": torch.randn(cfg.dense_intermediate, cfg.hidden) * 0.09,
++                    "dense_down": torch.randn(cfg.hidden, cfg.dense_intermediate) * 0.09,
++                    "dense_scale": torch.tensor(0.85),
++                }
++                for name in ("dense_gate", "dense_up", "dense_down"):
++                    layer_keep[name] = array(extra[name])
++                    setattr(w, name, layer_keep[name])
++                layer_keep["dense_scale"] = array(extra["dense_scale"].reshape(1))
++                w.dense_global_scale = layer_keep["dense_scale"]
++                w.sparse = 0
++            else:
++                total = cfg.n_routed_experts + cfg.n_shared_experts
++                extra = {
++                    "router_weight": torch.randn(total, cfg.hidden) * 0.09,
++                    "router_bias": torch.randn(cfg.n_routed_experts) * 0.02,
++                    "router_scale": torch.tensor(0.95),
++                    "shared_gate": torch.randn(cfg.n_shared_experts, cfg.moe_intermediate, cfg.hidden) * 0.09,
++                    "shared_up": torch.randn(cfg.n_shared_experts, cfg.moe_intermediate, cfg.hidden) * 0.09,
++                    "shared_down": torch.randn(cfg.n_shared_experts, cfg.hidden, cfg.moe_intermediate) * 0.09,
++                    "routed_gate": torch.randn(cfg.n_routed_experts, cfg.moe_intermediate, cfg.hidden) * 0.09,
++                    "routed_up": torch.randn(cfg.n_routed_experts, cfg.moe_intermediate, cfg.hidden) * 0.09,
++                    "routed_down": torch.randn(cfg.n_routed_experts, cfg.hidden, cfg.moe_intermediate) * 0.09,
++                }
++                for name, value in extra.items():
++                    layer_keep[name] = array(value.reshape(1) if value.ndim == 0 else value)
++                    setattr(w, "router_global_scale" if name == "router_scale" else name,
++                            layer_keep[name])
++                w.sparse = 1
++            weights[layer] = w
++            common.append(tensors)
++            extras.append(extra)
++            keep.append(layer_keep)
++
++        torch.manual_seed(1200)
++        tables = {
++            "embedding": torch.randn(cfg.vocab, cfg.hidden) * 0.1,
++            "embed_norm": torch.rand(cfg.hidden) + 0.5,
++            "final_norm": torch.rand(cfg.hidden) + 0.5,
++            "unembedding": torch.randn(cfg.unpadded_vocab, cfg.hidden) * 0.1,
++        }
++        carr = {name: array(value) for name, value in tables.items()}
++        keep.append(carr)
++        mw = ModelWeights()
++        mw.embedding = carr["embedding"]
++        mw.embed_norm = carr["embed_norm"]
++        mw.final_norm = carr["final_norm"]
++        mw.unembedding = carr["unembedding"]
++        mw.unembedding_rows = cfg.unpadded_vocab
++        mw.layer = weights
++        keep.append(weights)
++        return helper, cfg, mw, common, extras, tables, keep
++
++    def init_runtime(self, cfg, capacity):
++        ns = self.lib.waste_inkling_model_state_floats(ctypes.byref(cfg), capacity)
++        nf = self.lib.waste_inkling_model_scratch_floats(ctypes.byref(cfg), capacity)
++        ni = self.lib.waste_inkling_model_scratch_ints(ctypes.byref(cfg))
++        self.assertGreater(ns, 0)
++        self.assertGreater(nf, 0)
++        sbuf = (ctypes.c_float * ns)()
++        fbuf = (ctypes.c_float * nf)()
++        ibuf = (ctypes.c_int * ni)()
++        state = ModelState()
++        scratch = ModelScratch()
++        self.assertEqual(self.lib.waste_inkling_model_state_init(
++            ctypes.byref(state), ctypes.byref(cfg), capacity, sbuf, ns), 0)
++        self.assertEqual(self.lib.waste_inkling_model_scratch_init(
++            ctypes.byref(scratch), ctypes.byref(cfg), capacity,
++            fbuf, nf, ibuf, ni), 0)
++        return state, scratch, (sbuf, fbuf, ibuf)
++
++    def py_states(self, cfg, capacity):
++        states = []
++        for layer in range(cfg.n_layers):
++            l = cfg.layer[layer]
++            cap = min(capacity, cfg.sliding_window) if l.is_local else capacity
++            kdim = l.num_kv_heads * l.head_dim
++            states.append({
++                "capacity": cap, "keys": [], "values": [],
++                "kconv": torch.zeros(kdim, cfg.conv_kernel),
++                "vconv": torch.zeros(kdim, cfg.conv_kernel),
++                "aconv": torch.zeros(cfg.hidden, cfg.conv_kernel),
++                "mconv": torch.zeros(cfg.hidden, cfg.conv_kernel),
++            })
++        return states
++
++    def run_sequence(self, use_callbacks=False):
++        helper, cfg, mw, common, extras, tables, keep = self.build_fixture()
++        capacity = 6
++        state, scratch, runtime_keep = self.init_runtime(cfg, capacity)
++        callbacks = []
++        if use_callbacks:
++            embed = tables["embedding"]
++            unembed = tables["unembedding"]
++
++            @RowCallback
++            def embed_cb(_ctx, row, cols, out):
++                if row < 0 or row >= embed.shape[0] or cols != embed.shape[1]:
++                    return -1
++                ctypes.memmove(out, array(embed[row]), cols * ctypes.sizeof(ctypes.c_float))
++                return 0
++
++            @RowCallback
++            def unembed_cb(_ctx, row, cols, out):
++                if row < 0 or row >= unembed.shape[0] or cols != unembed.shape[1]:
++                    return -1
++                ctypes.memmove(out, array(unembed[row]), cols * ctypes.sizeof(ctypes.c_float))
++                return 0
++
++            mw.embedding = None
++            mw.embedding_get = embed_cb
++            mw.unembedding = None
++            mw.unembedding_get = unembed_cb
++            callbacks.extend([embed_cb, unembed_cb])
++
++        py_state = self.py_states(cfg, capacity)
++        tokens = [3, 5, 7, 11, 2]
++        for position, token in enumerate(tokens):
++            x = rmsnorm(tables["embedding"][token], tables["embed_norm"], cfg.rms_eps)
++            for layer in range(cfg.n_layers):
++                x = helper.reference_layer(
++                    cfg, layer, common[layer], extras[layer], x,
++                    position, py_state[layer],
++                )
++            x = rmsnorm(x, tables["final_norm"], cfg.rms_eps)
++            want = tables["unembedding"] @ (x / cfg.logits_width_multiplier)
++            out = (ctypes.c_float * cfg.unpadded_vocab)()
++            rc = self.lib.waste_inkling_model_step(
++                ctypes.byref(cfg), ctypes.byref(mw), ctypes.byref(state),
++                ctypes.byref(scratch), token, position, out,
++                cfg.unpadded_vocab, ExpertCallback(), None,
++            )
++            self.assertEqual(rc, 0)
++            got = as_tensor(out, cfg.unpadded_vocab)
++            torch.testing.assert_close(got, want, rtol=3e-4, atol=3e-4)
++        self.assertEqual(state.next_position, len(tokens))
++        self.assertIsNotNone((keep, runtime_keep, callbacks))
++
++    def test_complete_model_matches_torch(self):
++        self.run_sequence(False)
++
++    def test_embedding_and_unembedding_callbacks_match(self):
++        self.run_sequence(True)
++
++    def test_reset_restores_first_token_result(self):
++        _helper, cfg, mw, _common, _extras, _tables, keep = self.build_fixture()
++        state, scratch, runtime_keep = self.init_runtime(cfg, 4)
++        out1 = (ctypes.c_float * cfg.unpadded_vocab)()
++        out2 = (ctypes.c_float * cfg.unpadded_vocab)()
++        self.assertEqual(self.lib.waste_inkling_model_step(
++            ctypes.byref(cfg), ctypes.byref(mw), ctypes.byref(state),
++            ctypes.byref(scratch), 4, 0, out1, cfg.unpadded_vocab,
++            ExpertCallback(), None), 0)
++        self.lib.waste_inkling_model_reset(ctypes.byref(state), ctypes.byref(cfg))
++        self.assertEqual(self.lib.waste_inkling_model_step(
++            ctypes.byref(cfg), ctypes.byref(mw), ctypes.byref(state),
++            ctypes.byref(scratch), 4, 0, out2, cfg.unpadded_vocab,
++            ExpertCallback(), None), 0)
++        torch.testing.assert_close(as_tensor(out1, cfg.unpadded_vocab),
++                                   as_tensor(out2, cfg.unpadded_vocab),
++                                   rtol=0, atol=0)
++        self.assertIsNotNone((keep, runtime_keep))
++
++    def test_position_and_output_bounds_fail_closed(self):
++        _helper, cfg, mw, _common, _extras, _tables, keep = self.build_fixture()
++        state, scratch, runtime_keep = self.init_runtime(cfg, 2)
++        out = (ctypes.c_float * cfg.unpadded_vocab)()
++        self.assertNotEqual(self.lib.waste_inkling_model_step(
++            ctypes.byref(cfg), ctypes.byref(mw), ctypes.byref(state),
++            ctypes.byref(scratch), 1, 1, out, cfg.unpadded_vocab,
++            ExpertCallback(), None), 0)
++        self.assertNotEqual(self.lib.waste_inkling_model_step(
++            ctypes.byref(cfg), ctypes.byref(mw), ctypes.byref(state),
++            ctypes.byref(scratch), 1, 0, out, cfg.unpadded_vocab - 1,
++            ExpertCallback(), None), 0)
++        self.assertIsNotNone((keep, runtime_keep))
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/docs/INKLING.md b/docs/INKLING.md
+--- a/docs/INKLING.md
++++ b/docs/INKLING.md
+@@ -304,3 +304,37 @@
+ that wrapper validates every tensor, executes all layers, and matches trusted
+ layerwise and final logits. The WASTE manifest remains unpublished until those
+ gates pass.
++
++## Patch 8: architecture-private text model wrapper
++
++Patch 8 composes the verified one-token decoder layer into a complete
++architecture-private text model. It does not remove the public loader guard and
++does not publish a WASTE manifest.
++
++The wrapper follows the official text path exactly:
++
++1. fetch one embedding row;
++2. apply `embed_norm` RMSNorm;
++3. execute every configured decoder layer;
++4. apply the final RMSNorm;
++5. divide hidden states by `logits_mup_width_multiplier`;
++6. multiply by the independent unembedding table;
++7. return only `unpadded_vocab_size` logits.
++
++Both vocabulary tables can be resident or supplied one row at a time by a
++callback. This preserves bounded RAM and reflects the official implementation's
++explicit statement that embed and unembed are separate checkpoint tensors.
++Routed experts continue to use the decoder layer's expert callback, so the
++model wrapper does not weaken WASTE's streamed-expert design.
++
++All recurrent storage is caller-owned. Local layers allocate K/V rings no
++larger than `min(context_capacity, sliding_window)`; global layers allocate the
++requested bounded context. Four depthwise convolution states are allocated per
++layer. Storage arithmetic is overflow checked and invalid capacities return
++zero or fail before mutation.
++
++Synthetic end-to-end differential tests cover resident and callback-backed
++embedding/unembedding tables, complete two-layer logits, reset behavior,
++sequential positions, context bounds, and output-buffer bounds. These tests do
++not constitute official Inkling-Small parity; official Small checkpoint assets
++remain unavailable.

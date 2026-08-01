@@ -1,0 +1,1067 @@
+diff --git a/docs/INKLING.md b/docs/INKLING.md
+index 4c3b92b..e370b3d 100644
+--- a/docs/INKLING.md
++++ b/docs/INKLING.md
+@@ -1,7 +1,8 @@
+ # Inkling-Small support in WASTE
+ 
+-Status: **source audit and deterministic conversion-plan gate implemented;
+-payload conversion and C runtime are not yet implemented.**
++Status: **source audit, deterministic conversion planning, bounded BF16
++weight access, and isolated C math primitives are implemented. Container
++payload writing and runtime integration are not yet implemented.**
+ 
+ Inkling-Small was released on 2026-07-30. This document uses only the official
+ release assets and the official Apache-2.0 Transformers implementation as
+@@ -41,8 +42,13 @@ neither KDA nor MLA and requires:
+ - global-layer query and relative-bias log scaling;
+ - exact routed-plus-shared expert normalization.
+ 
+-Patch 2 therefore stops at a deterministic, shape-checked conversion plan. It
+-does not create `manifest.json`, `trunk.bin`, expert banks, or codebooks.
++The current patch series stops before publishing container bytes. It provides a
++deterministic, shape-checked conversion plan, a bounded safetensors reader that
++loads one routed expert slice at a time, exact fused-weight transforms, and
++standalone C implementations of the new router, relative-bias, log-scaling, and
++short-convolution equations. It does not create `manifest.json`, `trunk.bin`,
++expert banks, or codebooks, and the C primitives are not yet wired into
++`model.c`.
+ 
+ ## 2. Confirmed Inkling-Small architecture mapping
+ 
+@@ -106,8 +112,10 @@ The official Transformers conversion mapping establishes these transformations:
+   transpose;
+ - MTP tensors: ignored by the base model and excluded from baseline parity.
+ 
+-Patch 2 encodes and shape-checks those transformations but does not read tensor
+-payload bytes.
++Patch 2 encodes and shape-checks those transformations. Patch 3 reads the
++provider-raw BF16 payload lazily, applies the official interleave operation,
++and splits dense, routed, and shared fused weights. Routed expert access reads
++only the requested axis-0 expert slice.
+ 
+ ## 3. Remaining blockers
+ 
+@@ -116,8 +124,8 @@ payload bytes.
+ - A local BF16 checkpoint must include all 32 required shards. The index alone
+   is sufficient for audit but not conversion.
+ - Every required tensor header must expose the expected shape and dtype.
+-- The payload writer must split fused expert weights without holding more than
+-  one routed expert or one bounded source slice in RAM.
++- The payload writer must feed the already-bounded source adapter into WASTE
++  trunk and expert-bank writers without introducing a full-layer materialization.
+ - The proposed manifest extension must be accepted only by an Inkling-aware
+   loader; the current Kimi loader must never interpret it.
+ - Expert-bank round-trip, resume, index, CRC, and shape tests must pass.
+@@ -155,10 +163,11 @@ payload bytes.
+ | exact processor token-ID resolution | implemented in patch 2 | no token-name guessing |
+ | payload availability gate | implemented in patch 2 | index-only and local-shard readiness separated |
+ | deterministic conversion plan | implemented in patch 2 | 42 layer descriptors and 40 banks |
+-| fused `w13` payload conversion | needs implementation | next converter patch |
+-| shared experts | plan complete; runtime absent | resident trunk |
+-| hybrid attention | needs C implementation | new module |
+-| router | needs C implementation | new equations |
++| bounded BF16 source reads | implemented in patch 3 | one routed expert slice at a time |
++| fused `w13` payload transforms | implemented in patch 3 | dense, routed, and shared |
++| shared experts | source adapter complete; runtime absent | resident trunk |
++| hybrid attention | component equations started | integration and attention loop remain |
++| router | exact scalar C primitive implemented | not yet wired into `model.c` |
+ | vision | needs new implementation | existing K3 tower is incompatible |
+ | audio | needs new implementation | new dependency-free C path |
+ | serving | needs parameterization | official template only |
+@@ -187,38 +196,55 @@ payload bytes.
+ - adds `tools/convert_inkling.py --plan-only`;
+ - refuses normal conversion and leaves no partial output.
+ 
+-### Patch 3 — next
+-
+-Implement the BF16 text payload writer:
+-
+-1. Open source shards lazily and read bounded tensor slices.
+-2. Copy/quantize the resident trunk with exact shape checks.
+-3. Reorder/split dense and shared fused `w13` tensors.
+-4. Convert one routed expert at a time into existing WEXP records.
+-5. Keep shared experts resident.
+-6. Exclude MTP, vision and audio from the text-only container.
+-7. Copy official tokenizer and template sidecars verbatim.
+-8. Verify the staging tree, then publish `manifest.json` last.
+-
+-The initial correctness build should support unquantized or loss-minimized BF16
+-fixtures before VQ/Q4/Q8 production conversion is enabled.
+-
+-### Patch 4 — C text runtime
++### Patch 3 — completed
++
++- adds `tools/inkling_weights.py`, a lazy sharded safetensors reader for BF16,
++  F16, and F32 source tensors;
++- validates source payload byte counts against shape and dtype;
++- reads routed expert tensors by bounded axis-0 slice rather than loading a
++  complete expert layer;
++- implements the exact official interleave operation and dense/routed/shared
++  fused-`w13` splits;
++- adds standalone dependency-free C primitives for:
++  - routed-plus-shared expert normalization;
++  - cached depthwise short convolution;
++  - learned relative-position bias;
++  - global attention log scaling;
++- differentially checks those C equations against PyTorch before integrating
++  them into the forward pass.
++
++The C code independently implements equations described by the official
++Apache-2.0 Transformers source. No third-party kernel code is copied.
++
++### Patch 4 — next: BF16 text payload writer
++
++1. Feed the bounded source adapter into the resident trunk writer.
++2. Write one routed expert at a time into existing WEXP records.
++3. Keep shared experts resident and exclude MTP, vision, and audio.
++4. Copy official tokenizer and chat-template sidecars verbatim.
++5. Add expert-bank, CRC, index, resume, and manifest round-trip tests.
++6. Verify the staging tree, then publish `manifest.json` last.
++
++The initial correctness build should preserve BF16/F32 reference fixtures or a
++loss-minimized debug representation before production VQ/Q4/Q8 conversion is
++enabled.
++
++### Patch 5 — integrated C text runtime
+ 
+ - add architecture enum and Inkling config structs;
+ - parse per-layer descriptors;
+-- implement local/global attention, convolution state and caches;
+-- implement dense and sparse MLPs and shared-expert routing;
++- wire the tested primitives into local/global GQA and four convolution rings;
++- implement dense and sparse MLPs and resident shared experts;
+ - preserve WASTE's expert cache and direct-I/O path;
+ - add layerwise debug dumps and Python differential harness.
+ 
+-### Patches 5-8
++### Patches 6-9
+ 
+ Tokenizer/chat integration, vision, audio, then OpenAI-compatible serving.
+ 
+ ## 6. Tests
+ 
+-Patch 2 adds deterministic tests for:
++The current series adds deterministic tests for:
+ 
+ - explicit architecture detection;
+ - official source grammar and nested tokenizer path;
+@@ -231,24 +257,25 @@ Patch 2 adds deterministic tests for:
+ - all conversion-plan shape probes;
+ - shared experts resident and routed experts streamed;
+ - mismatch rejection before conversion;
+-- plan-only output containing no container commit files.
++- plan-only output containing no container commit files;
++- safetensors dtype/shape/byte-count validation;
++- one-expert axis-0 reads and bounded byte accounting;
++- exact interleave inverse and dense/routed/shared fused-weight splits;
++- C/PyTorch differential checks for routing, short convolution, relative bias,
++  and global log scaling.
+ 
+ Run:
+ 
+ ```sh
+-python3 -m py_compile \
+-  tools/inkling_source.py \
+-  tools/inspect_inkling.py \
+-  tools/inkling_plan.py \
+-  tools/convert_inkling.py \
+-  tests/test_inspect_inkling.py \
+-  tests/test_inkling_plan.py \
+-  tests/test_convert_inkling.py
++python3 -m py_compile tools/*.py tests/test_*inkling*.py
+ 
+ PYTHONPATH=tools:tests python3 -m unittest discover \
+   -s tests -p 'test_*inkling*.py' -v
+ ```
+ 
++Expected at this review boundary: **23 tests, all passing**. The C differential
++suite compiles `src/inkling.c` with `-std=c11 -Wall -Wextra -Werror`.
++
+ ## 7. Risks and fallback paths
+ 
+ - **Header shape differs from the official code-derived shape:** stop. Update the
+diff --git a/src/inkling.c b/src/inkling.c
+new file mode 100644
+index 0000000..8efc00c
+--- /dev/null
++++ b/src/inkling.c
+@@ -0,0 +1,142 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ *
++ * Inkling equations independently implemented from the official Apache-2.0
++ * Transformers model.  No third-party kernel code is copied here.
++ */
++#include "inkling.h"
++
++#include <float.h>
++#include <math.h>
++#include <stddef.h>
++
++static float inkling_sigmoid(float x)
++{
++    if (x >= 0.0f) {
++        const float z = expf(-x);
++        return 1.0f / (1.0f + z);
++    }
++    const float z = expf(x);
++    return z / (1.0f + z);
++}
++
++static float inkling_logsigmoid(float x)
++{
++    /* -softplus(-x), with branches that avoid overflow. */
++    if (x >= 0.0f) return -log1pf(expf(-x));
++    return x - log1pf(expf(x));
++}
++
++int waste_inkling_route(const float *logits, const float *correction_bias,
++                        int n_routed, int n_shared, int top_k,
++                        float route_scale, float global_scale,
++                        int *routed_index, float *routed_weight,
++                        float *shared_weight)
++{
++    if (!logits || !correction_bias || !routed_index || !routed_weight ||
++        (n_shared && !shared_weight) || n_routed <= 0 || n_shared < 0 ||
++        top_k <= 0 || top_k > n_routed)
++        return -1;
++
++    /* Descending insertion into a fixed top-k set.  Inkling-Small has k=6,
++     * so this is cheaper and simpler than allocating/sorting 256 entries. */
++    for (int j = 0; j < top_k; j++) {
++        routed_index[j] = -1;
++        routed_weight[j] = -FLT_MAX; /* choice score until normalization */
++    }
++    for (int expert = 0; expert < n_routed; expert++) {
++        const float choice = inkling_sigmoid(logits[expert]) + correction_bias[expert];
++        int pos = top_k;
++        for (int j = 0; j < top_k; j++) {
++            if (choice > routed_weight[j] ||
++                (choice == routed_weight[j] &&
++                 (routed_index[j] < 0 || expert < routed_index[j]))) {
++                pos = j;
++                break;
++            }
++        }
++        if (pos == top_k) continue;
++        for (int j = top_k - 1; j > pos; j--) {
++            routed_weight[j] = routed_weight[j - 1];
++            routed_index[j] = routed_index[j - 1];
++        }
++        routed_weight[pos] = choice;
++        routed_index[pos] = expert;
++    }
++
++    float max_logp = -FLT_MAX;
++    for (int j = 0; j < top_k; j++) {
++        const float v = inkling_logsigmoid(logits[routed_index[j]]);
++        routed_weight[j] = v;
++        if (v > max_logp) max_logp = v;
++    }
++    for (int j = 0; j < n_shared; j++) {
++        const float v = inkling_logsigmoid(logits[n_routed + j]);
++        shared_weight[j] = v;
++        if (v > max_logp) max_logp = v;
++    }
++
++    float denom = 0.0f;
++    for (int j = 0; j < top_k; j++) denom += expf(routed_weight[j] - max_logp);
++    for (int j = 0; j < n_shared; j++) denom += expf(shared_weight[j] - max_logp);
++    if (!(denom > 0.0f) || !isfinite(denom)) return -1;
++
++    const float scale = route_scale * global_scale / denom;
++    for (int j = 0; j < top_k; j++)
++        routed_weight[j] = expf(routed_weight[j] - max_logp) * scale;
++    for (int j = 0; j < n_shared; j++)
++        shared_weight[j] = expf(shared_weight[j] - max_logp) * scale;
++    return 0;
++}
++
++int waste_inkling_sconv_step(const float *x, float *state,
++                             const float *weight, int channels, int kernel,
++                             float *out)
++{
++    if (!x || !state || !weight || !out || channels <= 0 || kernel <= 0)
++        return -1;
++    for (int c = 0; c < channels; c++) {
++        float *s = state + (size_t)c * (size_t)kernel;
++        const float *w = weight + (size_t)c * (size_t)kernel;
++        for (int k = 0; k + 1 < kernel; k++) s[k] = s[k + 1];
++        s[kernel - 1] = x[c];
++        float y = x[c]; /* residual inside InklingShortConvolution */
++        for (int k = 0; k < kernel; k++) y += s[k] * w[k];
++        out[c] = y;
++    }
++    return 0;
++}
++
++int waste_inkling_relative_bias(const float *relative_state,
++                                const float *projection,
++                                int heads, int d_rel, int extent,
++                                int query_pos, int key_pos0, int kv_len,
++                                float *out)
++{
++    if (!relative_state || !projection || !out || heads <= 0 || d_rel <= 0 ||
++        extent <= 0 || kv_len < 0)
++        return -1;
++    for (int h = 0; h < heads; h++) {
++        const float *r = relative_state + (size_t)h * (size_t)d_rel;
++        float *dst = out + (size_t)h * (size_t)kv_len;
++        for (int k = 0; k < kv_len; k++) {
++            const int distance = query_pos - (key_pos0 + k);
++            if (distance < 0 || distance >= extent) {
++                dst[k] = 0.0f;
++                continue;
++            }
++            float v = 0.0f;
++            for (int d = 0; d < d_rel; d++)
++                v += r[d] * projection[(size_t)d * (size_t)extent + (size_t)distance];
++            dst[k] = v;
++        }
++    }
++    return 0;
++}
++
++float waste_inkling_log_tau(int position, int n_floor, float alpha)
++{
++    if (position < 0 || n_floor <= 0) return NAN;
++    const float ratio = (float)(position + 1) / (float)n_floor;
++    return 1.0f + alpha * logf(ratio > 1.0f ? ratio : 1.0f);
++}
+diff --git a/src/inkling.h b/src/inkling.h
+new file mode 100644
+index 0000000..7a8ee10
+--- /dev/null
++++ b/src/inkling.h
+@@ -0,0 +1,57 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++#ifndef WASTE_INKLING_H
++#define WASTE_INKLING_H
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Exact scalar pieces of the Inkling forward pass.  These are separated from
++ * model.c so they can be differential-tested before architecture dispatch,
++ * cache allocation, and tensor loading are wired. */
++
++/* Select top_k routed experts from sigmoid(logit)+correction_bias, then jointly
++ * normalize the selected routed logits and every shared logit using
++ * log-sigmoid probabilities.  The normalized values are multiplied by
++ * route_scale * global_scale.
++ *
++ * logits: [n_routed + n_shared]
++ * correction_bias: [n_routed]
++ * routed_index/routed_weight: [top_k]
++ * shared_weight: [n_shared]
++ *
++ * Selected entries are returned in descending choice-score order.  Expert
++ * accumulation is order-independent; ties use the lower expert id so the C
++ * implementation is deterministic.
++ */
++int waste_inkling_route(const float *logits, const float *correction_bias,
++                        int n_routed, int n_shared, int top_k,
++                        float route_scale, float global_scale,
++                        int *routed_index, float *routed_weight,
++                        float *shared_weight);
++
++/* One causal depthwise short-convolution update, matching Inkling's fp32
++ * cached-decode path.  state is [channels][kernel] and is updated in place.
++ * out[c] = x[c] + dot(state_after_shift[c], weight[c]). */
++int waste_inkling_sconv_step(const float *x, float *state,
++                             const float *weight, int channels, int kernel,
++                             float *out);
++
++/* Materialize one query token's learned relative-position bias.
++ * relative_state is [heads][d_rel], projection is [d_rel][extent], and out is
++ * [heads][kv_len].  Bias is zero when distance is outside [0, extent). */
++int waste_inkling_relative_bias(const float *relative_state,
++                                const float *projection,
++                                int heads, int d_rel, int extent,
++                                int query_pos, int key_pos0, int kv_len,
++                                float *out);
++
++/* Global attention scaling tau = 1 + alpha*log(max((pos+1)/floor, 1)). */
++float waste_inkling_log_tau(int position, int n_floor, float alpha);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/tests/test_inkling_c_math.py b/tests/test_inkling_c_math.py
+new file mode 100644
+index 0000000..f249e6d
+--- /dev/null
++++ b/tests/test_inkling_c_math.py
+@@ -0,0 +1,158 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 SQLite Cloud, Inc.
++
++import ctypes
++import math
++import shutil
++import subprocess
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++
++import torch
++import torch.nn.functional as F
++
++REPO = Path(__file__).resolve().parents[1]
++
++
++class InklingCMathTest(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cc = shutil.which("cc")
++        if not cc:
++            raise unittest.SkipTest("no C compiler")
++        cls.tmp = tempfile.TemporaryDirectory()
++        cls.lib_path = Path(cls.tmp.name) / "libinkling.so"
++        subprocess.run(
++            [
++                cc,
++                "-std=c11",
++                "-Wall",
++                "-Wextra",
++                "-Werror",
++                "-fPIC",
++                "-shared",
++                "-I",
++                str(REPO / "src"),
++                str(REPO / "src" / "inkling.c"),
++                "-lm",
++                "-o",
++                str(cls.lib_path),
++            ],
++            check=True,
++        )
++        cls.lib = ctypes.CDLL(str(cls.lib_path))
++        fp = ctypes.POINTER(ctypes.c_float)
++        ip = ctypes.POINTER(ctypes.c_int)
++        cls.lib.waste_inkling_route.argtypes = [
++            fp, fp, ctypes.c_int, ctypes.c_int, ctypes.c_int,
++            ctypes.c_float, ctypes.c_float, ip, fp, fp,
++        ]
++        cls.lib.waste_inkling_route.restype = ctypes.c_int
++        cls.lib.waste_inkling_sconv_step.argtypes = [
++            fp, fp, fp, ctypes.c_int, ctypes.c_int, fp,
++        ]
++        cls.lib.waste_inkling_sconv_step.restype = ctypes.c_int
++        cls.lib.waste_inkling_relative_bias.argtypes = [
++            fp, fp, ctypes.c_int, ctypes.c_int, ctypes.c_int,
++            ctypes.c_int, ctypes.c_int, ctypes.c_int, fp,
++        ]
++        cls.lib.waste_inkling_relative_bias.restype = ctypes.c_int
++        cls.lib.waste_inkling_log_tau.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_float]
++        cls.lib.waste_inkling_log_tau.restype = ctypes.c_float
++
++    @classmethod
++    def tearDownClass(cls):
++        cls.tmp.cleanup()
++
++    @staticmethod
++    def fp(tensor):
++        if tensor.dtype != torch.float32 or not tensor.is_contiguous():
++            raise TypeError("ctypes inputs must be contiguous float32 tensors")
++        return ctypes.cast(tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))
++
++    def test_router_matches_official_equation(self):
++        torch.manual_seed(7)
++        n_routed, n_shared, top_k = 11, 2, 4
++        logits = torch.randn(n_routed + n_shared, dtype=torch.float32)
++        bias = torch.randn(n_routed, dtype=torch.float32) * 0.05
++        route_scale, global_scale = 8.0, 0.875
++
++        choice = logits[:n_routed].sigmoid() + bias
++        ref_idx = torch.topk(choice, top_k, sorted=False).indices
++        ref_logits = torch.cat([logits[ref_idx], logits[n_routed:]])
++        ref_weights = torch.softmax(F.logsigmoid(ref_logits), dim=0) * route_scale * global_scale
++        ref_routed = {int(i): float(w) for i, w in zip(ref_idx, ref_weights[:top_k])}
++        ref_shared = ref_weights[top_k:]
++
++        out_idx = torch.empty(top_k, dtype=torch.int32)
++        out_routed = torch.empty(top_k, dtype=torch.float32)
++        out_shared = torch.empty(n_shared, dtype=torch.float32)
++        rc = self.lib.waste_inkling_route(
++            self.fp(logits), self.fp(bias), n_routed, n_shared, top_k,
++            route_scale, global_scale,
++            ctypes.cast(out_idx.data_ptr(), ctypes.POINTER(ctypes.c_int)),
++            self.fp(out_routed), self.fp(out_shared),
++        )
++        self.assertEqual(rc, 0)
++        self.assertEqual(set(out_idx.tolist()), set(ref_idx.tolist()))
++        for idx, weight in zip(out_idx.tolist(), out_routed.tolist()):
++            self.assertAlmostEqual(weight, ref_routed[idx], places=6)
++        torch.testing.assert_close(out_shared, ref_shared, rtol=1e-6, atol=1e-7)
++        self.assertAlmostEqual(
++            float(out_routed.sum() + out_shared.sum()),
++            route_scale * global_scale,
++            places=5,
++        )
++
++    def test_short_convolution_cached_step_matches_torch(self):
++        torch.manual_seed(11)
++        channels, kernel = 5, 4
++        x = torch.randn(channels, dtype=torch.float32)
++        state = torch.randn(channels, kernel, dtype=torch.float32)
++        weight = torch.randn(channels, kernel, dtype=torch.float32)
++        state_ref = torch.cat([state[:, 1:], x[:, None]], dim=1)
++        out_ref = x + (state_ref * weight).sum(dim=1)
++
++        out = torch.empty_like(x)
++        state_c = state.clone()
++        rc = self.lib.waste_inkling_sconv_step(
++            self.fp(x), self.fp(state_c), self.fp(weight), channels, kernel, self.fp(out)
++        )
++        self.assertEqual(rc, 0)
++        torch.testing.assert_close(state_c, state_ref, rtol=0, atol=0)
++        torch.testing.assert_close(out, out_ref, rtol=1e-6, atol=1e-6)
++
++    def test_relative_bias_matches_dense_reference(self):
++        torch.manual_seed(13)
++        heads, d_rel, extent = 3, 4, 5
++        query_pos, key_pos0, kv_len = 7, 1, 9
++        relative = torch.randn(heads, d_rel, dtype=torch.float32)
++        projection = torch.randn(d_rel, extent, dtype=torch.float32)
++        ref = torch.zeros(heads, kv_len, dtype=torch.float32)
++        for key in range(kv_len):
++            distance = query_pos - (key_pos0 + key)
++            if 0 <= distance < extent:
++                ref[:, key] = relative @ projection[:, distance]
++
++        out = torch.empty_like(ref)
++        rc = self.lib.waste_inkling_relative_bias(
++            self.fp(relative), self.fp(projection), heads, d_rel, extent,
++            query_pos, key_pos0, kv_len, self.fp(out)
++        )
++        self.assertEqual(rc, 0)
++        torch.testing.assert_close(out, ref, rtol=1e-6, atol=1e-6)
++
++    def test_global_log_scaling(self):
++        floor, alpha = 128000, 0.1
++        self.assertEqual(self.lib.waste_inkling_log_tau(0, floor, alpha), 1.0)
++        self.assertEqual(self.lib.waste_inkling_log_tau(floor - 1, floor, alpha), 1.0)
++        position = 511999
++        ref = 1.0 + alpha * math.log((position + 1) / floor)
++        self.assertAlmostEqual(self.lib.waste_inkling_log_tau(position, floor, alpha), ref, places=6)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_inkling_weights.py b/tests/test_inkling_weights.py
+new file mode 100644
+index 0000000..0c7e398
+--- /dev/null
++++ b/tests/test_inkling_weights.py
+@@ -0,0 +1,182 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 SQLite Cloud, Inc.
++
++import json
++import struct
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++
++import torch
++
++REPO = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(REPO / "tools"))
++sys.path.insert(0, str(REPO / "tests"))
++
++from inkling_weights import (
++    ProviderRawInklingWeights,
++    SafeTensorReader,
++    WeightError,
++    interleave,
++    split_fused_gate_up,
++)
++from test_inspect_inkling import inkling_config
++
++
++DTYPE_NAME = {
++    torch.bfloat16: "BF16",
++    torch.float16: "F16",
++    torch.float32: "F32",
++    torch.int64: "I64",
++}
++
++
++def tensor_bytes(tensor: torch.Tensor) -> bytes:
++    raw = tensor.detach().cpu().contiguous().view(torch.uint8).numpy()
++    return raw.tobytes()
++
++
++def write_safetensors(path: Path, tensors: dict[str, torch.Tensor]) -> None:
++    payloads = []
++    header = {}
++    offset = 0
++    for name, tensor in tensors.items():
++        data = tensor_bytes(tensor)
++        header[name] = {
++            "dtype": DTYPE_NAME[tensor.dtype],
++            "shape": list(tensor.shape),
++            "data_offsets": [offset, offset + len(data)],
++        }
++        payloads.append(data)
++        offset += len(data)
++    raw_header = json.dumps(header, separators=(",", ":")).encode("utf-8")
++    with path.open("wb") as f:
++        f.write(struct.pack("<Q", len(raw_header)))
++        f.write(raw_header)
++        for data in payloads:
++            f.write(data)
++
++
++def source_from_gate_up(gate: torch.Tensor, up: torch.Tensor, dim: int) -> torch.Tensor:
++    target = torch.cat([gate, up], dim=dim)
++    return interleave(target, dim, inverse=True)
++
++
++def make_weight_checkpoint():
++    td = tempfile.TemporaryDirectory()
++    root = Path(td.name)
++    cfg = inkling_config(layers=3)
++    (root / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
++    text = cfg["text_config"]
++    h = text["hidden_size"]
++    dense = text["dense_intermediate_size"]
++    inter = text["intermediate_size"]
++    experts = text["n_routed_experts"]
++    shared = text["n_shared_experts"]
++
++    dense_gate = torch.arange(dense * h, dtype=torch.float32).reshape(dense, h).to(torch.bfloat16)
++    dense_up = (dense_gate.float() + 1000).to(torch.bfloat16)
++    dense_down = torch.arange(h * dense, dtype=torch.float32).reshape(h, dense).to(torch.bfloat16)
++
++    routed_gate = torch.arange(experts * inter * h, dtype=torch.float32).reshape(experts, inter, h).to(torch.bfloat16)
++    routed_up = (routed_gate.float() + 2000).to(torch.bfloat16)
++    routed_down = torch.arange(experts * h * inter, dtype=torch.float32).reshape(experts, h, inter).to(torch.bfloat16)
++
++    shared_gate = torch.arange(shared * inter * h, dtype=torch.float32).reshape(shared, inter, h).to(torch.bfloat16)
++    shared_up = (shared_gate.float() + 3000).to(torch.bfloat16)
++    shared_down = torch.arange(shared * h * inter, dtype=torch.float32).reshape(shared, h, inter).to(torch.bfloat16)
++
++    tensors = {
++        "model.llm.layers.0.mlp.w13_dn.weight": source_from_gate_up(dense_gate, dense_up, 0),
++        "model.llm.layers.0.mlp.w2_md.weight": dense_down,
++        "model.llm.layers.1.mlp.experts.w13_weight": source_from_gate_up(routed_gate, routed_up, 1),
++        "model.llm.layers.1.mlp.experts.w2_weight": routed_down,
++        "model.llm.layers.1.mlp.shared_experts.shared_w13_weight": source_from_gate_up(shared_gate, shared_up, 1),
++        "model.llm.layers.1.mlp.shared_experts.shared_w2_weight": shared_down,
++    }
++    shard = "model-00001-of-00001.safetensors"
++    write_safetensors(root / shard, tensors)
++    (root / "model.safetensors.index.json").write_text(
++        json.dumps({"metadata": {"total_size": sum(t.numel() * t.element_size() for t in tensors.values())},
++                    "weight_map": {name: shard for name in tensors}}),
++        encoding="utf-8",
++    )
++    expected = {
++        "dense_gate": dense_gate.float(),
++        "dense_up": dense_up.float(),
++        "dense_down": dense_down.float(),
++        "routed_gate": routed_gate.float(),
++        "routed_up": routed_up.float(),
++        "routed_down": routed_down.float(),
++        "shared_gate": shared_gate.float(),
++        "shared_up": shared_up.float(),
++        "shared_down": shared_down.float(),
++    }
++    return td, root, expected
++
++
++class InklingWeightsTest(unittest.TestCase):
++    def test_interleave_matches_inverse_round_trip(self):
++        x = torch.arange(2 * 6 * 4).reshape(2, 6, 4)
++        y = interleave(x, 1)
++        self.assertTrue(torch.equal(interleave(y, 1, inverse=True), x))
++        gate, up = split_fused_gate_up(interleave(torch.cat([x[:, :3], x[:, 3:]], 1), 1, inverse=True), 1)
++        self.assertTrue(torch.equal(gate, x[:, :3]))
++        self.assertTrue(torch.equal(up, x[:, 3:]))
++
++    def test_axis0_slice_reads_only_one_expert(self):
++        td, root, expected = make_weight_checkpoint()
++        self.addCleanup(td.cleanup)
++        reader = SafeTensorReader(root)
++        name = "model.llm.layers.1.mlp.experts.w13_weight"
++        loc = reader.location(name)
++        before = reader.bytes_read
++        got = reader.slice0(name, 2)
++        read = reader.bytes_read - before
++        self.assertEqual(read, loc.nbytes // 4)
++        self.assertEqual(list(got.shape), [16, 16])
++
++    def test_provider_adapter_splits_dense_routed_and_shared(self):
++        td, root, expected = make_weight_checkpoint()
++        self.addCleanup(td.cleanup)
++        source = ProviderRawInklingWeights(root)
++
++        dense = source.dense(0)
++        self.assertTrue(torch.equal(dense.gate, expected["dense_gate"]))
++        self.assertTrue(torch.equal(dense.up, expected["dense_up"]))
++        self.assertTrue(torch.equal(dense.down, expected["dense_down"]))
++
++        expert = source.routed_expert(1, 2)
++        self.assertTrue(torch.equal(expert.gate, expected["routed_gate"][2]))
++        self.assertTrue(torch.equal(expert.up, expected["routed_up"][2]))
++        self.assertTrue(torch.equal(expert.down, expected["routed_down"][2]))
++
++        shared = source.shared(1)
++        self.assertTrue(torch.equal(shared.gate, expected["shared_gate"]))
++        self.assertTrue(torch.equal(shared.up, expected["shared_up"]))
++        self.assertTrue(torch.equal(shared.down, expected["shared_down"]))
++
++    def test_shape_and_dtype_fail_closed(self):
++        td, root, _ = make_weight_checkpoint()
++        self.addCleanup(td.cleanup)
++        source = ProviderRawInklingWeights(root)
++        with self.assertRaisesRegex(WeightError, "not a dense"):
++            source.dense(1)
++        with self.assertRaisesRegex(WeightError, "outside"):
++            source.routed_expert(1, 99)
++
++        # Add an unsupported tensor to a separate valid safetensors file.
++        bad = root / "bad.safetensors"
++        write_safetensors(bad, {"bad": torch.arange(4, dtype=torch.int64)})
++        index = json.loads((root / "model.safetensors.index.json").read_text())
++        index["weight_map"]["bad"] = bad.name
++        (root / "model.safetensors.index.json").write_text(json.dumps(index), encoding="utf-8")
++        reader = SafeTensorReader(root)
++        with self.assertRaisesRegex(WeightError, "unsupported source dtype"):
++            reader.tensor("bad")
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tools/inkling_weights.py b/tools/inkling_weights.py
+new file mode 100644
+index 0000000..12e3650
+--- /dev/null
++++ b/tools/inkling_weights.py
+@@ -0,0 +1,315 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 SQLite Cloud, Inc.
++"""Bounded safetensors access and official Inkling weight transforms.
++
++The reader understands native BF16/F16/F32 safetensors and can read a contiguous
++slice along tensor axis 0 without materializing the whole tensor.  Inkling's
++routed expert tensors are expert-major, so this is the primitive the converter
++needs to keep memory bounded to one expert.
++
++The interleave operation is a direct, independently implemented equivalent of
++the official Apache-2.0 Transformers checkpoint conversion operation.  It is
++kept here rather than importing Transformers so the conversion tool remains
++small and deterministic.
++"""
++
++from __future__ import annotations
++
++import json
++import math
++import struct
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any, Iterator
++
++import torch
++
++
++class WeightError(RuntimeError):
++    pass
++
++
++DTYPES: dict[str, tuple[torch.dtype, int]] = {
++    "BF16": (torch.bfloat16, 2),
++    "F16": (torch.float16, 2),
++    "F32": (torch.float32, 4),
++}
++
++
++@dataclass(frozen=True)
++class TensorLocation:
++    name: str
++    shard: str
++    dtype: str
++    shape: tuple[int, ...]
++    file_offset: int
++    nbytes: int
++
++
++class SafeTensorReader:
++    """Lazy sharded safetensors reader with bounded axis-0 slices."""
++
++    def __init__(self, root: Path | str):
++        self.root = Path(root)
++        index_path = self.root / "model.safetensors.index.json"
++        try:
++            index = json.loads(index_path.read_text(encoding="utf-8"))
++        except FileNotFoundError as exc:
++            raise WeightError(f"missing {index_path}") from exc
++        except (OSError, json.JSONDecodeError) as exc:
++            raise WeightError(f"cannot read {index_path}: {exc}") from exc
++        weight_map = index.get("weight_map")
++        if not isinstance(weight_map, dict) or any(
++            not isinstance(name, str) or not isinstance(shard, str)
++            for name, shard in weight_map.items()
++        ):
++            raise WeightError(f"invalid weight_map in {index_path}")
++        self.weight_map: dict[str, str] = dict(weight_map)
++        self._headers: dict[str, tuple[dict[str, Any], int]] = {}
++        self.bytes_read = 0
++
++    def names(self) -> Iterator[str]:
++        return iter(self.weight_map)
++
++    def _header(self, shard: str) -> tuple[dict[str, Any], int]:
++        if shard in self._headers:
++            return self._headers[shard]
++        path = self.root / shard
++        try:
++            with path.open("rb") as f:
++                raw = f.read(8)
++                if len(raw) != 8:
++                    raise WeightError(f"short safetensors prefix: {path}")
++                (header_len,) = struct.unpack("<Q", raw)
++                if header_len < 2 or header_len > (256 << 20):
++                    raise WeightError(f"implausible safetensors header length {header_len}: {path}")
++                payload = f.read(header_len)
++                if len(payload) != header_len:
++                    raise WeightError(f"truncated safetensors header: {path}")
++        except OSError as exc:
++            raise WeightError(f"cannot read {path}: {exc}") from exc
++        try:
++            header = json.loads(payload)
++        except json.JSONDecodeError as exc:
++            raise WeightError(f"invalid safetensors header JSON in {path}: {exc}") from exc
++        if not isinstance(header, dict):
++            raise WeightError(f"safetensors header is not an object: {path}")
++        value = (header, 8 + header_len)
++        self._headers[shard] = value
++        return value
++
++    def location(self, name: str) -> TensorLocation:
++        shard = self.weight_map.get(name)
++        if shard is None:
++            raise WeightError(f"tensor not present in index: {name}")
++        header, base = self._header(shard)
++        item = header.get(name)
++        if not isinstance(item, dict):
++            raise WeightError(f"tensor not present in shard header: {name} ({shard})")
++        dtype = item.get("dtype")
++        shape = item.get("shape")
++        offsets = item.get("data_offsets")
++        if dtype not in DTYPES:
++            raise WeightError(f"unsupported source dtype {dtype!r} for {name}; BF16 parity source required")
++        if not isinstance(shape, list) or any(not isinstance(x, int) or x < 0 for x in shape):
++            raise WeightError(f"invalid shape for {name}: {shape!r}")
++        if (
++            not isinstance(offsets, list)
++            or len(offsets) != 2
++            or any(not isinstance(x, int) or x < 0 for x in offsets)
++            or offsets[1] < offsets[0]
++        ):
++            raise WeightError(f"invalid data_offsets for {name}: {offsets!r}")
++        _, item_size = DTYPES[dtype]
++        expected = math.prod(shape) * item_size
++        actual = offsets[1] - offsets[0]
++        if actual != expected:
++            raise WeightError(
++                f"payload size mismatch for {name}: shape/dtype require {expected} bytes, header says {actual}"
++            )
++        return TensorLocation(
++            name=name,
++            shard=shard,
++            dtype=dtype,
++            shape=tuple(shape),
++            file_offset=base + offsets[0],
++            nbytes=actual,
++        )
++
++    def _read(self, loc: TensorLocation, offset: int, nbytes: int) -> bytes:
++        path = self.root / loc.shard
++        try:
++            with path.open("rb") as f:
++                f.seek(offset)
++                data = f.read(nbytes)
++        except OSError as exc:
++            raise WeightError(f"cannot read {loc.name} from {path}: {exc}") from exc
++        if len(data) != nbytes:
++            raise WeightError(
++                f"short read for {loc.name}: wanted {nbytes} bytes at {offset}, received {len(data)}"
++            )
++        self.bytes_read += nbytes
++        return data
++
++    @staticmethod
++    def _decode(data: bytes, dtype_name: str, shape: tuple[int, ...]) -> torch.Tensor:
++        dtype, _ = DTYPES[dtype_name]
++        # bytearray gives torch owned, writable storage and avoids the warning
++        # emitted for an immutable bytes buffer.
++        return torch.frombuffer(bytearray(data), dtype=dtype).reshape(shape)
++
++    def tensor(self, name: str, *, float32: bool = False) -> torch.Tensor:
++        loc = self.location(name)
++        out = self._decode(self._read(loc, loc.file_offset, loc.nbytes), loc.dtype, loc.shape)
++        return out.float() if float32 else out
++
++    def slice0(
++        self,
++        name: str,
++        start: int,
++        count: int = 1,
++        *,
++        float32: bool = False,
++    ) -> torch.Tensor:
++        loc = self.location(name)
++        if not loc.shape:
++            raise WeightError(f"cannot axis-0 slice scalar tensor {name}")
++        if start < 0 or count < 1 or start + count > loc.shape[0]:
++            raise WeightError(
++                f"axis-0 slice [{start}:{start + count}] outside {name} shape {list(loc.shape)}"
++            )
++        _, item_size = DTYPES[loc.dtype]
++        stride_elems = math.prod(loc.shape[1:])
++        stride_bytes = stride_elems * item_size
++        shape = (count, *loc.shape[1:])
++        data = self._read(loc, loc.file_offset + start * stride_bytes, count * stride_bytes)
++        out = self._decode(data, loc.dtype, shape)
++        if count == 1:
++            out = out[0]
++        return out.float() if float32 else out
++
++
++def interleave(tensor: torch.Tensor, dim: int, *, inverse: bool = False) -> torch.Tensor:
++    """Apply the official Inkling checkpoint Interleave operation exactly."""
++    if dim < 0:
++        dim += tensor.ndim
++    if dim < 0 or dim >= tensor.ndim:
++        raise WeightError(f"interleave dimension {dim} outside rank {tensor.ndim}")
++    size = tensor.shape[dim]
++    if size % 2:
++        raise WeightError(f"interleave dimension must be even, got {size} in shape {list(tensor.shape)}")
++    shape = list(tensor.shape)
++    if inverse:
++        shape[dim : dim + 1] = [2, size // 2]
++    else:
++        shape[dim : dim + 1] = [size // 2, 2]
++    return tensor.reshape(shape).transpose(dim, dim + 1).reshape(tensor.shape).contiguous()
++
++
++def split_fused_gate_up(tensor: torch.Tensor, dim: int) -> tuple[torch.Tensor, torch.Tensor]:
++    normalized = interleave(tensor, dim)
++    gate, up = torch.chunk(normalized, 2, dim=dim)
++    return gate.contiguous(), up.contiguous()
++
++
++@dataclass
++class ExpertWeights:
++    gate: torch.Tensor
++    up: torch.Tensor
++    down: torch.Tensor
++
++
++class ProviderRawInklingWeights:
++    """Official provider-raw Inkling text tensor adapter."""
++
++    def __init__(self, root: Path | str):
++        self.root = Path(root)
++        try:
++            config = json.loads((self.root / "config.json").read_text(encoding="utf-8"))
++        except (OSError, json.JSONDecodeError) as exc:
++            raise WeightError(f"cannot read Inkling config: {exc}") from exc
++        text = config.get("text_config")
++        if not isinstance(text, dict):
++            raise WeightError("Inkling config has no text_config object")
++        self.config = config
++        self.text = text
++        self.reader = SafeTensorReader(self.root)
++        self.n_layers = self._int("num_hidden_layers")
++        self.n_experts = self._int("n_routed_experts")
++        self.n_shared = self._int("n_shared_experts")
++        self.hidden = self._int("hidden_size")
++        self.intermediate = self._int("intermediate_size")
++        self.dense_intermediate = self._int("dense_intermediate_size")
++        self.dense_count = self._int("dense_mlp_idx", minimum=0)
++
++    def _int(self, key: str, *, minimum: int = 1) -> int:
++        value = self.text.get(key)
++        if not isinstance(value, int) or value < minimum:
++            raise WeightError(f"invalid or missing text_config.{key}: {value!r}")
++        return value
++
++    @staticmethod
++    def _layer(layer: int) -> str:
++        return f"model.llm.layers.{layer}"
++
++    def dense(self, layer: int, *, float32: bool = True) -> ExpertWeights:
++        if layer < 0 or layer >= self.dense_count:
++            raise WeightError(f"layer {layer} is not a dense Inkling MLP layer")
++        p = self._layer(layer)
++        fused = self.reader.tensor(f"{p}.mlp.w13_dn.weight", float32=float32)
++        down = self.reader.tensor(f"{p}.mlp.w2_md.weight", float32=float32)
++        expected_fused = [2 * self.dense_intermediate, self.hidden]
++        expected_down = [self.hidden, self.dense_intermediate]
++        if list(fused.shape) != expected_fused or list(down.shape) != expected_down:
++            raise WeightError(
++                f"dense layer {layer} shapes differ from config: fused {list(fused.shape)} vs {expected_fused}, "
++                f"down {list(down.shape)} vs {expected_down}"
++            )
++        gate, up = split_fused_gate_up(fused, 0)
++        return ExpertWeights(gate=gate, up=up, down=down.contiguous())
++
++    def routed_expert(self, layer: int, expert: int, *, float32: bool = True) -> ExpertWeights:
++        if layer < self.dense_count or layer >= self.n_layers:
++            raise WeightError(f"layer {layer} is not a sparse Inkling MLP layer")
++        if expert < 0 or expert >= self.n_experts:
++            raise WeightError(f"expert {expert} outside 0..{self.n_experts - 1}")
++        p = self._layer(layer)
++        # Full source tensors are [expert, fused/down rows, input].  Reading one
++        # axis-0 slice bounds memory to one expert.  Interleave axis 1 on the
++        # full tensor is equivalent to axis 0 after taking that slice.
++        fused = self.reader.slice0(
++            f"{p}.mlp.experts.w13_weight", expert, float32=float32
++        )
++        down = self.reader.slice0(
++            f"{p}.mlp.experts.w2_weight", expert, float32=float32
++        )
++        expected_fused = [2 * self.intermediate, self.hidden]
++        expected_down = [self.hidden, self.intermediate]
++        if list(fused.shape) != expected_fused or list(down.shape) != expected_down:
++            raise WeightError(
++                f"expert {expert} layer {layer} shapes differ from config: "
++                f"fused {list(fused.shape)} vs {expected_fused}, down {list(down.shape)} vs {expected_down}"
++            )
++        gate, up = split_fused_gate_up(fused, 0)
++        return ExpertWeights(gate=gate, up=up, down=down.contiguous())
++
++    def shared(self, layer: int, *, float32: bool = True) -> ExpertWeights:
++        if layer < self.dense_count or layer >= self.n_layers:
++            raise WeightError(f"layer {layer} is not a sparse Inkling MLP layer")
++        p = self._layer(layer)
++        fused = self.reader.tensor(
++            f"{p}.mlp.shared_experts.shared_w13_weight", float32=float32
++        )
++        down = self.reader.tensor(
++            f"{p}.mlp.shared_experts.shared_w2_weight", float32=float32
++        )
++        expected_fused = [self.n_shared, 2 * self.intermediate, self.hidden]
++        expected_down = [self.n_shared, self.hidden, self.intermediate]
++        if list(fused.shape) != expected_fused or list(down.shape) != expected_down:
++            raise WeightError(
++                f"shared layer {layer} shapes differ from config: fused {list(fused.shape)} vs {expected_fused}, "
++                f"down {list(down.shape)} vs {expected_down}"
++            )
++        gate, up = split_fused_gate_up(fused, 1)
++        return ExpertWeights(gate=gate, up=up, down=down.contiguous())

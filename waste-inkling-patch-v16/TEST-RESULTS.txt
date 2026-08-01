@@ -1,0 +1,23 @@
+Patch 15 validation
+===================
+
+Python unit tests:
+  Ran 96 tests
+  OK
+
+New coverage:
+  - CRC-protected F32/int32 activation archive round trip
+  - activation corruption rejection
+  - float maximum absolute/relative error report
+  - exact routing-index mismatch report
+  - bounded selected-layer checkpoint extraction
+  - axis-0 routed-expert slice extraction
+  - embedding/unembedding whole-table exclusion
+  - per-tensor and total byte ceilings
+  - malformed expert selection and unselected-layer rejection
+
+Python compilation:
+  PASS
+
+Official checkpoint payload:
+  NOT RUN locally; no real-weight parity claim.

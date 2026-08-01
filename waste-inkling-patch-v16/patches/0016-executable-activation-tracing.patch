@@ -1,0 +1,1088 @@
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/PATCH16-HANDOFF.md b/PATCH16-HANDOFF.md
+--- a/PATCH16-HANDOFF.md	1970-01-01 00:00:00.000000000 +0000
++++ b/PATCH16-HANDOFF.md	2026-08-01 22:36:17.849121971 +0000
+@@ -0,0 +1,50 @@
++# Patch 16 handoff
++
++This patch adds optional activation tracing to the private Inkling C runtime and
++an official Transformers reference capture tool.
++
++## C APIs
++
++- `waste_inkling_layer_step_backend_trace`
++- `waste_inkling_model_step_backend_trace`
++- `waste_inkling_private_step_trace`
++
++The original APIs remain unchanged and call the traced variants with `NULL`.
++Trace callbacks must copy data before returning; scratch buffers are reused.
++Returning nonzero aborts the step without advancing `next_position`.
++
++## Reference command
++
++```powershell
++python tools/inkling_reference.py `
++  --src D:\models\Inkling-Small `
++  --tokens 200006,1234,5678 `
++  --layers 0,1,2 `
++  --out D:\parity\python
++```
++
++## C trace command
++
++```powershell
++python tools/inkling_trace.py `
++  --library .\libwaste.dll `
++  --stage D:\models\Inkling-Small.stage `
++  --tokens 200006,1234,5678 `
++  --out D:\parity\waste
++```
++
++The library must export the private Inkling symbols; this is still a parity
++surface, not the public WASTE API.
++
++## Compare
++
++```powershell
++python tools/inkling_parity.py `
++  --layers 0 `
++  --compare-reference D:\parity\python `
++  --compare-candidate D:\parity\waste `
++  --atol 1e-5 --rtol 1e-5 `
++  --report D:\parity\report.json
++```
++
++No official real-weight comparison was run in the packaging environment.
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/TEST-RESULTS-P16.txt b/TEST-RESULTS-P16.txt
+--- a/TEST-RESULTS-P16.txt	1970-01-01 00:00:00.000000000 +0000
++++ b/TEST-RESULTS-P16.txt	2026-08-01 22:36:17.849121971 +0000
+@@ -0,0 +1,22 @@
++Patch 16 validation
++===================
++
++python -m unittest discover -s tests -p 'test_*.py'
++  Ran 99 tests
++  OK
++
++New trace coverage:
++- model, dense-layer, sparse-router, MoE, final norm and logits callbacks
++- integer routed-index callbacks
++- callback output equals returned logits
++- official-module hook naming with dense and sparse toy modules
++- immediate C callback data copying
++
++C strict compilation:
++  cc -std=c11 -Wall -Wextra -Werror -Isrc -c src/inkling_layer.c
++  cc -std=c11 -Wall -Wextra -Werror -Isrc -c src/inkling_model.c
++  cc -std=c11 -Wall -Wextra -Werror -Isrc -c src/inkling_private.c
++  PASS
++
++No official 532 GB checkpoint payload was available; real-weight parity remains
++an execution gate, not a claimed result.
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/docs/INKLING.md b/docs/INKLING.md
+--- a/docs/INKLING.md	2026-08-01 20:49:23.000000000 +0000
++++ b/docs/INKLING.md	2026-08-01 22:36:17.849121971 +0000
+@@ -443,3 +443,35 @@
+ A comparison mismatch exits with status 2. Patch 15 supplies the extraction and
+ interchange protocol; running the official reference and resolving any differences
+ remains a required completion gate.
++
++## Patch 16 — executable activation tracing
++
++Patch 16 turns the parity archive protocol into an executable two-sided trace.
++The verified C layer/model APIs now have optional traced variants.  They emit
++named F32 or int32 records after embedding normalization, layer normalization,
++Q/K/V/R projection, K/V short convolution, attention, attention-branch short
++convolution, post-attention normalization, dense MLP or sparse routing/MoE,
++MLP-branch short convolution, complete layer output, final normalization, width
++scaling, and logits.  Existing untraced entry points delegate with a null trace,
++so production inference pays no callback cost.
++
++`tools/inkling_trace.py` runs the converter-private staged C runtime and writes
++these callbacks through the CRC-protected activation archive.  The output names
++include token position and layer number, allowing multi-token cache and
++convolution-state comparisons.
++
++`tools/inkling_reference.py` is the official Transformers side.  It loads the
++released model through `AutoModelForCausalLM`, registers hooks on the official
++Inkling modules, performs incremental one-token decoding with cache, and writes
++the same archive names.  Loading the full 532 GB checkpoint may require a
++provider-supported or high-memory system; this patch does not claim that such a
++run occurred in the development environment.
++
++The expected real-weight workflow is now:
++
++1. Produce a private quantized runtime stage.
++2. Run `inkling_reference.py` for a fixed token sequence and selected layers.
++3. Build/load a private Inkling shared library and run `inkling_trace.py` on the
++   same tokens.
++4. Compare both archives with `inkling_parity.py --compare-reference ...`.
++5. Resolve BF16 semantic differences before setting Q8/Q4/VQ tolerances.
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/patches/0016-executable-activation-tracing.patch b/patches/0016-executable-activation-tracing.patch
+--- a/patches/0016-executable-activation-tracing.patch	1970-01-01 00:00:00.000000000 +0000
++++ b/patches/0016-executable-activation-tracing.patch	2026-08-01 22:36:23.529121848 +0000
+@@ -0,0 +1,119 @@
++diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/PATCH16-HANDOFF.md b/PATCH16-HANDOFF.md
++--- a/PATCH16-HANDOFF.md	1970-01-01 00:00:00.000000000 +0000
+++++ b/PATCH16-HANDOFF.md	2026-08-01 22:36:17.849121971 +0000
++@@ -0,0 +1,50 @@
+++# Patch 16 handoff
+++
+++This patch adds optional activation tracing to the private Inkling C runtime and
+++an official Transformers reference capture tool.
+++
+++## C APIs
+++
+++- `waste_inkling_layer_step_backend_trace`
+++- `waste_inkling_model_step_backend_trace`
+++- `waste_inkling_private_step_trace`
+++
+++The original APIs remain unchanged and call the traced variants with `NULL`.
+++Trace callbacks must copy data before returning; scratch buffers are reused.
+++Returning nonzero aborts the step without advancing `next_position`.
+++
+++## Reference command
+++
+++```powershell
+++python tools/inkling_reference.py `
+++  --src D:\models\Inkling-Small `
+++  --tokens 200006,1234,5678 `
+++  --layers 0,1,2 `
+++  --out D:\parity\python
+++```
+++
+++## C trace command
+++
+++```powershell
+++python tools/inkling_trace.py `
+++  --library .\libwaste.dll `
+++  --stage D:\models\Inkling-Small.stage `
+++  --tokens 200006,1234,5678 `
+++  --out D:\parity\waste
+++```
+++
+++The library must export the private Inkling symbols; this is still a parity
+++surface, not the public WASTE API.
+++
+++## Compare
+++
+++```powershell
+++python tools/inkling_parity.py `
+++  --layers 0 `
+++  --compare-reference D:\parity\python `
+++  --compare-candidate D:\parity\waste `
+++  --atol 1e-5 --rtol 1e-5 `
+++  --report D:\parity\report.json
+++```
+++
+++No official real-weight comparison was run in the packaging environment.
++diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/TEST-RESULTS-P16.txt b/TEST-RESULTS-P16.txt
++--- a/TEST-RESULTS-P16.txt	1970-01-01 00:00:00.000000000 +0000
+++++ b/TEST-RESULTS-P16.txt	2026-08-01 22:36:17.849121971 +0000
++@@ -0,0 +1,22 @@
+++Patch 16 validation
+++===================
+++
+++python -m unittest discover -s tests -p 'test_*.py'
+++  Ran 99 tests
+++  OK
+++
+++New trace coverage:
+++- model, dense-layer, sparse-router, MoE, final norm and logits callbacks
+++- integer routed-index callbacks
+++- callback output equals returned logits
+++- official-module hook naming with dense and sparse toy modules
+++- immediate C callback data copying
+++
+++C strict compilation:
+++  cc -std=c11 -Wall -Wextra -Werror -Isrc -c src/inkling_layer.c
+++  cc -std=c11 -Wall -Wextra -Werror -Isrc -c src/inkling_model.c
+++  cc -std=c11 -Wall -Wextra -Werror -Isrc -c src/inkling_private.c
+++  PASS
+++
+++No official 532 GB checkpoint payload was available; real-weight parity remains
+++an execution gate, not a claimed result.
++diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/docs/INKLING.md b/docs/INKLING.md
++--- a/docs/INKLING.md	2026-08-01 20:49:23.000000000 +0000
+++++ b/docs/INKLING.md	2026-08-01 22:36:17.849121971 +0000
++@@ -443,3 +443,35 @@
++ A comparison mismatch exits with status 2. Patch 15 supplies the extraction and
++ interchange protocol; running the official reference and resolving any differences
++ remains a required completion gate.
+++
+++## Patch 16 — executable activation tracing
+++
+++Patch 16 turns the parity archive protocol into an executable two-sided trace.
+++The verified C layer/model APIs now have optional traced variants.  They emit
+++named F32 or int32 records after embedding normalization, layer normalization,
+++Q/K/V/R projection, K/V short convolution, attention, attention-branch short
+++convolution, post-attention normalization, dense MLP or sparse routing/MoE,
+++MLP-branch short convolution, complete layer output, final normalization, width
+++scaling, and logits.  Existing untraced entry points delegate with a null trace,
+++so production inference pays no callback cost.
+++
+++`tools/inkling_trace.py` runs the converter-private staged C runtime and writes
+++these callbacks through the CRC-protected activation archive.  The output names
+++include token position and layer number, allowing multi-token cache and
+++convolution-state comparisons.
+++
+++`tools/inkling_reference.py` is the official Transformers side.  It loads the
+++released model through `AutoModelForCausalLM`, registers hooks on the official
+++Inkling modules, performs incremental one-token decoding with cache, and writes
+++the same archive names.  Loading the full 532 GB checkpoint may require a
+++provider-supported or high-memory system; this patch does not claim that such a
+++run occurred in the development environment.
+++
+++The expected real-weight workflow is now:
+++
+++1. Produce a private quantized runtime stage.
+++2. Run `inkling_reference.py` for a fixed token sequence and selected layers.
+++3. Build/load a private Inkling shared library and run `inkling_trace.py` on the
+++   same tokens.
+++4. Compare both archives with `inkling_parity.py --compare-reference ...`.
+++5. Resolve BF16 semantic differences before setting Q8/Q4/VQ tolerances.
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/src/inkling_layer.c b/src/inkling_layer.c
+--- a/src/inkling_layer.c	2026-08-01 19:23:34.000000000 +0000
++++ b/src/inkling_layer.c	2026-08-01 22:35:37.733122841 +0000
+@@ -41,6 +41,20 @@
+ 
+ static float silu(float x) { return x / (1.0f + expf(-x)); }
+ 
++static int trace_f(const waste_inkling_trace *trace, int layer,
++                   const char *point, const float *data, size_t count)
++{
++    return trace && trace->emit_float
++         ? trace->emit_float(trace->ctx, layer, point, data, count) : 0;
++}
++
++static int trace_i(const waste_inkling_trace *trace, int layer,
++                   const char *point, const int *data, size_t count)
++{
++    return trace && trace->emit_int
++         ? trace->emit_int(trace->ctx, layer, point, data, count) : 0;
++}
++
+ static int expert_eval(float *out, float *gate, float *up,
+                        const waste_inkling_expert_weights *w,
+                        const float *x, int hidden, int intermediate)
+@@ -166,14 +180,15 @@
+     return 0;
+ }
+ 
+-int waste_inkling_layer_step_backend(
++int waste_inkling_layer_step_backend_trace(
+     const waste_inkling_config *cfg, int layer,
+     const waste_inkling_layer_weights *w,
+     const waste_inkling_matrix_backend *backend,
+     waste_inkling_layer_state *state,
+     float *x, int position,
+     waste_inkling_layer_scratch *s,
+-    waste_inkling_expert_get_fn expert_get, void *expert_ctx)
++    waste_inkling_expert_get_fn expert_get, void *expert_ctx,
++    const waste_inkling_trace *trace)
+ {
+     if (!cfg || layer < 0 || layer >= cfg->n_layers || !w ||
+         !w->input_norm || !w->post_attention_norm ||
+@@ -194,29 +209,40 @@
+     const int rdim = l->num_heads * cfg->d_rel;
+ 
+     rmsnorm(s->norm, x, w->input_norm, hidden, cfg->rms_eps);
++    if (trace_f(trace, layer, "input_norm", s->norm, (size_t)hidden)) return -1;
+     if (apply_matvec(backend, layer, WASTE_IK_MAT_Q, 0, s->q, w->wq, s->norm, qdim, hidden)) return -1;
+     if (apply_matvec(backend, layer, WASTE_IK_MAT_K, 0, s->k, w->wk, s->norm, kdim, hidden)) return -1;
+     if (apply_matvec(backend, layer, WASTE_IK_MAT_V, 0, s->v, w->wv, s->norm, kdim, hidden)) return -1;
+     if (apply_matvec(backend, layer, WASTE_IK_MAT_R, 0, s->relative, w->wr, s->norm, rdim, hidden)) return -1;
++    if (trace_f(trace, layer, "q_proj", s->q, (size_t)qdim) ||
++        trace_f(trace, layer, "k_proj", s->k, (size_t)kdim) ||
++        trace_f(trace, layer, "v_proj", s->v, (size_t)kdim) ||
++        trace_f(trace, layer, "relative_proj_input", s->relative, (size_t)rdim)) return -1;
+     if (waste_inkling_sconv_step(s->k, state->k_conv_state, w->k_sconv,
+                                  kdim, cfg->conv_kernel, s->k) ||
+         waste_inkling_sconv_step(s->v, state->v_conv_state, w->v_sconv,
+                                  kdim, cfg->conv_kernel, s->v))
+         return -1;
++    if (trace_f(trace, layer, "k_sconv", s->k, (size_t)kdim) ||
++        trace_f(trace, layer, "v_sconv", s->v, (size_t)kdim)) return -1;
+     if (waste_inkling_attention_step(&state->attention,
+             s->q, s->k, s->v, w->q_norm, w->k_norm,
+             s->relative, w->relative_proj, position,
+             l->is_local ? 0 : cfg->log_scaling_n_floor,
+             cfg->log_scaling_alpha, s->scores, s->attn_out))
+         return -1;
++    if (trace_f(trace, layer, "attention_out", s->attn_out, (size_t)qdim)) return -1;
+     if (apply_matvec(backend, layer, WASTE_IK_MAT_O, 0, s->branch, w->wo, s->attn_out, hidden, qdim)) return -1;
+     if (waste_inkling_sconv_step(s->branch, state->attn_conv_state,
+                                  w->attn_sconv, hidden, cfg->conv_kernel,
+                                  s->branch))
+         return -1;
++    if (trace_f(trace, layer, "attention_branch", s->branch, (size_t)hidden)) return -1;
+     for (int i = 0; i < hidden; i++) x[i] += s->branch[i];
++    if (trace_f(trace, layer, "post_attention_residual", x, (size_t)hidden)) return -1;
+ 
+     rmsnorm(s->norm, x, w->post_attention_norm, hidden, cfg->rms_eps);
++    if (trace_f(trace, layer, "post_attention_norm", s->norm, (size_t)hidden)) return -1;
+     if (!w->sparse) {
+         if ((!backend && (!w->dense_gate || !w->dense_up || !w->dense_down)) ||
+             !w->dense_global_scale) return -1;
+@@ -226,6 +252,7 @@
+         for (int i = 0; i < inter; i++) s->gate[i] = silu(s->gate[i]) * s->up[i];
+         if (apply_matvec(backend, layer, WASTE_IK_MAT_DENSE_DOWN, 0, s->ff, w->dense_down, s->gate, hidden, inter)) return -1;
+         for (int i = 0; i < hidden; i++) s->ff[i] *= *w->dense_global_scale;
++        if (trace_f(trace, layer, "dense_mlp_out", s->ff, (size_t)hidden)) return -1;
+     } else {
+         if ((!backend && (!w->router_weight || !w->shared_gate ||
+                           !w->shared_up || !w->shared_down)) ||
+@@ -238,6 +265,10 @@
+                 cfg->route_scale, *w->router_global_scale,
+                 s->routed_index, s->routed_weight, s->shared_weight))
+             return -1;
++        if (trace_f(trace, layer, "router_logits", s->router_logits, (size_t)cfg->n_routed_experts) ||
++            trace_i(trace, layer, "routed_index", s->routed_index, (size_t)cfg->top_k) ||
++            trace_f(trace, layer, "routed_weight", s->routed_weight, (size_t)cfg->top_k) ||
++            trace_f(trace, layer, "shared_weight", s->shared_weight, (size_t)cfg->n_shared_experts)) return -1;
+         for (int i = 0; i < hidden; i++) s->ff[i] = 0.0f;
+         for (int k = 0; k < cfg->top_k; k++) {
+             waste_inkling_expert_weights ew;
+@@ -272,14 +303,31 @@
+             const float gamma = s->shared_weight[e];
+             for (int i = 0; i < hidden; i++) s->ff[i] += gamma * s->branch[i];
+         }
++        if (trace_f(trace, layer, "moe_out", s->ff, (size_t)hidden)) return -1;
+     }
+     if (waste_inkling_sconv_step(s->ff, state->mlp_conv_state,
+                                  w->mlp_sconv, hidden, cfg->conv_kernel,
+                                  s->ff))
+         return -1;
++    if (trace_f(trace, layer, "mlp_branch", s->ff, (size_t)hidden)) return -1;
+     for (int i = 0; i < hidden; i++) x[i] += s->ff[i];
++    if (trace_f(trace, layer, "layer_out", x, (size_t)hidden)) return -1;
+     return 0;
+ }
++
++int waste_inkling_layer_step_backend(
++    const waste_inkling_config *cfg, int layer,
++    const waste_inkling_layer_weights *weights,
++    const waste_inkling_matrix_backend *backend,
++    waste_inkling_layer_state *state,
++    float *x, int position,
++    waste_inkling_layer_scratch *scratch,
++    waste_inkling_expert_get_fn expert_get, void *expert_ctx)
++{
++    return waste_inkling_layer_step_backend_trace(cfg, layer, weights, backend,
++        state, x, position, scratch, expert_get, expert_ctx, NULL);
++}
++
+ int waste_inkling_layer_step(
+     const waste_inkling_config *cfg, int layer,
+     const waste_inkling_layer_weights *weights,
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/src/inkling_layer.h b/src/inkling_layer.h
+--- a/src/inkling_layer.h	2026-08-01 19:23:33.000000000 +0000
++++ b/src/inkling_layer.h	2026-08-01 22:33:14.393125949 +0000
+@@ -78,6 +78,18 @@
+     void *ctx;
+ } waste_inkling_matrix_backend;
+ 
++typedef int (*waste_inkling_trace_float_fn)(void *ctx, int layer,
++                                             const char *point,
++                                             const float *data, size_t count);
++typedef int (*waste_inkling_trace_int_fn)(void *ctx, int layer,
++                                           const char *point,
++                                           const int *data, size_t count);
++typedef struct {
++    waste_inkling_trace_float_fn emit_float;
++    waste_inkling_trace_int_fn emit_int;
++    void *ctx;
++} waste_inkling_trace;
++
+ typedef struct {
+     waste_inkling_attention_state attention;
+     float *k_conv_state;
+@@ -146,6 +158,16 @@
+     waste_inkling_layer_scratch *scratch,
+     waste_inkling_expert_get_fn expert_get, void *expert_ctx);
+ 
++int waste_inkling_layer_step_backend_trace(
++    const waste_inkling_config *cfg, int layer,
++    const waste_inkling_layer_weights *weights,
++    const waste_inkling_matrix_backend *backend,
++    waste_inkling_layer_state *state,
++    float *x, int position,
++    waste_inkling_layer_scratch *scratch,
++    waste_inkling_expert_get_fn expert_get, void *expert_ctx,
++    const waste_inkling_trace *trace);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/src/inkling_model.c b/src/inkling_model.c
+--- a/src/inkling_model.c	2026-08-01 19:23:50.000000000 +0000
++++ b/src/inkling_model.c	2026-08-01 22:33:51.789125138 +0000
+@@ -182,14 +182,15 @@
+     return get ? get(ctx, row, cols, out) : -1;
+ }
+ 
+-int waste_inkling_model_step_backend(
++int waste_inkling_model_step_backend_trace(
+     const waste_inkling_config *cfg,
+     const waste_inkling_model_weights *w,
+     const waste_inkling_matrix_backend *backends,
+     waste_inkling_model_state *state,
+     waste_inkling_model_scratch *scratch,
+     int token, int position, float *logits, size_t logits_count,
+-    waste_inkling_expert_get_fn expert_get, void *expert_ctx)
++    waste_inkling_expert_get_fn expert_get, void *expert_ctx,
++    const waste_inkling_trace *trace)
+ {
+     if (!cfg || !w || !state || !scratch || !logits ||
+         !w->embed_norm || !w->final_norm || !w->layer ||
+@@ -208,6 +209,9 @@
+                 token, scratch->row)) return -1;
+     rmsnorm(scratch->x, scratch->row, w->embed_norm,
+             cfg->hidden, cfg->rms_eps);
++    if (trace && trace->emit_float &&
++        trace->emit_float(trace->ctx, -1, "embedding_norm", scratch->x,
++                          (size_t)cfg->hidden)) return -1;
+ 
+     float *layer_buf = scratch->buffer + 2u * (size_t)cfg->hidden;
+     const size_t layer_n = scratch->buffer_floats - 2u * (size_t)cfg->hidden;
+@@ -215,16 +219,23 @@
+         const int cap = layer_capacity(cfg, i, state->context_capacity);
+         if (waste_inkling_layer_scratch_init(&scratch->layer, cfg, i, cap,
+                 layer_buf, layer_n, scratch->ibuffer, scratch->ibuffer_ints) ||
+-            waste_inkling_layer_step_backend(cfg, i, &w->layer[i],
++            waste_inkling_layer_step_backend_trace(cfg, i, &w->layer[i],
+                 backends ? &backends[i] : NULL, &state->layer[i],
+-                scratch->x, position, &scratch->layer, expert_get, expert_ctx))
++                scratch->x, position, &scratch->layer, expert_get, expert_ctx,
++                trace))
+             return -1;
+     }
+ 
+     rmsnorm(scratch->row, scratch->x, w->final_norm,
+             cfg->hidden, cfg->rms_eps);
++    if (trace && trace->emit_float &&
++        trace->emit_float(trace->ctx, -1, "final_norm", scratch->row,
++                          (size_t)cfg->hidden)) return -1;
+     const float inv_width = 1.0f / cfg->logits_width_multiplier;
+     for (int i = 0; i < cfg->hidden; i++) scratch->row[i] *= inv_width;
++    if (trace && trace->emit_float &&
++        trace->emit_float(trace->ctx, -1, "final_norm_scaled", scratch->row,
++                          (size_t)cfg->hidden)) return -1;
+ 
+     for (int v = 0; v < cfg->unpadded_vocab; v++) {
+         const float *row;
+@@ -237,9 +248,27 @@
+         }
+         logits[v] = dot(row, scratch->row, cfg->hidden);
+     }
++    if (trace && trace->emit_float &&
++        trace->emit_float(trace->ctx, -1, "logits", logits,
++                          (size_t)cfg->unpadded_vocab)) return -1;
+     state->next_position++;
+     return 0;
+ }
++
++int waste_inkling_model_step_backend(
++    const waste_inkling_config *cfg,
++    const waste_inkling_model_weights *weights,
++    const waste_inkling_matrix_backend *backends,
++    waste_inkling_model_state *state,
++    waste_inkling_model_scratch *scratch,
++    int token, int position, float *logits, size_t logits_count,
++    waste_inkling_expert_get_fn expert_get, void *expert_ctx)
++{
++    return waste_inkling_model_step_backend_trace(cfg, weights, backends,
++        state, scratch, token, position, logits, logits_count,
++        expert_get, expert_ctx, NULL);
++}
++
+ int waste_inkling_model_step(
+     const waste_inkling_config *cfg,
+     const waste_inkling_model_weights *weights,
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/src/inkling_model.h b/src/inkling_model.h
+--- a/src/inkling_model.h	2026-08-01 19:23:50.000000000 +0000
++++ b/src/inkling_model.h	2026-08-01 22:33:14.393125949 +0000
+@@ -94,6 +94,16 @@
+     int token, int position, float *logits, size_t logits_count,
+     waste_inkling_expert_get_fn expert_get, void *expert_ctx);
+ 
++int waste_inkling_model_step_backend_trace(
++    const waste_inkling_config *cfg,
++    const waste_inkling_model_weights *weights,
++    const waste_inkling_matrix_backend *backends,
++    waste_inkling_model_state *state,
++    waste_inkling_model_scratch *scratch,
++    int token, int position, float *logits, size_t logits_count,
++    waste_inkling_expert_get_fn expert_get, void *expert_ctx,
++    const waste_inkling_trace *trace);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/src/inkling_private.c b/src/inkling_private.c
+--- a/src/inkling_private.c	2026-08-01 19:29:44.000000000 +0000
++++ b/src/inkling_private.c	2026-08-01 22:33:51.789125138 +0000
+@@ -715,14 +715,14 @@
+     return WASTE_INKLING_PRIVATE_OK;
+ }
+ 
+-waste_inkling_private_status waste_inkling_private_step(
++waste_inkling_private_status waste_inkling_private_step_trace(
+     waste_inkling_private *p, int token, int position,
+-    float *logits, size_t logits_count)
++    float *logits, size_t logits_count, const waste_inkling_trace *trace)
+ {
+     if (!p || !logits) return WASTE_INKLING_PRIVATE_E_ARG;
+-    if (waste_inkling_model_step_backend(&p->cfg, &p->bound.model,
++    if (waste_inkling_model_step_backend_trace(&p->cfg, &p->bound.model,
+             p->backend, &p->state, &p->scratch, token, position,
+-            logits, logits_count, expert_get, p)) {
++            logits, logits_count, expert_get, p, trace)) {
+         snprintf(p->detail, sizeof p->detail,
+                  "Inkling step failed at token %d position %d", token, position);
+         return WASTE_INKLING_PRIVATE_E_RUNTIME;
+@@ -731,6 +731,14 @@
+     return WASTE_INKLING_PRIVATE_OK;
+ }
+ 
++waste_inkling_private_status waste_inkling_private_step(
++    waste_inkling_private *p, int token, int position,
++    float *logits, size_t logits_count)
++{
++    return waste_inkling_private_step_trace(p, token, position, logits,
++                                             logits_count, NULL);
++}
++
+ void waste_inkling_private_reset(waste_inkling_private *p)
+ {
+     if (!p) return;
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/src/inkling_private.h b/src/inkling_private.h
+--- a/src/inkling_private.h	2026-08-01 19:28:19.000000000 +0000
++++ b/src/inkling_private.h	2026-08-01 22:33:14.393125949 +0000
+@@ -45,6 +45,12 @@
+     int token, int position,
+     float *logits, size_t logits_count);
+ 
++waste_inkling_private_status waste_inkling_private_step_trace(
++    waste_inkling_private *runtime,
++    int token, int position,
++    float *logits, size_t logits_count,
++    const waste_inkling_trace *trace);
++
+ void waste_inkling_private_reset(waste_inkling_private *runtime);
+ void waste_inkling_private_close(waste_inkling_private *runtime);
+ const waste_inkling_config *waste_inkling_private_config(
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/tests/test_inkling_model_c.py b/tests/test_inkling_model_c.py
+--- a/tests/test_inkling_model_c.py	2026-08-01 18:49:05.000000000 +0000
++++ b/tests/test_inkling_model_c.py	2026-08-01 22:34:25.141124415 +0000
+@@ -31,6 +31,19 @@
+     ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, FP
+ )
+ 
++TraceFloatCallback = ctypes.CFUNCTYPE(
++    ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, FP, ctypes.c_size_t
++)
++TraceIntCallback = ctypes.CFUNCTYPE(
++    ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p,
++    ctypes.POINTER(ctypes.c_int), ctypes.c_size_t
++)
++
++class Trace(ctypes.Structure):
++    _fields_ = [("emit_float", TraceFloatCallback),
++                ("emit_int", TraceIntCallback),
++                ("ctx", ctypes.c_void_p)]
++
+ 
+ class ModelWeights(ctypes.Structure):
+     _fields_ = [
+@@ -138,6 +151,13 @@
+             ExpertCallback, ctypes.c_void_p,
+         ]
+         cls.lib.waste_inkling_model_step.restype = ctypes.c_int
++        cls.lib.waste_inkling_model_step_backend_trace.argtypes = [
++            ctypes.POINTER(Config), ctypes.POINTER(ModelWeights), ctypes.c_void_p,
++            ctypes.POINTER(ModelState), ctypes.POINTER(ModelScratch),
++            ctypes.c_int, ctypes.c_int, FP, ctypes.c_size_t,
++            ExpertCallback, ctypes.c_void_p, ctypes.POINTER(Trace),
++        ]
++        cls.lib.waste_inkling_model_step_backend_trace.restype = ctypes.c_int
+         cls.lib.waste_inkling_wexp_bank_open.argtypes = [
+             ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p,
+             ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+@@ -422,6 +442,48 @@
+         finally:
+             self.lib.waste_inkling_wexp_bank_close(ctypes.byref(bank))
+ 
++    def test_trace_emits_model_layer_and_router_boundaries(self):
++        _helper, cfg, mw, _common, _extras, _tables, keep = self.build_fixture()
++        state, scratch, runtime_keep = self.init_runtime(cfg, 3)
++        seen_float = {}
++        seen_int = {}
++
++        @TraceFloatCallback
++        def emit_float(_ctx, layer, point, data, count):
++            name = point.decode()
++            seen_float[(layer, name)] = torch.tensor(
++                [data[i] for i in range(count)], dtype=torch.float32
++            )
++            return 0
++
++        @TraceIntCallback
++        def emit_int(_ctx, layer, point, data, count):
++            name = point.decode()
++            seen_int[(layer, name)] = [data[i] for i in range(count)]
++            return 0
++
++        trace = Trace(emit_float, emit_int, None)
++        out = (ctypes.c_float * cfg.unpadded_vocab)()
++        self.assertEqual(self.lib.waste_inkling_model_step_backend_trace(
++            ctypes.byref(cfg), ctypes.byref(mw), None, ctypes.byref(state),
++            ctypes.byref(scratch), 3, 0, out, cfg.unpadded_vocab,
++            ExpertCallback(), None, ctypes.byref(trace),
++        ), 0)
++        for key in [
++            (-1, "embedding_norm"), (0, "input_norm"),
++            (0, "attention_out"), (0, "dense_mlp_out"),
++            (1, "router_logits"), (1, "moe_out"),
++            (1, "layer_out"), (-1, "final_norm"), (-1, "logits"),
++        ]:
++            self.assertIn(key, seen_float)
++        self.assertIn((1, "routed_index"), seen_int)
++        self.assertEqual(len(seen_int[(1, "routed_index")]), cfg.top_k)
++        torch.testing.assert_close(
++            seen_float[(-1, "logits")], as_tensor(out, cfg.unpadded_vocab),
++            rtol=0, atol=0,
++        )
++        self.assertIsNotNone((keep, runtime_keep, emit_float, emit_int))
++
+     def test_position_and_output_bounds_fail_closed(self):
+         _helper, cfg, mw, _common, _extras, _tables, keep = self.build_fixture()
+         state, scratch, runtime_keep = self.init_runtime(cfg, 2)
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/tests/test_inkling_trace_tools.py b/tests/test_inkling_trace_tools.py
+--- a/tests/test_inkling_trace_tools.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/test_inkling_trace_tools.py	2026-08-01 22:35:25.961123096 +0000
+@@ -0,0 +1,107 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++
++import sys
++import unittest
++from pathlib import Path
++
++import torch
++import torch.nn as nn
++
++REPO = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(REPO / "tools"))
++
++from inkling_reference import register_reference_hooks
++from inkling_trace import TraceCollector
++
++
++class Identity(nn.Module):
++    def forward(self, x):
++        return x + 1
++
++
++class Router(nn.Module):
++    def forward(self, x):
++        return x[:4], x[:2], torch.tensor([3, 1]), x[:2]
++
++
++class Attn(nn.Module):
++    def __init__(self):
++        super().__init__()
++        self.q_proj = Identity(); self.k_proj = Identity(); self.v_proj = Identity()
++        self.r_proj = Identity(); self.k_sconv = Identity(); self.v_sconv = Identity()
++    def forward(self, x):
++        x = self.q_proj(x); self.k_proj(x); self.v_proj(x); self.r_proj(x)
++        self.k_sconv(x); self.v_sconv(x)
++        return x + 2, None
++
++
++class MLP(nn.Module):
++    def __init__(self, sparse):
++        super().__init__(); self.gate = Router() if sparse else None
++    def forward(self, x):
++        if self.gate is not None: self.gate(x)
++        return x + 3
++
++
++class Layer(nn.Module):
++    def __init__(self, sparse):
++        super().__init__()
++        self.input_layernorm = Identity(); self.self_attn = Attn()
++        self.attn_sconv = Identity(); self.post_attention_layernorm = Identity()
++        self.mlp = MLP(sparse); self.mlp_sconv = Identity()
++    def forward(self, x):
++        x = self.input_layernorm(x)
++        x = self.self_attn(x)[0]
++        x = self.attn_sconv(x)
++        x = self.post_attention_layernorm(x)
++        x = self.mlp(x)
++        return self.mlp_sconv(x)
++
++
++class Text(nn.Module):
++    def __init__(self):
++        super().__init__()
++        self.config = type("Cfg", (), {"dense_mlp_idx": 1})()
++        self.embed_norm = Identity(); self.layers = nn.ModuleList([Layer(False), Layer(True)])
++        self.norm = Identity()
++    def forward(self, x):
++        x = self.embed_norm(x)
++        for layer in self.layers: x = layer(x)
++        return self.norm(x)
++
++
++class Model(nn.Module):
++    def __init__(self):
++        super().__init__(); self.model = Text()
++
++
++class TraceToolsTest(unittest.TestCase):
++    def test_c_trace_collector_names_and_copies(self):
++        collector = TraceCollector(); collector.position = 4
++        f = (torch.arange(3, dtype=torch.float32).numpy().ctypes.data_as(
++            __import__("ctypes").POINTER(__import__("ctypes").c_float)))
++        self.assertEqual(collector._emit_float(None, 2, b"q_proj", f, 3), 0)
++        self.assertTrue(torch.equal(collector.values["token.4.layer.2.q_proj"], torch.arange(3.0)))
++
++    def test_reference_hooks_capture_dense_sparse_and_model_points(self):
++        model = Model(); store = {}; pos = [0]
++        handles = register_reference_hooks(model, [0, 1], store, lambda: pos[0])
++        try:
++            model.model(torch.arange(8, dtype=torch.float32))
++        finally:
++            for h in handles: h.remove()
++        expected = {
++            "token.0.model.embedding_norm", "token.0.model.final_norm",
++            "token.0.layer.0.input_norm", "token.0.layer.0.q_proj",
++            "token.0.layer.0.attention_out", "token.0.layer.0.dense_mlp_out",
++            "token.0.layer.0.layer_out", "token.0.layer.1.router_logits",
++            "token.0.layer.1.routed_index", "token.0.layer.1.moe_out",
++            "token.0.layer.1.layer_out",
++        }
++        self.assertTrue(expected.issubset(store))
++        self.assertEqual(store["token.0.layer.1.routed_index"].dtype, torch.int32)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/tools/inkling_reference.py b/tools/inkling_reference.py
+--- a/tools/inkling_reference.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tools/inkling_reference.py	2026-08-01 22:35:10.865123423 +0000
+@@ -0,0 +1,163 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++"""Capture named activations from the official Transformers Inkling model.
++
++This is the trusted-reference side of the parity protocol.  It intentionally
++uses the official Transformers implementation and therefore may require a
++large-memory or provider-supported runtime for the complete checkpoint.  The
++output is the same CRC-protected archive consumed by inkling_parity.py.
++"""
++from __future__ import annotations
++
++import argparse
++from pathlib import Path
++from typing import Any, Callable
++
++import torch
++
++from inkling_parity import write_activation_archive
++
++
++def _last_tensor(value: Any) -> torch.Tensor | None:
++    if isinstance(value, torch.Tensor):
++        return value
++    if isinstance(value, (tuple, list)):
++        for item in value:
++            tensor = _last_tensor(item)
++            if tensor is not None:
++                return tensor
++    return None
++
++
++def _token_vector(value: Any) -> torch.Tensor | None:
++    tensor = _last_tensor(value)
++    if tensor is None:
++        return None
++    tensor = tensor.detach().float().cpu()
++    while tensor.ndim > 1:
++        tensor = tensor[-1]
++    return tensor.contiguous()
++
++
++def _text_model(model: Any) -> Any:
++    root = getattr(model, "model", model)
++    for name in ("llm", "language_model", "text_model"):
++        child = getattr(root, name, None)
++        if child is not None and hasattr(child, "layers"):
++            return child
++    if hasattr(root, "layers"):
++        return root
++    raise RuntimeError("cannot locate Inkling text decoder layers")
++
++
++def register_reference_hooks(model: Any, layers: list[int], store: dict[str, torch.Tensor],
++                             position_getter: Callable[[], int]) -> list[Any]:
++    text = _text_model(model)
++    handles = []
++
++    def add(module: Any, layer: int, point: str, transform: Callable[[Any], torch.Tensor | None] = _token_vector):
++        if module is None:
++            return
++        def hook(_module: Any, _inputs: Any, output: Any) -> None:
++            tensor = transform(output)
++            if tensor is not None:
++                scope = "model" if layer < 0 else f"layer.{layer}"
++                store[f"token.{position_getter()}.{scope}.{point}"] = tensor
++        handles.append(module.register_forward_hook(hook))
++
++    add(getattr(text, "embed_norm", None), -1, "embedding_norm")
++    add(getattr(text, "norm", None), -1, "final_norm")
++    for layer_id in layers:
++        layer = text.layers[layer_id]
++        attn = getattr(layer, "self_attn", None)
++        mlp = getattr(layer, "mlp", None)
++        add(getattr(layer, "input_layernorm", None), layer_id, "input_norm")
++        for attr, point in (("q_proj", "q_proj"), ("k_proj", "k_proj"),
++                            ("v_proj", "v_proj"), ("r_proj", "relative_proj_input"),
++                            ("k_sconv", "k_sconv"), ("v_sconv", "v_sconv")):
++            add(getattr(attn, attr, None), layer_id, point)
++        add(attn, layer_id, "attention_out")
++        add(getattr(layer, "attn_sconv", None), layer_id, "attention_branch")
++        add(getattr(layer, "post_attention_layernorm", None), layer_id, "post_attention_norm")
++
++        gate = getattr(mlp, "gate", None)
++        if gate is not None:
++            def router_transform(output: Any, lid: int = layer_id) -> torch.Tensor | None:
++                if not isinstance(output, (tuple, list)) or len(output) < 4:
++                    return None
++                names = ("router_logits", "routed_weight", "routed_index", "shared_weight")
++                for name, value in zip(names, output[:4]):
++                    tensor = _token_vector(value)
++                    if tensor is not None:
++                        if name == "routed_index": tensor = tensor.to(torch.int32)
++                        store[f"token.{position_getter()}.layer.{lid}.{name}"] = tensor
++                return None
++            add(gate, layer_id, "router", router_transform)
++        add(mlp, layer_id, "dense_mlp_out" if layer_id < getattr(text.config, "dense_mlp_idx", 2) else "moe_out")
++        add(getattr(layer, "mlp_sconv", None), layer_id, "mlp_branch")
++        add(layer, layer_id, "layer_out")
++    return handles
++
++
++def run_reference(src: Path | str, tokens: list[int], out: Path | str, *,
++                  layers: list[int], device_map: str = "auto",
++                  dtype: str = "bfloat16") -> dict[str, Any]:
++    try:
++        from transformers import AutoModelForCausalLM
++    except ImportError as exc:
++        raise RuntimeError("transformers with Inkling support is required") from exc
++    torch_dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16,
++                   "float32": torch.float32}[dtype]
++    model = AutoModelForCausalLM.from_pretrained(
++        src, torch_dtype=torch_dtype, device_map=device_map,
++        low_cpu_mem_usage=True, trust_remote_code=False,
++    )
++    model.eval()
++    store: dict[str, torch.Tensor] = {}
++    position = [0]
++    handles = register_reference_hooks(model, layers, store, lambda: position[0])
++    past = None
++    try:
++        with torch.no_grad():
++            for i, token in enumerate(tokens):
++                position[0] = i
++                device = next(model.parameters()).device
++                result = model(input_ids=torch.tensor([[token]], device=device),
++                               past_key_values=past, use_cache=True)
++                past = result.past_key_values
++                store[f"token.{i}.model.logits"] = result.logits[0, -1].detach().float().cpu().contiguous()
++                # The official forward divides by this factor immediately before lm_head.
++                final = store.get(f"token.{i}.model.final_norm")
++                width = float(model.config.get_text_config().logits_mup_width_multiplier)
++                if final is not None:
++                    store[f"token.{i}.model.final_norm_scaled"] = final / width
++    finally:
++        for handle in handles:
++            handle.remove()
++    return write_activation_archive(
++        out, store, metadata={"runtime": "transformers-official", "tokens": tokens,
++                              "layers": layers, "dtype": dtype},
++    )
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--src", required=True)
++    ap.add_argument("--tokens", required=True)
++    ap.add_argument("--layers", default="0,1,2")
++    ap.add_argument("--out", required=True)
++    ap.add_argument("--device-map", default="auto")
++    ap.add_argument("--dtype", choices=("bfloat16", "float16", "float32"), default="bfloat16")
++    args = ap.parse_args()
++    tokens = [int(x) for x in args.tokens.split(",") if x]
++    layers = [int(x) for x in args.layers.split(",") if x]
++    if not tokens or not layers:
++        ap.error("--tokens and --layers must be nonempty")
++    run_reference(args.src, tokens, args.out, layers=layers,
++                  device_map=args.device_map, dtype=args.dtype)
++    print(f"wrote official reference trace to {args.out}")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' a/tools/inkling_trace.py b/tools/inkling_trace.py
+--- a/tools/inkling_trace.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tools/inkling_trace.py	2026-08-01 22:35:10.865123423 +0000
+@@ -0,0 +1,147 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++"""Run the private Inkling C runtime with named activation tracing.
++
++The shared library must include the private Inkling sources.  This tool is a
++parity/debug surface, not the public WASTE API.  It copies callback values
++immediately and writes the CRC-protected archive format from inkling_parity.py.
++"""
++from __future__ import annotations
++
++import argparse
++import ctypes
++from pathlib import Path
++from typing import Any
++
++import torch
++
++from inkling_parity import write_activation_archive
++
++FP = ctypes.POINTER(ctypes.c_float)
++TraceFloat = ctypes.CFUNCTYPE(
++    ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, FP, ctypes.c_size_t
++)
++TraceInt = ctypes.CFUNCTYPE(
++    ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p,
++    ctypes.POINTER(ctypes.c_int), ctypes.c_size_t,
++)
++
++
++class Trace(ctypes.Structure):
++    _fields_ = [("emit_float", TraceFloat), ("emit_int", TraceInt), ("ctx", ctypes.c_void_p)]
++
++
++class PrivateOptions(ctypes.Structure):
++    _fields_ = [("context_capacity", ctypes.c_int),
++                ("verify_crc", ctypes.c_int),
++                ("require_official_small", ctypes.c_int)]
++
++
++class TraceCollector:
++    def __init__(self) -> None:
++        self.values: dict[str, torch.Tensor] = {}
++        self.position = 0
++        self._float_cb = TraceFloat(self._emit_float)
++        self._int_cb = TraceInt(self._emit_int)
++        self.c_trace = Trace(self._float_cb, self._int_cb, None)
++
++    def _name(self, layer: int, point: bytes) -> str:
++        text = point.decode("ascii", "strict")
++        scope = "model" if layer < 0 else f"layer.{layer}"
++        return f"token.{self.position}.{scope}.{text}"
++
++    def _emit_float(self, _ctx: Any, layer: int, point: bytes, data: FP, count: int) -> int:
++        self.values[self._name(layer, point)] = torch.tensor(
++            [data[i] for i in range(count)], dtype=torch.float32
++        )
++        return 0
++
++    def _emit_int(self, _ctx: Any, layer: int, point: bytes,
++                  data: ctypes.POINTER(ctypes.c_int), count: int) -> int:
++        self.values[self._name(layer, point)] = torch.tensor(
++            [data[i] for i in range(count)], dtype=torch.int32
++        )
++        return 0
++
++
++def configure_library(lib: ctypes.CDLL) -> None:
++    lib.waste_inkling_private_options_init.argtypes = [ctypes.POINTER(PrivateOptions)]
++    lib.waste_inkling_private_open.argtypes = [
++        ctypes.c_char_p, ctypes.POINTER(PrivateOptions),
++        ctypes.POINTER(ctypes.c_void_p), ctypes.c_char_p, ctypes.c_size_t,
++    ]
++    lib.waste_inkling_private_open.restype = ctypes.c_int
++    lib.waste_inkling_private_step_trace.argtypes = [
++        ctypes.c_void_p, ctypes.c_int, ctypes.c_int, FP, ctypes.c_size_t,
++        ctypes.POINTER(Trace),
++    ]
++    lib.waste_inkling_private_step_trace.restype = ctypes.c_int
++    lib.waste_inkling_private_close.argtypes = [ctypes.c_void_p]
++
++
++def trace_private_runtime(library: Path | str, stage: Path | str, tokens: list[int],
++                          out: Path | str, *, logits_count: int = 200058,
++                          context_capacity: int = 4096,
++                          verify_crc: bool = True,
++                          require_official_small: bool = True) -> dict[str, Any]:
++    if not tokens or any(t < 0 for t in tokens):
++        raise ValueError("at least one nonnegative token id is required")
++    lib = ctypes.CDLL(str(library))
++    configure_library(lib)
++    options = PrivateOptions()
++    lib.waste_inkling_private_options_init(ctypes.byref(options))
++    options.context_capacity = context_capacity
++    options.verify_crc = int(verify_crc)
++    options.require_official_small = int(require_official_small)
++    runtime = ctypes.c_void_p()
++    detail = ctypes.create_string_buffer(512)
++    rc = lib.waste_inkling_private_open(
++        str(stage).encode(), ctypes.byref(options), ctypes.byref(runtime),
++        detail, len(detail),
++    )
++    if rc:
++        raise RuntimeError(detail.value.decode(errors="replace") or f"private open failed: {rc}")
++    collector = TraceCollector()
++    logits = (ctypes.c_float * logits_count)()
++    try:
++        for position, token in enumerate(tokens):
++            collector.position = position
++            rc = lib.waste_inkling_private_step_trace(
++                runtime, token, position, logits, logits_count,
++                ctypes.byref(collector.c_trace),
++            )
++            if rc:
++                raise RuntimeError(f"private trace step failed at position {position}: {rc}")
++    finally:
++        lib.waste_inkling_private_close(runtime)
++    return write_activation_archive(
++        out, collector.values,
++        metadata={"runtime": "waste-private-c", "tokens": tokens,
++                  "context_capacity": context_capacity},
++    )
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--library", required=True)
++    ap.add_argument("--stage", required=True)
++    ap.add_argument("--tokens", required=True, help="comma-separated token ids")
++    ap.add_argument("--out", required=True)
++    ap.add_argument("--logits-count", type=int, default=200058)
++    ap.add_argument("--context", type=int, default=4096)
++    ap.add_argument("--no-crc", action="store_true")
++    ap.add_argument("--allow-nonofficial", action="store_true")
++    args = ap.parse_args()
++    tokens = [int(x) for x in args.tokens.split(",") if x]
++    trace_private_runtime(
++        args.library, args.stage, tokens, args.out,
++        logits_count=args.logits_count, context_capacity=args.context,
++        verify_crc=not args.no_crc,
++        require_official_small=not args.allow_nonofficial,
++    )
++    print(f"wrote C activation trace to {args.out}")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

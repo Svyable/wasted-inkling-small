@@ -1,0 +1,604 @@
+diff --git a/Makefile b/Makefile
+index c8bb1125a42a57105b1d3b2a7a49dfd25897a6a2..4594b9f3e29add4ee6e869c04923676faf3d2b6e 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,4 +1,4 @@
+-SRC := src/model.c src/arch.c src/inkling.c src/inkling_config.c src/kda.c src/backend.c src/ecache.c src/version.c \
++SRC := src/model.c src/arch.c src/inkling.c src/inkling_config.c src/inkling_attention.c src/kda.c src/backend.c src/ecache.c src/version.c \
+        src/tokenizer.c src/waste.c src/vq.c src/vision.c src/image.c \
+        src/crc32.c
+ 
+@@ -8,7 +8,7 @@ TESTBINS  := $(addsuffix $(EXE),$(TESTNAMES))
+ 
+ test_k3parts$(EXE): tests/test_k3parts.o libwaste.a
+ 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+-test_inkling$(EXE): tests/test_inkling.o src/arch.o src/inkling.o src/inkling_config.o
++test_inkling$(EXE): tests/test_inkling.o src/arch.o src/inkling.o src/inkling_config.o src/inkling_attention.o
+ 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+ test_image$(EXE): tests/test_image.o libwaste.a
+ 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+diff --git a/docs/INKLING.md b/docs/INKLING.md
+index 4558295b8c672968b9dcf4e7a647358299fb2eb9..06d21bd16d053c16aae8664f9b90c8018a4f4641 100644
+--- a/docs/INKLING.md
++++ b/docs/INKLING.md
+@@ -1,9 +1,9 @@
+ # Inkling-family support in WASTE
+ 
+ Status: **source audit, deterministic conversion planning, bounded BF16 expert
+-and trunk staging, architecture-specific C configuration, and isolated C math
+-primitives are implemented. A runnable WASTE container and integrated Inkling
+-forward pass are not yet implemented.**
++and trunk staging, architecture-specific C configuration, scalar math, and a
++standalone one-token local/global attention core are implemented. A runnable
++WASTE container and integrated Inkling decoder are not yet implemented.**
+ 
+ ## Provenance correction
+ 
+@@ -188,7 +188,7 @@ implement the same field-by-field contract.
+ | per-layer C configuration | implemented and unit-tested |
+ | Inkling state/scratch memory contract | implemented but not wired to public planner |
+ | runtime tensor loading | not implemented |
+-| local/global attention loop | not implemented |
++| one-token local/global GQA core | implemented and differential-tested; projections/convolutions not integrated |
+ | dense/shared/routed integrated MLP | not implemented |
+ | tokenizer generation path | not implemented |
+ | final-logit parity | not established |
+@@ -196,6 +196,25 @@ implement the same field-by-field contract.
+ | OpenAI-compatible serving | deferred |
+ | official Inkling-Small conversion | blocked on official assets |
+ 
++### Patch 6 — standalone one-token local/global attention core
++
++- maintains caller-owned global linear caches or local sliding-window rings;
++- applies learned per-head Q/K RMS normalization;
++- stores normalized K and raw V at exact sequential positions;
++- implements grouped-query head mapping;
++- applies `1 / head_dim` score scaling;
++- materializes learned hidden-state-conditioned relative bias and zeros it
++  beyond the configured extent;
++- applies global query and relative-bias log scaling;
++- performs stable fp32 softmax and weighted V accumulation;
++- rejects non-sequential positions and full global caches;
++- matches an independent PyTorch reference across local ring wraparound,
++  global contexts, grouped-query heads, finite relative extent, and active log
++  scaling.
++
++This core accepts already projected Q/K/V, with K/V short convolution applied.
++It remains architecture-private and is not called from `model.c`.
++
+ ## 6. Correctness and publication gates
+ 
+ A runnable manifest remains blocked until all of the following pass:
+@@ -226,6 +245,8 @@ The suite covers:
+ - one-pass dense/shared deinterleaving;
+ - trunk target identity, shape, CRC, source binding, and resume;
+ - C/PyTorch router, relative-bias, log-scaling, and convolution parity;
++- C/PyTorch local/global one-token GQA parity, including ring wraparound and
++  global log scaling;
+ - C configuration validation, local/global layer derivation, overflow-safe K/V
+   and convolution state accounting, and decode workspace accounting.
+ 
+@@ -247,9 +268,11 @@ cc -std=c11 -Wall -Wextra -Werror -Isrc \
+ 
+ ## 8. Next controlled boundary
+ 
+-Patch 6 should add a loader for the canonical trunk stage and an
+-architecture-private tensor registry, then implement one-token local/global
+-attention with K/V and convolution state. The public planner guard should be
+-removed only when the loader, allocator, and forward path share the same tested
+-configuration and memory contract. The WASTE manifest must remain unpublished
+-until layerwise and final-logit parity pass.
++Patch 7 should add an architecture-private canonical tensor registry and wire
++one decoder layer in this order: input RMSNorm, Q/K/V/R projections, K/V short
++convolution, the tested attention core, output projection, attention-branch
++short convolution, residual, post-attention RMSNorm, dense or sparse MLP,
++MLP-branch short convolution, and residual. The public planner guard should be
++removed only when the loader, allocator, and integrated layer use the same
++tested configuration and memory contract. The WASTE manifest must remain
++unpublished until layerwise and final-logit parity pass.
+diff --git a/src/inkling_attention.c b/src/inkling_attention.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..c9ab72516299ff9348d8411d2b971139c6a3b41c
+--- /dev/null
++++ b/src/inkling_attention.c
+@@ -0,0 +1,142 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++#include "inkling_attention.h"
++#include "inkling.h"
++
++#include <math.h>
++#include <stddef.h>
++#include <string.h>
++
++static int positive(int value) { return value > 0; }
++
++static void rmsnorm_head(float *out, const float *x, const float *weight,
++                         int dim, float eps)
++{
++    double ss = 0.0;
++    for (int i = 0; i < dim; i++) ss += (double)x[i] * (double)x[i];
++    const float scale = 1.0f / sqrtf((float)(ss / dim) + eps);
++    for (int i = 0; i < dim; i++) out[i] = x[i] * scale * weight[i];
++}
++
++int waste_inkling_attention_init(waste_inkling_attention_state *s,
++                                 int is_local, int num_heads,
++                                 int num_kv_heads, int head_dim,
++                                 int d_rel, int relative_extent,
++                                 int capacity, float rms_eps,
++                                 float *k_cache, float *v_cache)
++{
++    if (!s || !k_cache || !v_cache ||
++        (is_local != 0 && is_local != 1) ||
++        !positive(num_heads) || !positive(num_kv_heads) ||
++        num_heads % num_kv_heads != 0 || !positive(head_dim) ||
++        !positive(d_rel) || !positive(relative_extent) ||
++        !positive(capacity) || !(rms_eps > 0.0f))
++        return -1;
++    memset(s, 0, sizeof *s);
++    s->is_local = is_local;
++    s->num_heads = num_heads;
++    s->num_kv_heads = num_kv_heads;
++    s->head_dim = head_dim;
++    s->d_rel = d_rel;
++    s->relative_extent = relative_extent;
++    s->capacity = capacity;
++    s->rms_eps = rms_eps;
++    s->k_cache = k_cache;
++    s->v_cache = v_cache;
++    return 0;
++}
++
++void waste_inkling_attention_reset(waste_inkling_attention_state *s)
++{
++    if (s) s->next_position = 0;
++}
++
++int waste_inkling_attention_step(
++    waste_inkling_attention_state *s,
++    const float *q, const float *k, const float *v,
++    const float *q_norm, const float *k_norm,
++    const float *relative_state, const float *relative_proj,
++    int position, int log_scaling_n_floor, float log_scaling_alpha,
++    float *scores, float *out)
++{
++    if (!s || !q || !k || !v || !q_norm || !k_norm ||
++        !relative_state || !relative_proj || !scores || !out ||
++        position < 0 || position != s->next_position ||
++        log_scaling_n_floor < 0 || log_scaling_alpha < 0.0f)
++        return -1;
++    if (!s->is_local && position >= s->capacity) return -1;
++
++    const int H = s->num_heads;
++    const int KH = s->num_kv_heads;
++    const int D = s->head_dim;
++    const int group = H / KH;
++    const int slot = s->is_local ? position % s->capacity : position;
++    const size_t kv_stride = (size_t)KH * (size_t)D;
++    float *kdst = s->k_cache + (size_t)slot * kv_stride;
++    float *vdst = s->v_cache + (size_t)slot * kv_stride;
++
++    /* `out` temporarily stores normalized queries. Every score row is built
++     * before that head's output overwrites its query row. */
++    for (int h = 0; h < H; h++)
++        rmsnorm_head(out + (size_t)h * D, q + (size_t)h * D,
++                     q_norm, D, s->rms_eps);
++    for (int h = 0; h < KH; h++)
++        rmsnorm_head(kdst + (size_t)h * D, k + (size_t)h * D,
++                     k_norm, D, s->rms_eps);
++    memcpy(vdst, v, kv_stride * sizeof(float));
++
++    const int begin = s->is_local && position + 1 > s->capacity
++                    ? position + 1 - s->capacity : 0;
++    const int kv_len = position - begin + 1;
++    const float tau = log_scaling_n_floor > 0
++                    ? waste_inkling_log_tau(position, log_scaling_n_floor,
++                                            log_scaling_alpha)
++                    : 1.0f;
++    const float dot_scale = tau / (float)D;
++
++    for (int h = 0; h < H; h++) {
++        const int kh = h / group;
++        const float *qh = out + (size_t)h * D;
++        float *row = scores + (size_t)h * s->capacity;
++        float max_score = -INFINITY;
++        for (int j = 0; j < kv_len; j++) {
++            const int key_pos = begin + j;
++            const int key_slot = s->is_local ? key_pos % s->capacity : key_pos;
++            const float *kc = s->k_cache + (size_t)key_slot * kv_stride
++                            + (size_t)kh * D;
++            float score = 0.0f;
++            for (int d = 0; d < D; d++) score += qh[d] * kc[d];
++            score *= dot_scale;
++            const int distance = position - key_pos;
++            if (distance >= 0 && distance < s->relative_extent) {
++                const float *rs = relative_state + (size_t)h * s->d_rel;
++                float bias = 0.0f;
++                for (int r = 0; r < s->d_rel; r++)
++                    bias += rs[r] * relative_proj[(size_t)r * s->relative_extent + distance];
++                score += tau * bias;
++            }
++            row[j] = score;
++            if (score > max_score) max_score = score;
++        }
++        double sum = 0.0;
++        for (int j = 0; j < kv_len; j++) {
++            row[j] = expf(row[j] - max_score);
++            sum += row[j];
++        }
++        if (!(sum > 0.0) || !isfinite(sum)) return -1;
++        const float inv_sum = (float)(1.0 / sum);
++        float *oh = out + (size_t)h * D;
++        for (int d = 0; d < D; d++) oh[d] = 0.0f;
++        for (int j = 0; j < kv_len; j++) {
++            const int key_pos = begin + j;
++            const int key_slot = s->is_local ? key_pos % s->capacity : key_pos;
++            const float *vc = s->v_cache + (size_t)key_slot * kv_stride
++                            + (size_t)kh * D;
++            const float weight = row[j] * inv_sum;
++            for (int d = 0; d < D; d++) oh[d] += weight * vc[d];
++        }
++    }
++    s->next_position++;
++    return 0;
++}
+diff --git a/src/inkling_attention.h b/src/inkling_attention.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..2bd3359211dede01b28e87d3473d3b281471220b
+--- /dev/null
++++ b/src/inkling_attention.h
+@@ -0,0 +1,63 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++#ifndef WASTE_INKLING_ATTENTION_H
++#define WASTE_INKLING_ATTENTION_H
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct {
++    int is_local;
++    int num_heads;
++    int num_kv_heads;
++    int head_dim;
++    int d_rel;
++    int relative_extent;
++    int capacity;
++    float rms_eps;
++    int next_position;
++    float *k_cache;  /* [capacity][num_kv_heads][head_dim], normalized */
++    float *v_cache;  /* [capacity][num_kv_heads][head_dim]             */
++} waste_inkling_attention_state;
++
++/* Initialize a caller-owned one-token attention state. Local layers use a
++ * ring of `capacity` positions; global layers use positions 0..capacity-1.
++ * Cache storage is caller-owned and must hold capacity*num_kv_heads*head_dim
++ * floats in each buffer. */
++int waste_inkling_attention_init(waste_inkling_attention_state *state,
++                                 int is_local, int num_heads,
++                                 int num_kv_heads, int head_dim,
++                                 int d_rel, int relative_extent,
++                                 int capacity, float rms_eps,
++                                 float *k_cache, float *v_cache);
++
++void waste_inkling_attention_reset(waste_inkling_attention_state *state);
++
++/* Exact one-token eager Inkling attention core after projection and K/V short
++ * convolution, before output projection.
++ *
++ * q:              [num_heads][head_dim]
++ * k, v:           [num_kv_heads][head_dim]
++ * q_norm, k_norm: learned per-head-dimension RMSNorm weights [head_dim]
++ * relative_state: [num_heads][d_rel]
++ * relative_proj:  [d_rel][relative_extent]
++ * scores:         scratch [num_heads][capacity]
++ * out:            [num_heads][head_dim]
++ *
++ * `position` must be sequential. Set log_scaling_n_floor to zero for local
++ * layers; global layers use the configured floor and alpha. Returns 0 or -1
++ * for invalid geometry, non-sequential input, or a full global cache. */
++int waste_inkling_attention_step(
++    waste_inkling_attention_state *state,
++    const float *q, const float *k, const float *v,
++    const float *q_norm, const float *k_norm,
++    const float *relative_state, const float *relative_proj,
++    int position, int log_scaling_n_floor, float log_scaling_alpha,
++    float *scores, float *out);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/tests/test_inkling.c b/tests/test_inkling.c
+index be5c6d8d0fee649804036d57b786d51befe18d6b..c031fe49a2126344e0a3e9d6eb03be3c5d9b0f87 100644
+--- a/tests/test_inkling.c
++++ b/tests/test_inkling.c
+@@ -8,6 +8,7 @@
+ #include "../src/arch.h"
+ #include "../src/inkling.h"
+ #include "../src/inkling_config.h"
++#include "../src/inkling_attention.h"
+ 
+ static int closef(float a, float b)
+ {
+@@ -62,6 +63,18 @@ int main(void)
+         }
+     }
+ 
++    {
++        float kcache[2] = {0}, vcache[2] = {0}, scores[2] = {0}, out[1] = {0};
++        const float one[1] = {1.0f}, zero[1] = {0.0f};
++        waste_inkling_attention_state a;
++        fail += waste_inkling_attention_init(&a, 0, 1, 1, 1, 1, 1, 2,
++                                              1e-6f, kcache, vcache) != 0;
++        fail += waste_inkling_attention_step(&a, one, one, one, one, one,
++                                              zero, zero, 0, 0, 0.0f,
++                                              scores, out) != 0;
++        fail += !closef(out[0], 1.0f);
++    }
++
+     {
+         /* Released Inkling config profile: verifies the generic builder is
+          * not accidentally specialized to the unverified Small candidate. */
+diff --git a/tests/test_inkling_attention_c.py b/tests/test_inkling_attention_c.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b856466fc66ac7b0a496b1c6fb82af3af894720b
+--- /dev/null
++++ b/tests/test_inkling_attention_c.py
+@@ -0,0 +1,252 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 SQLite Cloud, Inc.
++
++import ctypes
++import math
++import random
++import shutil
++import subprocess
++import tempfile
++import unittest
++from pathlib import Path
++
++import torch
++
++REPO = Path(__file__).resolve().parents[1]
++
++
++class State(ctypes.Structure):
++    _fields_ = [
++        ("is_local", ctypes.c_int),
++        ("num_heads", ctypes.c_int),
++        ("num_kv_heads", ctypes.c_int),
++        ("head_dim", ctypes.c_int),
++        ("d_rel", ctypes.c_int),
++        ("relative_extent", ctypes.c_int),
++        ("capacity", ctypes.c_int),
++        ("rms_eps", ctypes.c_float),
++        ("next_position", ctypes.c_int),
++        ("k_cache", ctypes.POINTER(ctypes.c_float)),
++        ("v_cache", ctypes.POINTER(ctypes.c_float)),
++    ]
++
++
++def c_array(values):
++    flat = torch.as_tensor(values, dtype=torch.float32).contiguous().view(-1).tolist()
++    return (ctypes.c_float * len(flat))(*flat)
++
++
++def rmsnorm(x, weight, eps):
++    return x * torch.rsqrt(x.square().mean(dim=-1, keepdim=True) + eps) * weight
++
++
++def reference_step(
++    q,
++    k,
++    v,
++    q_weight,
++    k_weight,
++    relative_state,
++    relative_proj,
++    position,
++    is_local,
++    capacity,
++    kv_cache,
++    v_cache,
++    log_floor,
++    alpha,
++    eps,
++):
++    qn = rmsnorm(q, q_weight, eps)
++    kn = rmsnorm(k, k_weight, eps)
++    kv_cache.append(kn)
++    v_cache.append(v)
++    if is_local and len(kv_cache) > capacity:
++        del kv_cache[0]
++        del v_cache[0]
++    keys = torch.stack(kv_cache)
++    values = torch.stack(v_cache)
++    heads, dim = q.shape
++    kv_heads = k.shape[0]
++    group = heads // kv_heads
++    tau = 1.0
++    if log_floor > 0:
++        tau = 1.0 + alpha * math.log(max((position + 1) / log_floor, 1.0))
++    outputs = []
++    begin = position - len(kv_cache) + 1
++    for head in range(heads):
++        kh = head // group
++        scores = []
++        for j in range(len(kv_cache)):
++            key_pos = begin + j
++            score = torch.dot(qn[head], keys[j, kh]) * (tau / dim)
++            distance = position - key_pos
++            if 0 <= distance < relative_proj.shape[1]:
++                score = score + tau * torch.dot(relative_state[head], relative_proj[:, distance])
++            scores.append(score)
++        weights = torch.softmax(torch.stack(scores).float(), dim=0)
++        outputs.append((weights[:, None] * values[:, kh]).sum(dim=0))
++    return torch.stack(outputs)
++
++
++class InklingAttentionCDifferentialTest(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cc = shutil.which("cc")
++        if not cc:
++            raise unittest.SkipTest("C compiler unavailable")
++        cls.td = tempfile.TemporaryDirectory()
++        lib_path = Path(cls.td.name) / "libinkling_attention.so"
++        subprocess.run(
++            [
++                cc,
++                "-std=c11",
++                "-Wall",
++                "-Wextra",
++                "-Werror",
++                "-shared",
++                "-fPIC",
++                f"-I{REPO / 'src'}",
++                str(REPO / "src" / "inkling_attention.c"),
++                str(REPO / "src" / "inkling.c"),
++                "-lm",
++                "-o",
++                str(lib_path),
++            ],
++            check=True,
++            capture_output=True,
++        )
++        cls.lib = ctypes.CDLL(str(lib_path))
++        cls.lib.waste_inkling_attention_init.argtypes = [
++            ctypes.POINTER(State),
++            ctypes.c_int,
++            ctypes.c_int,
++            ctypes.c_int,
++            ctypes.c_int,
++            ctypes.c_int,
++            ctypes.c_int,
++            ctypes.c_int,
++            ctypes.c_float,
++            ctypes.POINTER(ctypes.c_float),
++            ctypes.POINTER(ctypes.c_float),
++        ]
++        cls.lib.waste_inkling_attention_init.restype = ctypes.c_int
++        cls.lib.waste_inkling_attention_step.argtypes = [
++            ctypes.POINTER(State),
++            *([ctypes.POINTER(ctypes.c_float)] * 7),
++            ctypes.c_int,
++            ctypes.c_int,
++            ctypes.c_float,
++            ctypes.POINTER(ctypes.c_float),
++            ctypes.POINTER(ctypes.c_float),
++        ]
++        cls.lib.waste_inkling_attention_step.restype = ctypes.c_int
++
++    @classmethod
++    def tearDownClass(cls):
++        cls.td.cleanup()
++
++    def run_case(self, *, is_local, capacity, steps, log_floor):
++        torch.manual_seed(1234 + int(is_local))
++        heads, kv_heads, dim, d_rel = 4, 2, 8, 3
++        extent = capacity if is_local else 7
++        cache_n = capacity * kv_heads * dim
++        k_cache = (ctypes.c_float * cache_n)()
++        v_cache = (ctypes.c_float * cache_n)()
++        state = State()
++        self.assertEqual(
++            self.lib.waste_inkling_attention_init(
++                ctypes.byref(state),
++                int(is_local),
++                heads,
++                kv_heads,
++                dim,
++                d_rel,
++                extent,
++                capacity,
++                ctypes.c_float(1e-6),
++                k_cache,
++                v_cache,
++            ),
++            0,
++        )
++        q_weight_t = torch.randn(dim).abs() + 0.5
++        k_weight_t = torch.randn(dim).abs() + 0.5
++        proj_t = torch.randn(d_rel, extent)
++        q_weight = c_array(q_weight_t)
++        k_weight = c_array(k_weight_t)
++        proj = c_array(proj_t)
++        py_k, py_v = [], []
++        for position in range(steps):
++            q_t = torch.randn(heads, dim)
++            k_t = torch.randn(kv_heads, dim)
++            v_t = torch.randn(kv_heads, dim)
++            rel_t = torch.randn(heads, d_rel)
++            want = reference_step(
++                q_t,
++                k_t,
++                v_t,
++                q_weight_t,
++                k_weight_t,
++                rel_t,
++                proj_t,
++                position,
++                is_local,
++                capacity,
++                py_k,
++                py_v,
++                log_floor,
++                0.2,
++                1e-6,
++            )
++            q, k, v, rel = map(c_array, (q_t, k_t, v_t, rel_t))
++            scores = (ctypes.c_float * (heads * capacity))()
++            out = (ctypes.c_float * (heads * dim))()
++            rc = self.lib.waste_inkling_attention_step(
++                ctypes.byref(state),
++                q,
++                k,
++                v,
++                q_weight,
++                k_weight,
++                rel,
++                proj,
++                position,
++                log_floor,
++                ctypes.c_float(0.2),
++                scores,
++                out,
++            )
++            self.assertEqual(rc, 0)
++            got = torch.tensor(list(out)).reshape(heads, dim)
++            torch.testing.assert_close(got, want, rtol=2e-5, atol=2e-5)
++
++    def test_local_ring_cache_matches_torch(self):
++        self.run_case(is_local=True, capacity=4, steps=11, log_floor=0)
++
++    def test_global_cache_and_log_scaling_match_torch(self):
++        self.run_case(is_local=False, capacity=9, steps=9, log_floor=2)
++
++    def test_nonsequential_and_full_global_cache_fail_closed(self):
++        cache = (ctypes.c_float * 2)()
++        state = State()
++        self.assertEqual(
++            self.lib.waste_inkling_attention_init(
++                ctypes.byref(state), 0, 1, 1, 1, 1, 1, 2, 1e-6, cache, cache
++            ),
++            0,
++        )
++        one = (ctypes.c_float * 1)(1.0)
++        scores = (ctypes.c_float * 2)()
++        out = (ctypes.c_float * 1)()
++        self.assertNotEqual(
++            self.lib.waste_inkling_attention_step(
++                ctypes.byref(state), one, one, one, one, one, one, one, 1, 0, 0.0, scores, out
++            ),
++            0,
++        )
++
++
++if __name__ == "__main__":
++    unittest.main()

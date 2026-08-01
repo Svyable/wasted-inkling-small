@@ -1,0 +1,1544 @@
+diff --git a/Makefile b/Makefile
+--- a/Makefile
++++ b/Makefile
+@@ -1,3 +1,6 @@
+-SRC := src/model.c src/arch.c src/inkling.c src/inkling_config.c src/inkling_attention.c src/inkling_layer.c src/inkling_model.c src/kda.c src/backend.c src/ecache.c src/version.c \
++SRC := src/model.c src/arch.c src/inkling.c src/inkling_config.c \
++       src/inkling_attention.c src/inkling_layer.c src/inkling_model.c \
++       src/inkling_bind.c src/inkling_stage_reader.c src/inkling_wexp.c \
++       src/inkling_qtensor.c src/inkling_private.c src/kda.c src/backend.c src/ecache.c src/version.c \
+        src/tokenizer.c src/waste.c src/vq.c src/vision.c src/image.c \
+        src/crc32.c
+diff --git a/docs/INKLING.md b/docs/INKLING.md
+index 24b982b..d36dcaa 100644
+--- a/docs/INKLING.md
++++ b/docs/INKLING.md
+@@ -354,3 +354,49 @@ For a matrix with `P` parameters and group size 128, approximate storage is:
+ The C reader supports bounded row reads and direct Q8/Q4 matvec without
+ materializing an F32 matrix. Full-model use remains gated on a versioned runtime
+ index and end-to-end quantized-logit parity.
++
++## Patch 14: quantized full-model private runtime
++
++Patch 14 connects the Patch 13 Q8/Q4 tensor artifacts to the complete private
++text runtime without changing the public WASTE loader or manifest format.
++`runtime-stage.bin` version 3 now indexes a mixed trunk:
++
++- Q8 row-backed embedding and unembedding tables;
++- Q8 router matrices;
++- Q4 or Q8 attention, dense-MLP, and shared-expert projections;
++- canonical BF16/F32 norms, routing biases, scalar scales, relative-position
++  profile banks, and four depthwise short-convolution kernels per layer;
++- final WEXP/VQ routed-expert banks from Patch 11/12.
++
++The decoder's resident-F32 ABI remains unchanged. A separate per-layer matrix
++backend is consulted only when a matrix pointer is NULL, so all previous F32
++and BF16 private-stage tests continue to exercise the original path. Shared
++expert slices use bounded row ranges from their 3-D quantized artifacts.
++
++Quantized payloads and FP16 group scales are loaded once at open for projection
++throughput. Vocabulary tables remain on disk and are read one row at a time.
++The runtime reports quantized resident bytes and canonical resident-F32 bytes
++separately. Version-1 BF16 and version-2 WEXP/F32-trunk indexes remain accepted.
++
++For the released Inkling-Small geometry at group 128, the exact format-size
++estimate under the Patch 14 policy is:
++
++- all supported projection matrices Q8: 5.629 GiB;
++- Q4 bulk projections with Q8 vocabulary/router: 3.642 GiB;
++- canonical resident F32 tensors (norms, relative profiles, convolutions,
++  biases, scalar scales): approximately 9.52 MiB;
++- 4K-context K/V plus four convolution states: approximately 0.362 GiB;
++- largest decoder scratch: approximately 0.64 MiB;
++- one shared WEXP decode workspace: approximately 105 MiB;
++- per-layer VQ codebooks: approximately 1.4 MiB.
++
++That places the model-state floor near 4.1 GiB before allocator overhead, the
++caller output buffer, OS headroom, and any routed-expert cache. These are
++configuration-derived format sizes, not measurements from a completed official
++checkpoint conversion.
++
++Synthetic end-to-end validation opens a version-3 staged directory, keeps the
++vocabulary row-backed, executes resident Q8/Q4 matvecs and final WEXP experts,
++and matches a separate C model populated from independently dequantized weights
++across multiple tokens. This establishes byte-to-logit correctness for the
++quantized storage path; official-weight layerwise parity is still required.
+diff --git a/src/inkling_bind.c b/src/inkling_bind.c
+index 6da04f9..c3fc237 100644
+--- a/src/inkling_bind.c
++++ b/src/inkling_bind.c
+@@ -34,13 +34,14 @@ static const float *need(const waste_inkling_tensor_view *v, size_t n,
+     return t && t->data ? t->data : NULL;
+ }
+ 
+-int waste_inkling_bind_weights_ex(
++int waste_inkling_bind_weights_ex_backend(
+     waste_inkling_bound_weights *out,
+     const waste_inkling_config *cfg,
+     const waste_inkling_tensor_view *v,
+     size_t n,
+     waste_inkling_row_get_fn embedding_get, void *embedding_ctx,
+-    waste_inkling_row_get_fn unembedding_get, void *unembedding_ctx)
++    waste_inkling_row_get_fn unembedding_get, void *unembedding_ctx,
++    int allow_nonresident_matrices)
+ {
+     if (!out || !cfg || !v || !n) return -1;
+     memset(out, 0, sizeof *out);
+@@ -70,15 +71,19 @@ int waste_inkling_bind_weights_ex(
+     w->field=need(v,n,name,1,d0,0,0); if(!w->field)return -1; } while(0)
+ #define N2(field,role,d0,d1) do { snprintf(name,sizeof name,"inkling.layer.%d.%s",i,role); \
+     w->field=need(v,n,name,2,d0,d1,0); if(!w->field)return -1; } while(0)
+-#define N3(field,role,d0,d1,d2) do { snprintf(name,sizeof name,"inkling.layer.%d.%s",i,role); \
+-    w->field=need(v,n,name,3,d0,d1,d2); if(!w->field)return -1; } while(0)
++#define N2Q(field,role,d0,d1) do { snprintf(name,sizeof name,"inkling.layer.%d.%s",i,role); \
++    const waste_inkling_tensor_view *tv_=need_view(v,n,name,2,d0,d1,0); \
++    if(!tv_||(!tv_->data&&!allow_nonresident_matrices)){return -1;} w->field=tv_->data; } while(0)
++#define N3Q(field,role,d0,d1,d2) do { snprintf(name,sizeof name,"inkling.layer.%d.%s",i,role); \
++    const waste_inkling_tensor_view *tv_=need_view(v,n,name,3,d0,d1,d2); \
++    if(!tv_||(!tv_->data&&!allow_nonresident_matrices)){return -1;} w->field=tv_->data; } while(0)
+         N1(input_norm,"input_norm",cfg->hidden);
+         N1(post_attention_norm,"post_attention_norm",cfg->hidden);
+-        N2(wq,"q",lc->num_heads*lc->head_dim,cfg->hidden);
+-        N2(wk,"k",lc->num_kv_heads*lc->head_dim,cfg->hidden);
+-        N2(wv,"v",lc->num_kv_heads*lc->head_dim,cfg->hidden);
+-        N2(wr,"r",lc->num_heads*cfg->d_rel,cfg->hidden);
+-        N2(wo,"o",cfg->hidden,lc->num_heads*lc->head_dim);
++        N2Q(wq,"q",lc->num_heads*lc->head_dim,cfg->hidden);
++        N2Q(wk,"k",lc->num_kv_heads*lc->head_dim,cfg->hidden);
++        N2Q(wv,"v",lc->num_kv_heads*lc->head_dim,cfg->hidden);
++        N2Q(wr,"r",lc->num_heads*cfg->d_rel,cfg->hidden);
++        N2Q(wo,"o",cfg->hidden,lc->num_heads*lc->head_dim);
+         N1(q_norm,"q_norm",lc->head_dim);
+         N1(k_norm,"k_norm",lc->head_dim);
+         N2(relative_proj,"rel_proj",cfg->d_rel,lc->relative_extent);
+@@ -88,31 +93,43 @@ int waste_inkling_bind_weights_ex(
+         N2(mlp_sconv,"mlp_sconv",cfg->hidden,cfg->conv_kernel);
+         w->sparse = i >= cfg->dense_layers;
+         if (!w->sparse) {
+-            N2(dense_gate,"mlp.gate",cfg->dense_intermediate,cfg->hidden);
+-            N2(dense_up,"mlp.up",cfg->dense_intermediate,cfg->hidden);
+-            N2(dense_down,"mlp.down",cfg->hidden,cfg->dense_intermediate);
++            N2Q(dense_gate,"mlp.gate",cfg->dense_intermediate,cfg->hidden);
++            N2Q(dense_up,"mlp.up",cfg->dense_intermediate,cfg->hidden);
++            N2Q(dense_down,"mlp.down",cfg->hidden,cfg->dense_intermediate);
+             N1(dense_global_scale,"mlp.global_scale",1);
+         } else {
+-            N2(router_weight,"router.weight",cfg->n_routed_experts+cfg->n_shared_experts,cfg->hidden);
++            N2Q(router_weight,"router.weight",cfg->n_routed_experts+cfg->n_shared_experts,cfg->hidden);
+             N1(router_bias,"router.correction_bias",cfg->n_routed_experts);
+             N1(router_global_scale,"router.global_scale",1);
+-            N3(shared_gate,"shared.gate",cfg->n_shared_experts,cfg->moe_intermediate,cfg->hidden);
+-            N3(shared_up,"shared.up",cfg->n_shared_experts,cfg->moe_intermediate,cfg->hidden);
+-            N3(shared_down,"shared.down",cfg->n_shared_experts,cfg->hidden,cfg->moe_intermediate);
++            N3Q(shared_gate,"shared.gate",cfg->n_shared_experts,cfg->moe_intermediate,cfg->hidden);
++            N3Q(shared_up,"shared.up",cfg->n_shared_experts,cfg->moe_intermediate,cfg->hidden);
++            N3Q(shared_down,"shared.down",cfg->n_shared_experts,cfg->hidden,cfg->moe_intermediate);
+         }
+ #undef N1
+ #undef N2
+-#undef N3
++#undef N2Q
++#undef N3Q
+     }
+     out->model.layer = out->layer;
+     return 0;
+ }
+ 
++int waste_inkling_bind_weights_ex(
++    waste_inkling_bound_weights *out,
++    const waste_inkling_config *cfg,
++    const waste_inkling_tensor_view *v, size_t n,
++    waste_inkling_row_get_fn embedding_get, void *embedding_ctx,
++    waste_inkling_row_get_fn unembedding_get, void *unembedding_ctx)
++{
++    return waste_inkling_bind_weights_ex_backend(out, cfg, v, n,
++        embedding_get, embedding_ctx, unembedding_get, unembedding_ctx, 0);
++}
++
+ int waste_inkling_bind_weights(waste_inkling_bound_weights *out,
+                                const waste_inkling_config *cfg,
+                                const waste_inkling_tensor_view *v,
+                                size_t n)
+ {
+-    return waste_inkling_bind_weights_ex(out, cfg, v, n,
+-                                         NULL, NULL, NULL, NULL);
++    return waste_inkling_bind_weights_ex_backend(out, cfg, v, n,
++        NULL, NULL, NULL, NULL, 0);
+ }
+diff --git a/src/inkling_bind.h b/src/inkling_bind.h
+index 5ae12a9..6758bd5 100644
+--- a/src/inkling_bind.h
++++ b/src/inkling_bind.h
+@@ -39,6 +39,17 @@ int waste_inkling_bind_weights_ex(
+     size_t nviews,
+     waste_inkling_row_get_fn embedding_get, void *embedding_ctx,
+     waste_inkling_row_get_fn unembedding_get, void *unembedding_ctx);
++
++/* Quantized-matrix variant. Matrix views may have data == NULL when
++ * allow_nonresident_matrices is nonzero; vectors/scalars still must be
++ * resident. The caller must supply a matrix backend at execution time. */
++int waste_inkling_bind_weights_ex_backend(
++    waste_inkling_bound_weights *out,
++    const waste_inkling_config *cfg,
++    const waste_inkling_tensor_view *views, size_t nviews,
++    waste_inkling_row_get_fn embedding_get, void *embedding_ctx,
++    waste_inkling_row_get_fn unembedding_get, void *unembedding_ctx,
++    int allow_nonresident_matrices);
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/src/inkling_layer.c b/src/inkling_layer.c
+index 65fb796..d5a6212 100644
+--- a/src/inkling_layer.c
++++ b/src/inkling_layer.c
+@@ -19,6 +19,17 @@ static void matvec(float *out, const float *weight, const float *x,
+     }
+ }
+ 
++static int apply_matvec(const waste_inkling_matrix_backend *backend,
++                        int layer, waste_inkling_matrix_kind kind, int index,
++                        float *out, const float *resident, const float *x,
++                        int rows, int cols)
++{
++    if (resident) { matvec(out, resident, x, rows, cols); return 0; }
++    return backend && backend->matvec
++         ? backend->matvec(backend->ctx, layer, kind, index, x, out, rows, cols)
++         : -1;
++}
++
+ static void rmsnorm(float *out, const float *x, const float *weight,
+                     int n, float eps)
+ {
+@@ -155,15 +166,20 @@ int waste_inkling_layer_state_init(
+     return 0;
+ }
+ 
+-int waste_inkling_layer_step(
++int waste_inkling_layer_step_backend(
+     const waste_inkling_config *cfg, int layer,
+     const waste_inkling_layer_weights *w,
++    const waste_inkling_matrix_backend *backend,
+     waste_inkling_layer_state *state,
+     float *x, int position,
+     waste_inkling_layer_scratch *s,
+     waste_inkling_expert_get_fn expert_get, void *expert_ctx)
+ {
+-    if (!cfg || layer < 0 || layer >= cfg->n_layers || !weights_common_ok(w) ||
++    if (!cfg || layer < 0 || layer >= cfg->n_layers || !w ||
++        !w->input_norm || !w->post_attention_norm ||
++        (!backend && !weights_common_ok(w)) ||
++        !w->q_norm || !w->k_norm || !w->relative_proj ||
++        !w->k_sconv || !w->v_sconv || !w->attn_sconv || !w->mlp_sconv ||
+         !state || !x || !s || position < 0) return -1;
+     /* The dense/sparse schedule is architecture, not tensor metadata.  A
+      * mismatched flag otherwise executes a numerically valid but different
+@@ -178,10 +194,10 @@ int waste_inkling_layer_step(
+     const int rdim = l->num_heads * cfg->d_rel;
+ 
+     rmsnorm(s->norm, x, w->input_norm, hidden, cfg->rms_eps);
+-    matvec(s->q, w->wq, s->norm, qdim, hidden);
+-    matvec(s->k, w->wk, s->norm, kdim, hidden);
+-    matvec(s->v, w->wv, s->norm, kdim, hidden);
+-    matvec(s->relative, w->wr, s->norm, rdim, hidden);
++    if (apply_matvec(backend, layer, WASTE_IK_MAT_Q, 0, s->q, w->wq, s->norm, qdim, hidden)) return -1;
++    if (apply_matvec(backend, layer, WASTE_IK_MAT_K, 0, s->k, w->wk, s->norm, kdim, hidden)) return -1;
++    if (apply_matvec(backend, layer, WASTE_IK_MAT_V, 0, s->v, w->wv, s->norm, kdim, hidden)) return -1;
++    if (apply_matvec(backend, layer, WASTE_IK_MAT_R, 0, s->relative, w->wr, s->norm, rdim, hidden)) return -1;
+     if (waste_inkling_sconv_step(s->k, state->k_conv_state, w->k_sconv,
+                                  kdim, cfg->conv_kernel, s->k) ||
+         waste_inkling_sconv_step(s->v, state->v_conv_state, w->v_sconv,
+@@ -193,7 +209,7 @@ int waste_inkling_layer_step(
+             l->is_local ? 0 : cfg->log_scaling_n_floor,
+             cfg->log_scaling_alpha, s->scores, s->attn_out))
+         return -1;
+-    matvec(s->branch, w->wo, s->attn_out, hidden, qdim);
++    if (apply_matvec(backend, layer, WASTE_IK_MAT_O, 0, s->branch, w->wo, s->attn_out, hidden, qdim)) return -1;
+     if (waste_inkling_sconv_step(s->branch, state->attn_conv_state,
+                                  w->attn_sconv, hidden, cfg->conv_kernel,
+                                  s->branch))
+@@ -202,21 +218,21 @@ int waste_inkling_layer_step(
+ 
+     rmsnorm(s->norm, x, w->post_attention_norm, hidden, cfg->rms_eps);
+     if (!w->sparse) {
+-        if (!w->dense_gate || !w->dense_up || !w->dense_down ||
++        if ((!backend && (!w->dense_gate || !w->dense_up || !w->dense_down)) ||
+             !w->dense_global_scale) return -1;
+         const int inter = cfg->dense_intermediate;
+-        matvec(s->gate, w->dense_gate, s->norm, inter, hidden);
+-        matvec(s->up, w->dense_up, s->norm, inter, hidden);
++        if (apply_matvec(backend, layer, WASTE_IK_MAT_DENSE_GATE, 0, s->gate, w->dense_gate, s->norm, inter, hidden)) return -1;
++        if (apply_matvec(backend, layer, WASTE_IK_MAT_DENSE_UP, 0, s->up, w->dense_up, s->norm, inter, hidden)) return -1;
+         for (int i = 0; i < inter; i++) s->gate[i] = silu(s->gate[i]) * s->up[i];
+-        matvec(s->ff, w->dense_down, s->gate, hidden, inter);
++        if (apply_matvec(backend, layer, WASTE_IK_MAT_DENSE_DOWN, 0, s->ff, w->dense_down, s->gate, hidden, inter)) return -1;
+         for (int i = 0; i < hidden; i++) s->ff[i] *= *w->dense_global_scale;
+     } else {
+-        if (!w->router_weight || !w->router_bias || !w->router_global_scale ||
+-            !w->shared_gate || !w->shared_up || !w->shared_down)
+-            return -1;
++        if ((!backend && (!w->router_weight || !w->shared_gate ||
++                          !w->shared_up || !w->shared_down)) ||
++            !w->router_bias || !w->router_global_scale) return -1;
+         const int total = cfg->n_routed_experts + cfg->n_shared_experts;
+         const int inter = cfg->moe_intermediate;
+-        matvec(s->router_logits, w->router_weight, s->norm, total, hidden);
++        if (apply_matvec(backend, layer, WASTE_IK_MAT_ROUTER, 0, s->router_logits, w->router_weight, s->norm, total, hidden)) return -1;
+         if (waste_inkling_route(s->router_logits, w->router_bias,
+                 cfg->n_routed_experts, cfg->n_shared_experts, cfg->top_k,
+                 cfg->route_scale, *w->router_global_scale,
+@@ -235,13 +251,24 @@ int waste_inkling_layer_step(
+         const size_t gh = (size_t)inter * hidden;
+         const size_t dh = (size_t)hidden * inter;
+         for (int e = 0; e < cfg->n_shared_experts; e++) {
+-            waste_inkling_expert_weights ew = {
+-                w->shared_gate + (size_t)e * gh,
+-                w->shared_up + (size_t)e * gh,
+-                w->shared_down + (size_t)e * dh,
+-            };
+-            if (expert_eval(s->branch, s->gate, s->up, &ew,
+-                            s->norm, hidden, inter)) return -1;
++            if (w->shared_gate && w->shared_up && w->shared_down) {
++                waste_inkling_expert_weights ew = {
++                    w->shared_gate + (size_t)e * gh,
++                    w->shared_up + (size_t)e * gh,
++                    w->shared_down + (size_t)e * dh,
++                };
++                if (expert_eval(s->branch, s->gate, s->up, &ew,
++                                s->norm, hidden, inter)) return -1;
++            } else {
++                if (apply_matvec(backend, layer, WASTE_IK_MAT_SHARED_GATE, e,
++                                 s->gate, NULL, s->norm, inter, hidden) ||
++                    apply_matvec(backend, layer, WASTE_IK_MAT_SHARED_UP, e,
++                                 s->up, NULL, s->norm, inter, hidden)) return -1;
++                for (int j = 0; j < inter; j++)
++                    s->gate[j] = silu(s->gate[j]) * s->up[j];
++                if (apply_matvec(backend, layer, WASTE_IK_MAT_SHARED_DOWN, e,
++                                 s->branch, NULL, s->gate, hidden, inter)) return -1;
++            }
+             const float gamma = s->shared_weight[e];
+             for (int i = 0; i < hidden; i++) s->ff[i] += gamma * s->branch[i];
+         }
+@@ -253,3 +280,14 @@ int waste_inkling_layer_step(
+     for (int i = 0; i < hidden; i++) x[i] += s->ff[i];
+     return 0;
+ }
++int waste_inkling_layer_step(
++    const waste_inkling_config *cfg, int layer,
++    const waste_inkling_layer_weights *weights,
++    waste_inkling_layer_state *state,
++    float *x, int position,
++    waste_inkling_layer_scratch *scratch,
++    waste_inkling_expert_get_fn expert_get, void *expert_ctx)
++{
++    return waste_inkling_layer_step_backend(cfg, layer, weights, NULL, state,
++        x, position, scratch, expert_get, expert_ctx);
++}
+diff --git a/src/inkling_layer.h b/src/inkling_layer.h
+index 8e40949..ed1b4a1 100644
+--- a/src/inkling_layer.h
++++ b/src/inkling_layer.h
+@@ -62,6 +62,22 @@ typedef struct {
+     const float *routed_down;         /* [routed][hidden][moe_intermediate] */
+ } waste_inkling_layer_weights;
+ 
++typedef enum {
++    WASTE_IK_MAT_Q = 0, WASTE_IK_MAT_K, WASTE_IK_MAT_V, WASTE_IK_MAT_R,
++    WASTE_IK_MAT_O, WASTE_IK_MAT_DENSE_GATE, WASTE_IK_MAT_DENSE_UP,
++    WASTE_IK_MAT_DENSE_DOWN, WASTE_IK_MAT_ROUTER, WASTE_IK_MAT_SHARED_GATE,
++    WASTE_IK_MAT_SHARED_UP, WASTE_IK_MAT_SHARED_DOWN
++} waste_inkling_matrix_kind;
++
++typedef int (*waste_inkling_matvec_fn)(void *ctx, int layer,
++    waste_inkling_matrix_kind kind, int index, const float *x, float *out,
++    int rows, int cols);
++
++typedef struct {
++    waste_inkling_matvec_fn matvec;
++    void *ctx;
++} waste_inkling_matrix_backend;
++
+ typedef struct {
+     waste_inkling_attention_state attention;
+     float *k_conv_state;
+@@ -119,6 +135,17 @@ int waste_inkling_layer_step(
+     waste_inkling_layer_scratch *scratch,
+     waste_inkling_expert_get_fn expert_get, void *expert_ctx);
+ 
++/* Same decoder semantics with optional non-resident matrix storage. A backend
++ * is consulted only when the corresponding resident pointer is NULL. */
++int waste_inkling_layer_step_backend(
++    const waste_inkling_config *cfg, int layer,
++    const waste_inkling_layer_weights *weights,
++    const waste_inkling_matrix_backend *backend,
++    waste_inkling_layer_state *state,
++    float *x, int position,
++    waste_inkling_layer_scratch *scratch,
++    waste_inkling_expert_get_fn expert_get, void *expert_ctx);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/src/inkling_model.c b/src/inkling_model.c
+index 755ed6a..1fefb35 100644
+--- a/src/inkling_model.c
++++ b/src/inkling_model.c
+@@ -182,9 +182,10 @@ static int get_row(const float *table, int rows, int cols,
+     return get ? get(ctx, row, cols, out) : -1;
+ }
+ 
+-int waste_inkling_model_step(
++int waste_inkling_model_step_backend(
+     const waste_inkling_config *cfg,
+     const waste_inkling_model_weights *w,
++    const waste_inkling_matrix_backend *backends,
+     waste_inkling_model_state *state,
+     waste_inkling_model_scratch *scratch,
+     int token, int position, float *logits, size_t logits_count,
+@@ -214,7 +215,8 @@ int waste_inkling_model_step(
+         const int cap = layer_capacity(cfg, i, state->context_capacity);
+         if (waste_inkling_layer_scratch_init(&scratch->layer, cfg, i, cap,
+                 layer_buf, layer_n, scratch->ibuffer, scratch->ibuffer_ints) ||
+-            waste_inkling_layer_step(cfg, i, &w->layer[i], &state->layer[i],
++            waste_inkling_layer_step_backend(cfg, i, &w->layer[i],
++                backends ? &backends[i] : NULL, &state->layer[i],
+                 scratch->x, position, &scratch->layer, expert_get, expert_ctx))
+             return -1;
+     }
+@@ -238,3 +240,14 @@ int waste_inkling_model_step(
+     state->next_position++;
+     return 0;
+ }
++int waste_inkling_model_step(
++    const waste_inkling_config *cfg,
++    const waste_inkling_model_weights *weights,
++    waste_inkling_model_state *state,
++    waste_inkling_model_scratch *scratch,
++    int token, int position, float *logits, size_t logits_count,
++    waste_inkling_expert_get_fn expert_get, void *expert_ctx)
++{
++    return waste_inkling_model_step_backend(cfg, weights, NULL, state, scratch,
++        token, position, logits, logits_count, expert_get, expert_ctx);
++}
+diff --git a/src/inkling_model.h b/src/inkling_model.h
+index 778cdac..a8824a3 100644
+--- a/src/inkling_model.h
++++ b/src/inkling_model.h
+@@ -83,6 +83,17 @@ int waste_inkling_model_step(
+     int token, int position, float *logits, size_t logits_count,
+     waste_inkling_expert_get_fn expert_get, void *expert_ctx);
+ 
++/* Full-model entry point with one optional matrix backend per layer. The
++ * legacy resident-F32 API above remains ABI-compatible and delegates here. */
++int waste_inkling_model_step_backend(
++    const waste_inkling_config *cfg,
++    const waste_inkling_model_weights *weights,
++    const waste_inkling_matrix_backend *backends,
++    waste_inkling_model_state *state,
++    waste_inkling_model_scratch *scratch,
++    int token, int position, float *logits, size_t logits_count,
++    waste_inkling_expert_get_fn expert_get, void *expert_ctx);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/src/inkling_private.c b/src/inkling_private.c
+index 0b69da5..2352d93 100644
+--- a/src/inkling_private.c
++++ b/src/inkling_private.c
+@@ -5,6 +5,7 @@
+ #include "inkling_config.h"
+ #include "inkling_stage_reader.h"
+ #include "inkling_wexp.h"
++#include "inkling_qtensor.h"
+ 
+ #include <errno.h>
+ #include <stdint.h>
+@@ -15,6 +16,7 @@
+ #define IKRT_MAGIC 0x54524b49u
+ #define IKRT_VERSION_BF16 1u
+ #define IKRT_VERSION_VQ 2u
++#define IKRT_VERSION_QTRUNK_VQ 3u
+ #define IKRT_BANK_BF16 0u
+ #define IKRT_BANK_VQ 1u
+ #define IKRT_HEADER_BYTES 256u
+@@ -23,6 +25,7 @@
+ #define IKRT_BANK_BYTES 128u
+ #define IKRT_FLAG_OFFICIAL_SMALL 1u
+ #define IKRT_TENSOR_ROW_BACKED 1u
++#define IKRT_TENSOR_QUANTIZED 2u
+ #define IKRT_MAX_TENSORS 2048u
+ #define IKRT_PATH_MAX 1024u
+ 
+@@ -34,7 +37,9 @@ typedef struct {
+     uint64_t payload_bytes, stored_bytes;
+     uint32_t crc32;
+     float *data;
++    int quantized;
+     waste_inkling_stage_tensor stage;
++    waste_inkling_qtensor qtensor;
+ } private_tensor;
+ 
+ typedef struct {
+@@ -69,6 +74,8 @@ struct waste_inkling_private {
+     float *state_buffer, *scratch_buffer;
+     int *scratch_ints;
+     size_t state_floats, scratch_floats, scratch_nints;
++    waste_inkling_matrix_backend backend[WASTE_INKLING_MAX_LAYERS];
++    size_t quantized_resident_bytes;
+     int verify_crc;
+     char detail[256];
+ };
+@@ -237,7 +244,8 @@ static int parse_config(const unsigned char *data, size_t size,
+         size < IKRT_HEADER_BYTES || rd32(data) != IKRT_MAGIC ||
+         rd16(data + 6) != IKRT_HEADER_BYTES) return -1;
+     version = rd16(data + 4);
+-    if (version != IKRT_VERSION_BF16 && version != IKRT_VERSION_VQ) return -1;
++    if (version != IKRT_VERSION_BF16 && version != IKRT_VERSION_VQ &&
++        version != IKRT_VERSION_QTRUNK_VQ) return -1;
+     memset(expert_format, 0, sizeof *expert_format);
+     *flags = rd32(data + 8);
+     if (*flags & ~IKRT_FLAG_OFFICIAL_SMALL) return -1;
+@@ -342,7 +350,10 @@ static int parse_tensors(waste_inkling_private *p, const unsigned char *data,
+     p->views = (waste_inkling_tensor_view *)calloc(count, sizeof *p->views);
+     if (!p->tensor || !p->views) return -1;
+     p->ntensors = count;
+-    for (uint32_t i = 0; i < count; i++) p->tensor[i].stage.fd = -1;
++    for (uint32_t i = 0; i < count; i++) {
++        p->tensor[i].stage.fd = -1;
++        p->tensor[i].qtensor.fd = -1;
++    }
+     size_t resident = 0;
+     for (uint32_t i = 0; i < count; i++) {
+         private_tensor *t = &p->tensor[i];
+@@ -353,8 +364,11 @@ static int parse_tensors(waste_inkling_private *p, const unsigned char *data,
+         t->dtype = e[208];
+         t->ndim = e[209];
+         t->flags = (int)rd16(e + 210);
+-        if ((t->dtype < 1 || t->dtype > 3) || t->ndim < 1 || t->ndim > 4 ||
+-            (t->flags & ~IKRT_TENSOR_ROW_BACKED)) return -1;
++        if ((t->dtype < 1 || t->dtype > 5) || t->ndim < 1 || t->ndim > 4 ||
++            (t->flags & ~(IKRT_TENSOR_ROW_BACKED | IKRT_TENSOR_QUANTIZED))) return -1;
++        t->quantized = !!(t->flags & IKRT_TENSOR_QUANTIZED);
++        if (t->quantized != (t->dtype == 4 || t->dtype == 5)) return -1;
++        if (t->quantized && t->ndim < 2) return -1;
+         for (int d = 0; d < 4; d++) {
+             t->shape[d] = (int)rd32(e + 212 + 4 * d);
+             if ((d < t->ndim && t->shape[d] <= 0) ||
+@@ -369,7 +383,7 @@ static int parse_tensors(waste_inkling_private *p, const unsigned char *data,
+         const int row_name = !strcmp(t->name, "inkling.embed") ||
+                              !strcmp(t->name, "inkling.unembed");
+         if (!!(t->flags & IKRT_TENSOR_ROW_BACKED) != !!row_name) return -1;
+-        if (!row_name) {
++        if (!row_name && !t->quantized) {
+             size_t n;
+             if (tensor_product(t, &n) || addz(resident, n, &resident)) return -1;
+         }
+@@ -386,15 +400,36 @@ static int load_tensors(waste_inkling_private *p, const char *dir)
+     char path[IKRT_PATH_MAX];
+     for (size_t i = 0; i < p->ntensors; i++) {
+         private_tensor *t = &p->tensor[i];
+-        if (join_path(path, sizeof path, dir, t->path) ||
+-            waste_inkling_stage_tensor_open(&t->stage, path, t->name,
++        if (join_path(path, sizeof path, dir, t->path)) return -1;
++        p->views[i].name = t->name;
++        p->views[i].ndim = t->ndim;
++        for (int d = 0; d < 4; d++) p->views[i].shape[d] = t->shape[d];
++        if (t->quantized) {
++            if (waste_inkling_qtensor_open(&t->qtensor, path, t->name,
++                    t->shape, t->ndim, p->verify_crc) ||
++                t->qtensor.qbytes != t->payload_bytes ||
++                t->qtensor.q_crc32 != t->crc32 ||
++                ((t->dtype == 4) != (t->qtensor.fmt == 2)) ||
++                ((t->dtype == 5) != (t->qtensor.fmt == 3))) return -1;
++            size_t stored = waste_inkling_qtensor_resident_bytes(&t->qtensor);
++            if (!stored || stored > SIZE_MAX - 96u) return -1;
++            stored += 96u;
++            stored = (stored + 4095u) & ~(size_t)4095u;
++            if ((uint64_t)stored != t->stored_bytes) return -1;
++            if (!(t->flags & IKRT_TENSOR_ROW_BACKED)) {
++                const size_t bytes = waste_inkling_qtensor_resident_bytes(&t->qtensor);
++                if (!bytes || waste_inkling_qtensor_load_resident(&t->qtensor) ||
++                    addz(p->quantized_resident_bytes, bytes,
++                         &p->quantized_resident_bytes)) return -1;
++            }
++            p->views[i].data = NULL;
++            continue;
++        }
++        if (waste_inkling_stage_tensor_open(&t->stage, path, t->name,
+                 t->shape, t->ndim, p->verify_crc) ||
+             t->stage.dtype != t->dtype || t->stage.payload_bytes != t->payload_bytes ||
+             t->stage.stored_bytes != t->stored_bytes ||
+             t->stage.payload_crc32 != t->crc32) return -1;
+-        p->views[i].name = t->name;
+-        p->views[i].ndim = t->ndim;
+-        for (int d = 0; d < 4; d++) p->views[i].shape[d] = t->shape[d];
+         if (t->flags & IKRT_TENSOR_ROW_BACKED) {
+             p->views[i].data = NULL;
+         } else {
+@@ -422,6 +457,60 @@ static private_tensor *find_tensor(waste_inkling_private *p, const char *name)
+     return found;
+ }
+ 
++static int private_row_get(void *ctx, int row, int cols, float *out)
++{
++    private_tensor *t = (private_tensor *)ctx;
++    if (!t) return -1;
++    if (t->quantized)
++        return waste_inkling_qtensor_row(&t->qtensor, (uint64_t)row, out,
++                                         (size_t)cols);
++    return waste_inkling_stage_tensor_row(&t->stage, row, cols, out);
++}
++
++static int matrix_name(char *out, size_t cap, int layer,
++                       waste_inkling_matrix_kind kind)
++{
++    const char *role = NULL;
++    switch (kind) {
++    case WASTE_IK_MAT_Q: role = "q"; break;
++    case WASTE_IK_MAT_K: role = "k"; break;
++    case WASTE_IK_MAT_V: role = "v"; break;
++    case WASTE_IK_MAT_R: role = "r"; break;
++    case WASTE_IK_MAT_O: role = "o"; break;
++    case WASTE_IK_MAT_DENSE_GATE: role = "mlp.gate"; break;
++    case WASTE_IK_MAT_DENSE_UP: role = "mlp.up"; break;
++    case WASTE_IK_MAT_DENSE_DOWN: role = "mlp.down"; break;
++    case WASTE_IK_MAT_ROUTER: role = "router.weight"; break;
++    case WASTE_IK_MAT_SHARED_GATE: role = "shared.gate"; break;
++    case WASTE_IK_MAT_SHARED_UP: role = "shared.up"; break;
++    case WASTE_IK_MAT_SHARED_DOWN: role = "shared.down"; break;
++    default: return -1;
++    }
++    const int n = snprintf(out, cap, "inkling.layer.%d.%s", layer, role);
++    return n < 0 || (size_t)n >= cap ? -1 : 0;
++}
++
++static int private_matvec(void *ctx, int layer, waste_inkling_matrix_kind kind,
++                          int index, const float *x, float *out,
++                          int rows, int cols)
++{
++    waste_inkling_private *p = (waste_inkling_private *)ctx;
++    char name[128];
++    if (!p || !x || !out || rows < 1 || cols < 1 ||
++        matrix_name(name, sizeof name, layer, kind)) return -1;
++    private_tensor *t = find_tensor(p, name);
++    if (!t || !t->quantized || t->qtensor.fd < 0 ||
++        (uint64_t)cols != t->qtensor.cols) return -1;
++    size_t row0 = 0;
++    if (kind == WASTE_IK_MAT_SHARED_GATE || kind == WASTE_IK_MAT_SHARED_UP ||
++        kind == WASTE_IK_MAT_SHARED_DOWN) {
++        if (index < 0 || index >= p->cfg.n_shared_experts) return -1;
++        row0 = (size_t)index * (size_t)rows;
++    } else if (index != 0) return -1;
++    return waste_inkling_qtensor_matvec_rows(&t->qtensor, x, out, row0,
++                                              (size_t)rows, (size_t)cols);
++}
++
+ static int parse_banks(waste_inkling_private *p, const unsigned char *data,
+                        size_t off, uint32_t count, const char *dir)
+ {
+@@ -571,10 +660,14 @@ waste_inkling_private_status waste_inkling_private_open(
+     }
+     private_tensor *embed = find_tensor(p, "inkling.embed");
+     private_tensor *unembed = find_tensor(p, "inkling.unembed");
+-    if (!embed || !unembed || embed->stage.fd < 0 || unembed->stage.fd < 0 ||
+-        waste_inkling_bind_weights_ex(&p->bound, &p->cfg, p->views, p->ntensors,
+-            waste_inkling_stage_tensor_row, &embed->stage,
+-            waste_inkling_stage_tensor_row, &unembed->stage)) {
++    if (!embed || !unembed ||
++        (!embed->quantized && embed->stage.fd < 0) ||
++        (!unembed->quantized && unembed->stage.fd < 0) ||
++        (embed->quantized && embed->qtensor.fd < 0) ||
++        (unembed->quantized && unembed->qtensor.fd < 0) ||
++        waste_inkling_bind_weights_ex_backend(&p->bound, &p->cfg,
++            p->views, p->ntensors, private_row_get, embed,
++            private_row_get, unembed, 1)) {
+         free(index);
+         return fail_open(p, WASTE_INKLING_PRIVATE_E_FORMAT, detail, detail_capacity,
+                          "canonical tensors do not bind to the Inkling model");
+@@ -584,6 +677,10 @@ waste_inkling_private_status waste_inkling_private_open(
+         return fail_open(p, WASTE_INKLING_PRIVATE_E_FORMAT, detail, detail_capacity,
+                          "staged expert bank validation failed");
+     }
++    for (int i = 0; i < p->cfg.n_layers; i++) {
++        p->backend[i].matvec = private_matvec;
++        p->backend[i].ctx = p;
++    }
+     free(index);
+     if (opt.context_capacity > p->cfg.max_context)
+         return fail_open(p, WASTE_INKLING_PRIVATE_E_ARG, detail, detail_capacity,
+@@ -623,9 +720,9 @@ waste_inkling_private_status waste_inkling_private_step(
+     float *logits, size_t logits_count)
+ {
+     if (!p || !logits) return WASTE_INKLING_PRIVATE_E_ARG;
+-    if (waste_inkling_model_step(&p->cfg, &p->bound.model,
+-            &p->state, &p->scratch, token, position, logits, logits_count,
+-            expert_get, p)) {
++    if (waste_inkling_model_step_backend(&p->cfg, &p->bound.model,
++            p->backend, &p->state, &p->scratch, token, position,
++            logits, logits_count, expert_get, p)) {
+         snprintf(p->detail, sizeof p->detail,
+                  "Inkling step failed at token %d position %d", token, position);
+         return WASTE_INKLING_PRIVATE_E_RUNTIME;
+@@ -645,8 +742,10 @@ void waste_inkling_private_close(waste_inkling_private *p)
+ {
+     if (!p) return;
+     if (p->tensor) {
+-        for (size_t i = 0; i < p->ntensors; i++)
++        for (size_t i = 0; i < p->ntensors; i++) {
+             waste_inkling_stage_tensor_close(&p->tensor[i].stage);
++            waste_inkling_qtensor_close(&p->tensor[i].qtensor);
++        }
+     }
+     for (int i = 0; i < WASTE_INKLING_MAX_LAYERS; i++) {
+         waste_inkling_stage_bank_close(&p->bank[i]);
+@@ -669,3 +768,16 @@ const char *waste_inkling_private_error(const waste_inkling_private *p)
+ {
+     return p && p->detail[0] ? p->detail : NULL;
+ }
++
++size_t waste_inkling_private_quantized_trunk_bytes(
++    const waste_inkling_private *p)
++{
++    return p ? p->quantized_resident_bytes : 0;
++}
++
++size_t waste_inkling_private_resident_f32_bytes(
++    const waste_inkling_private *p)
++{
++    return p && p->resident_floats <= SIZE_MAX / sizeof(float)
++         ? p->resident_floats * sizeof(float) : 0;
++}
+diff --git a/src/inkling_private.h b/src/inkling_private.h
+index e2bbd7d..495a484 100644
+--- a/src/inkling_private.h
++++ b/src/inkling_private.h
+@@ -50,6 +50,13 @@ void waste_inkling_private_close(waste_inkling_private *runtime);
+ const waste_inkling_config *waste_inkling_private_config(
+     const waste_inkling_private *runtime);
+ const char *waste_inkling_private_error(const waste_inkling_private *runtime);
++/* Storage accounting for the private parity runtime. Quantized bytes are the
++ * resident Q8/Q4 payload plus scales; resident_f32 excludes state/scratch and
++ * includes only canonical non-matrix tensors. */
++size_t waste_inkling_private_quantized_trunk_bytes(
++    const waste_inkling_private *runtime);
++size_t waste_inkling_private_resident_f32_bytes(
++    const waste_inkling_private *runtime);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/src/inkling_qtensor.c b/src/inkling_qtensor.c
+index 94d79c5..7c8c762 100644
+--- a/src/inkling_qtensor.c
++++ b/src/inkling_qtensor.c
+@@ -39,6 +39,105 @@ static int verify_range(int fd,uint64_t off,uint64_t n,uint32_t want){unsigned c
+ 
+ int waste_inkling_qtensor_open(waste_inkling_qtensor*t,const char*path,const char*name,const int*shape,int ndim,int verify){unsigned char h[IKQT_HEADER];if(!t||!path||!name||!shape||ndim<1||ndim>4)return -1;memset(t,0,sizeof*t);t->fd=-1;int fd=OPEN_RO(path);if(fd<0||preadn(fd,h,sizeof h,0)){if(fd>=0)CLOSE_FD(fd);return -1;}if(rd32(h)!=IKQT_MAGIC||rd16(h+4)!=IKQT_VERSION||(h[6]!=IKQT_Q8&&h[6]!=IKQT_Q4)||h[7]!=(unsigned)ndim||rd32(h+8)<2||rd32(h+68)!=name_crc(name)){CLOSE_FD(fd);return -1;}for(int i=0;i<4;i++){int got=(int)rd32(h+12+4*i);if(i<ndim){if(got!=shape[i]||got<1){CLOSE_FD(fd);return -1;}}else if(got){CLOSE_FD(fd);return -1;}}
+ uint64_t rows=rd64(h+28),cols=rd64(h+36),qb=rd64(h+44),sb=rd64(h+52);uint32_t group=rd32(h+8);size_t groups=(size_t)((cols+group-1)/group);size_t rowbytes=groups*(size_t)group*(h[6]==IKQT_Q8?1u:1u)/ (h[6]==IKQT_Q8?1u:2u);if(!rows||!cols||qb!=rows*rowbytes||sb!=rows*groups*2u){CLOSE_FD(fd);return -1;}for(int i=72;i<96;i++)if(h[i]){CLOSE_FD(fd);return -1;}t->qrow=malloc(rowbytes?rowbytes:1);t->scales=malloc(groups*sizeof(uint16_t));if(!t->qrow||!t->scales){waste_inkling_qtensor_close(t);CLOSE_FD(fd);return -1;}t->fd=fd;t->fmt=h[6];t->ndim=ndim;t->group=(int)group;for(int i=0;i<ndim;i++)t->shape[i]=shape[i];t->rows=rows;t->cols=cols;t->qbytes=qb;t->scale_bytes=sb;t->scale_off=IKQT_HEADER+qb;t->rowbytes=rowbytes;t->groups=groups;t->q_crc32=rd32(h+60);t->scale_crc32=rd32(h+64);t->verify_crc=verify;if(verify&&(verify_range(fd,IKQT_HEADER,qb,t->q_crc32)||verify_range(fd,t->scale_off,sb,t->scale_crc32))){waste_inkling_qtensor_close(t);return -1;}return 0;}
+-void waste_inkling_qtensor_close(waste_inkling_qtensor*t){if(!t)return;if(t->fd>=0)CLOSE_FD(t->fd);free(t->qrow);free(t->scales);memset(t,0,sizeof*t);t->fd=-1;}
+-int waste_inkling_qtensor_row(waste_inkling_qtensor*t,uint64_t row,float*out,size_t cols){if(!t||t->fd<0||!out||row>=t->rows||cols!=(size_t)t->cols)return -1;if(preadn(t->fd,t->qrow,t->rowbytes,IKQT_HEADER+row*t->rowbytes)||preadn(t->fd,t->scales,t->groups*2,t->scale_off+row*t->groups*2))return -1;for(size_t c=0;c<cols;c++){size_t g=c/(size_t)t->group;float s=f16(t->scales[g]);int q;if(t->fmt==IKQT_Q8)q=(int)((int8_t*)t->qrow)[c];else{unsigned char b=t->qrow[c>>1];q=(int)((c&1)?(b>>4):(b&15))-8;}out[c]=(float)q*s;}return 0;}
+-int waste_inkling_qtensor_matvec(waste_inkling_qtensor*t,const float*x,float*out,size_t rows,size_t cols){if(!t||!x||!out||rows!=(size_t)t->rows||cols!=(size_t)t->cols)return -1;for(size_t r=0;r<rows;r++){if(preadn(t->fd,t->qrow,t->rowbytes,IKQT_HEADER+r*t->rowbytes)||preadn(t->fd,t->scales,t->groups*2,t->scale_off+r*t->groups*2))return -1;double sum=0.0;for(size_t c=0;c<cols;c++){size_t g=c/(size_t)t->group;int q;if(t->fmt==IKQT_Q8)q=(int)((int8_t*)t->qrow)[c];else{unsigned char b=t->qrow[c>>1];q=(int)((c&1)?(b>>4):(b&15))-8;}sum+=(double)((float)q*f16(t->scales[g]))*x[c];}out[r]=(float)sum;}return 0;}
++void waste_inkling_qtensor_close(waste_inkling_qtensor*t){if(!t)return;if(t->fd>=0)CLOSE_FD(t->fd);free(t->qrow);free(t->scales);free(t->qdata);free(t->scale_data);memset(t,0,sizeof*t);t->fd=-1;}
++size_t waste_inkling_qtensor_resident_bytes(const waste_inkling_qtensor *t)
++{
++    if (!t) return 0;
++    if (t->qbytes > SIZE_MAX - t->scale_bytes) return 0;
++    return (size_t)(t->qbytes + t->scale_bytes);
++}
++int waste_inkling_qtensor_load_resident(waste_inkling_qtensor *t)
++{
++    if (!t || t->fd < 0) return -1;
++    if (t->qdata && t->scale_data) return 0;
++    if (t->qbytes > SIZE_MAX || t->scale_bytes > SIZE_MAX) return -1;
++    unsigned char*q=malloc((size_t)t->qbytes?t->qbytes:1);
++    uint16_t*s=malloc((size_t)t->scale_bytes?t->scale_bytes:2);
++    if(!q||!s){free(q);free(s);return -1;}
++    if(preadn(t->fd,q,(size_t)t->qbytes,IKQT_HEADER)||
++       preadn(t->fd,s,(size_t)t->scale_bytes,t->scale_off)){free(q);free(s);return -1;}
++    t->qdata=q;t->scale_data=s;return 0;
++}
++int waste_inkling_qtensor_row(waste_inkling_qtensor *t, uint64_t row,
++                              float *out, size_t cols)
++{
++    if (!t || t->fd < 0 || !out || row >= t->rows ||
++        cols != (size_t)t->cols) return -1;
++    const unsigned char *qrow;
++    const uint16_t *sc;
++    if (t->qdata && t->scale_data) {
++        qrow = t->qdata + row * t->rowbytes;
++        sc = t->scale_data + row * t->groups;
++    } else {
++        if (preadn(t->fd, t->qrow, t->rowbytes,
++                   IKQT_HEADER + row * t->rowbytes) ||
++            preadn(t->fd, t->scales, t->groups * 2,
++                   t->scale_off + row * t->groups * 2)) return -1;
++        qrow = t->qrow;
++        sc = t->scales;
++    }
++    for (size_t g = 0; g < t->groups; g++) {
++        const float scale = f16(sc[g]);
++        const size_t begin = g * (size_t)t->group;
++        size_t stop = begin + (size_t)t->group;
++        if (stop > cols) stop = cols;
++        for (size_t c = begin; c < stop; c++) {
++            int q;
++            if (t->fmt == IKQT_Q8) q = (int)((const int8_t *)qrow)[c];
++            else {
++                const unsigned char b = qrow[c >> 1];
++                q = (int)((c & 1) ? (b >> 4) : (b & 15)) - 8;
++            }
++            out[c] = (float)q * scale;
++        }
++    }
++    return 0;
++}
++
++int waste_inkling_qtensor_matvec_rows(waste_inkling_qtensor *t, const float *x,
++                                      float *out, size_t row0, size_t rows,
++                                      size_t cols)
++{
++    if (!t || !x || !out || cols != (size_t)t->cols ||
++        row0 > (size_t)t->rows || rows > (size_t)t->rows - row0) return -1;
++    for (size_t r = 0; r < rows; r++) {
++        const size_t rr = row0 + r;
++        const unsigned char *qrow;
++        const uint16_t *sc;
++        if (t->qdata && t->scale_data) {
++            qrow = t->qdata + rr * t->rowbytes;
++            sc = t->scale_data + rr * t->groups;
++        } else {
++            if (preadn(t->fd, t->qrow, t->rowbytes,
++                       IKQT_HEADER + rr * t->rowbytes) ||
++                preadn(t->fd, t->scales, t->groups * 2,
++                       t->scale_off + rr * t->groups * 2)) return -1;
++            qrow = t->qrow;
++            sc = t->scales;
++        }
++        double sum = 0.0;
++        for (size_t g = 0; g < t->groups; g++) {
++            const float scale = f16(sc[g]);
++            const size_t begin = g * (size_t)t->group;
++            size_t stop = begin + (size_t)t->group;
++            if (stop > cols) stop = cols;
++            for (size_t c = begin; c < stop; c++) {
++                int q;
++                if (t->fmt == IKQT_Q8) q = (int)((const int8_t *)qrow)[c];
++                else {
++                    const unsigned char b = qrow[c >> 1];
++                    q = (int)((c & 1) ? (b >> 4) : (b & 15)) - 8;
++                }
++                sum += (double)((float)q * scale) * x[c];
++            }
++        }
++        out[r] = (float)sum;
++    }
++    return 0;
++}
++int waste_inkling_qtensor_matvec(waste_inkling_qtensor *t, const float *x,
++                                 float *out, size_t rows, size_t cols)
++{
++    return t && rows == (size_t)t->rows
++         ? waste_inkling_qtensor_matvec_rows(t, x, out, 0, rows, cols) : -1;
++}
+diff --git a/src/inkling_qtensor.h b/src/inkling_qtensor.h
+index b7a51fa..b5ad6e4 100644
+--- a/src/inkling_qtensor.h
++++ b/src/inkling_qtensor.h
+@@ -16,14 +16,21 @@ typedef struct {
+     int verify_crc;
+     unsigned char *qrow;
+     uint16_t *scales;
++    unsigned char *qdata;   /* optional resident payload */
++    uint16_t *scale_data;   /* optional resident scales */
+ } waste_inkling_qtensor;
+ 
+ int waste_inkling_qtensor_open(waste_inkling_qtensor *t, const char *path,
+                                const char *name, const int *shape, int ndim,
+                                int verify_crc);
+ void waste_inkling_qtensor_close(waste_inkling_qtensor *t);
++int waste_inkling_qtensor_load_resident(waste_inkling_qtensor *t);
++size_t waste_inkling_qtensor_resident_bytes(const waste_inkling_qtensor *t);
+ int waste_inkling_qtensor_row(waste_inkling_qtensor *t, uint64_t row,
+                               float *out, size_t cols);
++int waste_inkling_qtensor_matvec_rows(waste_inkling_qtensor *t, const float *x,
++                                      float *out, size_t row0, size_t rows,
++                                      size_t cols);
+ int waste_inkling_qtensor_matvec(waste_inkling_qtensor *t, const float *x,
+                                  float *out, size_t rows, size_t cols);
+ #ifdef __cplusplus
+diff --git a/tests/test_convert_inkling.py b/tests/test_convert_inkling.py
+index 7a1d7f4..029692d 100644
+--- a/tests/test_convert_inkling.py
++++ b/tests/test_convert_inkling.py
+@@ -157,6 +157,34 @@ class InklingStageCliTest(unittest.TestCase):
+         self.assertFalse((out / "manifest.json").exists())
+ 
+ 
++    def test_publish_quantized_trunk_v3_stage(self):
++        from inkling_trunk import stage_trunk
++        from inkling_qtrunk import quantize_trunk
++        from inkling_vq import VQSpec, quantize_expert_banks
++        from test_inkling_trunk import make_full_checkpoint
++
++        td, root, _ = make_full_checkpoint()
++        self.addCleanup(td.cleanup)
++        out_td = tempfile.TemporaryDirectory()
++        self.addCleanup(out_td.cleanup)
++        out = Path(out_td.name)
++        stage_trunk(root, out, chunk_bytes=256)
++        quantize_trunk(out, bits=4, group=4, chunk_rows=2)
++        quantize_expert_banks(
++            root, out, spec=VQSpec(stages=2, vec_dim=4, entries=4, index_block=4),
++            codebook_sample=2, train_vectors=32, kmeans_iterations=1,
++            assign_chunk=64, verify=True,
++        )
++        rc = convert_inkling.main([
++            "--src", str(root), "--out", str(out),
++            "--publish-runtime-qtrunk-stage", "--allow-generic-inkling",
++        ])
++        self.assertEqual(rc, 0)
++        meta = json.loads((out / "runtime-stage.json").read_text())
++        self.assertEqual(meta["schema"], "waste.inkling-private-runtime-stage.v3")
++        self.assertTrue(meta["status"]["quantized_trunk"])
++        self.assertFalse((out / "manifest.json").exists())
++
+     def test_quantize_trunk_writes_private_artifacts_not_manifest(self):
+         from inkling_trunk import stage_trunk
+         from test_inkling_trunk import make_full_checkpoint
+diff --git a/tests/test_inkling_private_c.py b/tests/test_inkling_private_c.py
+index d8a8bf1..2c5d764 100644
+--- a/tests/test_inkling_private_c.py
++++ b/tests/test_inkling_private_c.py
+@@ -16,7 +16,8 @@ REPO = Path(__file__).resolve().parents[1]
+ sys.path.insert(0, str(REPO / "tools"))
+ sys.path.insert(0, str(REPO / "tests"))
+ 
+-from inkling_runtime_stage import _bank_bytes, _header_bytes, _layer_bytes, _tensor_bytes
++from inkling_runtime_stage import _bank_bytes, _header_bytes, _layer_bytes, _tensor_bytes, _qtensor_bytes
++from inkling_qtrunk import FMT_Q4G, FMT_Q8G, HEADER as QHEADER, _align as qalign, _header as qheader, _policy as qpolicy, _quantize_rows
+ from inkling_vq import (
+     VQSpec, dequantize_record, quantize_matrix, read_codebooks,
+     train_codebooks, write_codebooks, write_expert_record,
+@@ -155,6 +156,47 @@ def write_vq_bank(root, layer, cfg, extra, spec):
+     return item, tuple(torch.stack(values) for values in decoded)
+ 
+ 
++def write_qtensor(root, ordinal, name, value, bits=4, group=4):
++    value = rounded(value).float().contiguous()
++    shape = list(value.shape)
++    rows = int(torch.tensor(shape[:-1]).prod().item())
++    cols = shape[-1]
++    fmt = FMT_Q8G if name in ("inkling.embed", "inkling.unembed") or name.endswith("router.weight") else (FMT_Q8G if bits == 8 else FMT_Q4G)
++    qb, sb = _quantize_rows(value.reshape(rows, cols), fmt, group)
++    qcrc = zlib.crc32(qb) & 0xFFFFFFFF
++    scrc = zlib.crc32(sb) & 0xFFFFFFFF
++    file_name = f"{ordinal:05d}.qtensor"
++    path = root / "qtrunk-stage" / file_name
++    path.parent.mkdir(parents=True, exist_ok=True)
++    head = qheader(name, fmt, group, shape, rows, cols, len(qb), len(sb), qcrc, scrc)
++    stored = qalign(len(head) + len(qb) + len(sb))
++    path.write_bytes(head + qb + sb + b"\0" * (stored - len(head) - len(qb) - len(sb)))
++    scales = torch.frombuffer(bytearray(sb), dtype=torch.float16).float().reshape(rows, -1)
++    padded = scales.shape[1] * group
++    if fmt == FMT_Q8G:
++        q = torch.frombuffer(bytearray(qb), dtype=torch.int8).reshape(rows, padded).float()
++    else:
++        packed = torch.frombuffer(bytearray(qb), dtype=torch.uint8).reshape(rows, padded // 2)
++        q = torch.empty(rows, padded, dtype=torch.float32)
++        q[:, 0::2] = (packed & 15).float() - 8
++        q[:, 1::2] = (packed >> 4).float() - 8
++    deq = (q.reshape(rows, -1, group) * scales.unsqueeze(-1)).reshape(rows, padded)[:, :cols].reshape(shape).contiguous()
++    item = {
++        "target": name, "file": file_name, "shape": shape,
++        "bits": 8 if fmt == FMT_Q8G else 4, "group": group,
++        "rows": rows, "cols": cols, "qbytes": len(qb),
++        "scale_bytes": len(sb), "stored_bytes": stored,
++        "q_crc32": qcrc, "scale_crc32": scrc,
++    }
++    return item, deq
++
++
++def overwrite_pointer(ptr, value):
++    a = array(value)
++    ctypes.memmove(ptr, a, value.numel() * ctypes.sizeof(ctypes.c_float))
++    return a
++
++
+ class InklingPrivateOpenTest(unittest.TestCase):
+     @classmethod
+     def setUpClass(cls):
+@@ -168,7 +210,7 @@ class InklingPrivateOpenTest(unittest.TestCase):
+                 cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
+                 f"-I{REPO / 'src'}",
+                 *[str(REPO / "src" / name) for name in (
+-                    "inkling_private.c", "inkling_stage_reader.c", "inkling_wexp.c", "inkling_bind.c",
++                    "inkling_private.c", "inkling_stage_reader.c", "inkling_wexp.c", "inkling_qtensor.c", "inkling_bind.c",
+                     "inkling_model.c", "inkling_layer.c", "inkling_attention.c",
+                     "inkling_config.c", "inkling.c",
+                 )],
+@@ -212,6 +254,10 @@ class InklingPrivateOpenTest(unittest.TestCase):
+         cls.lib.waste_inkling_private_step.restype = ctypes.c_int
+         cls.lib.waste_inkling_private_reset.argtypes = [ctypes.c_void_p]
+         cls.lib.waste_inkling_private_close.argtypes = [ctypes.c_void_p]
++        cls.lib.waste_inkling_private_quantized_trunk_bytes.argtypes = [ctypes.c_void_p]
++        cls.lib.waste_inkling_private_quantized_trunk_bytes.restype = ctypes.c_size_t
++        cls.lib.waste_inkling_private_resident_f32_bytes.argtypes = [ctypes.c_void_p]
++        cls.lib.waste_inkling_private_resident_f32_bytes.restype = ctypes.c_size_t
+ 
+     @classmethod
+     def tearDownClass(cls):
+@@ -435,6 +481,96 @@ class InklingPrivateOpenTest(unittest.TestCase):
+         (root / "runtime-stage.bin").write_bytes(payload)
+         return root
+ 
++    def write_qtrunk_vq_stage(self, cfg, tensors, extras, direct, keep):
++        # Start from the independently dequantized final-WEXP fixture, then
++        # replace all eligible trunk matrices with Q8/Q4 artifacts and a v3
++        # private index. The direct model's resident matrices are overwritten
++        # with the independently decoded Q values, making byte-to-logit parity
++        # exact rather than comparing against the unquantized source.
++        root = self.write_vq_stage(cfg, tensors, extras, direct, keep)
++        qitems = []
++        canonical = []
++        role_to_field = {
++            "q": "wq", "k": "wk", "v": "wv", "r": "wr", "o": "wo",
++            "mlp.gate": "dense_gate", "mlp.up": "dense_up", "mlp.down": "dense_down",
++            "router.weight": "router_weight", "shared.gate": "shared_gate",
++            "shared.up": "shared_up", "shared.down": "shared_down",
++        }
++        for ordinal, (name, value) in enumerate(sorted(tensors.items())):
++            if value.ndim >= 2 and qpolicy(name, 4) is not None:
++                item, deq = write_qtensor(root, ordinal, name, value, bits=4, group=4)
++                qitems.append(item)
++                if name == "inkling.embed":
++                    keep.append(overwrite_pointer(direct.embedding, deq))
++                elif name == "inkling.unembed":
++                    keep.append(overwrite_pointer(direct.unembedding, deq))
++                else:
++                    parts = name.split(".")
++                    layer = int(parts[2])
++                    role = ".".join(parts[3:])
++                    keep.append(overwrite_pointer(getattr(direct.layer[layer], role_to_field[role]), deq))
++            else:
++                canonical.append(write_tensor(root, ordinal, name, value))
++        banks = []
++        spec = VQSpec(stages=2, vec_dim=2, entries=4, index_block=4)
++        for layer in range(cfg.dense_layers, cfg.n_layers):
++            path = root / f"experts-L{layer}.bin"
++            banks.append({
++                "file": path.name, "layer": layer,
++                "experts": cfg.n_routed_experts, "hidden_size": cfg.hidden,
++                "intermediate_size": cfg.moe_intermediate,
++                "record_bytes": path.stat().st_size // cfg.n_routed_experts,
++                "bytes": path.stat().st_size,
++                "codebook_base": (layer - cfg.dense_layers) * 3 * spec.stages,
++            })
++        config = {
++            "n_layers": cfg.n_layers, "hidden": cfg.hidden, "vocab": cfg.vocab,
++            "unpadded_vocab": cfg.unpadded_vocab, "max_context": cfg.max_context,
++            "global_heads": cfg.global_heads, "global_kv_heads": cfg.global_kv_heads,
++            "global_head_dim": cfg.global_head_dim, "local_heads": cfg.local_heads,
++            "local_kv_heads": cfg.local_kv_heads, "local_head_dim": cfg.local_head_dim,
++            "sliding_window": cfg.sliding_window, "d_rel": cfg.d_rel,
++            "rel_extent": cfg.rel_extent, "conv_kernel": cfg.conv_kernel,
++            "dense_layers": cfg.dense_layers, "dense_intermediate": cfg.dense_intermediate,
++            "moe_intermediate": cfg.moe_intermediate,
++            "n_routed_experts": cfg.n_routed_experts, "top_k": cfg.top_k,
++            "n_shared_experts": cfg.n_shared_experts, "rms_eps": cfg.rms_eps,
++            "route_scale": cfg.route_scale,
++            "logits_width_multiplier": cfg.logits_width_multiplier,
++            "log_scaling_n_floor": cfg.log_scaling_n_floor,
++            "log_scaling_alpha": cfg.log_scaling_alpha,
++            "layers": [{
++                "layer": i, "is_local": bool(cfg.layer[i].is_local),
++                "num_heads": cfg.layer[i].num_heads,
++                "num_kv_heads": cfg.layer[i].num_kv_heads,
++                "head_dim": cfg.layer[i].head_dim,
++                "relative_extent": cfg.layer[i].relative_extent,
++                "sparse": i >= cfg.dense_layers,
++            } for i in range(cfg.n_layers)],
++        }
++        release = {
++            "official_small": False, "config_sha256": "00" * 32,
++            "index_sha256": "11" * 32, "model_id": "synthetic-inkling-qtrunk",
++            "release_upload_commit": "", "package": {"total_size": 0},
++        }
++        quant = {"stages": 2, "vec_dim": 2, "entries": 4, "index_block": 4}
++        payload = bytearray(_header_bytes(
++            config, release, len(qitems) + len(canonical), len(banks),
++            expert_format="vq", quant=quant, quantized_trunk=True,
++        ))
++        for layer in config["layers"]:
++            payload += _layer_bytes(layer)
++        for item in sorted(canonical, key=lambda x: x["target"]):
++            payload += _tensor_bytes(root, item)
++        for item in sorted(qitems, key=lambda x: x["target"]):
++            payload += _qtensor_bytes(item)
++        # Runtime registry order is irrelevant, but canonical names must be
++        # unique. Sorting the two groups separately deliberately exercises it.
++        for item in banks:
++            payload += _bank_bytes(item, final_vq=True)
++        (root / "runtime-stage.bin").write_bytes(payload)
++        return root
++
+     def direct_runtime(self, cfg):
+         capacity = 5
+         ns = self.lib.waste_inkling_model_state_floats(ctypes.byref(cfg), capacity)
+@@ -512,6 +648,34 @@ class InklingPrivateOpenTest(unittest.TestCase):
+             )
+         self.assertTrue(keep and runtime_keep)
+ 
++    def test_quantized_trunk_v3_matches_independent_dequantized_model(self):
++        cfg, direct, tensors, extras, keep = self.fixture()
++        root = self.write_qtrunk_vq_stage(cfg, tensors, extras, direct, keep)
++        state, scratch, runtime_keep, capacity = self.direct_runtime(cfg)
++        opts = PrivateOptions(capacity, 1, 0)
++        private = ctypes.c_void_p()
++        detail = ctypes.create_string_buffer(256)
++        self.assertEqual(self.lib.waste_inkling_private_open(
++            str(root).encode(), ctypes.byref(opts), ctypes.byref(private),
++            detail, len(detail)), 0, detail.value.decode())
++        self.addCleanup(lambda: self.lib.waste_inkling_private_close(private) if private.value else None)
++        self.assertGreater(self.lib.waste_inkling_private_quantized_trunk_bytes(private), 0)
++        self.assertLess(self.lib.waste_inkling_private_resident_f32_bytes(private),
++                        sum(v.numel() for v in tensors.values()) * 4)
++        null_expert = ExpertCallback()
++        for pos, token in enumerate((3, 7, 1, 12)):
++            expected = (ctypes.c_float * cfg.unpadded_vocab)()
++            actual = (ctypes.c_float * cfg.unpadded_vocab)()
++            self.assertEqual(self.lib.waste_inkling_model_step(
++                ctypes.byref(cfg), ctypes.byref(direct), ctypes.byref(state),
++                ctypes.byref(scratch), token, pos, expected, len(expected),
++                null_expert, None), 0)
++            self.assertEqual(self.lib.waste_inkling_private_step(
++                private, token, pos, actual, len(actual)), 0)
++            torch.testing.assert_close(torch.tensor(list(actual)),
++                                       torch.tensor(list(expected)), rtol=0, atol=0)
++        self.assertTrue(keep and runtime_keep)
++
+     def test_official_requirement_and_corrupt_index_fail_closed(self):
+         cfg, direct, tensors, extras, keep = self.fixture()
+         root = self.write_stage(cfg, tensors, extras)
+diff --git a/tests/test_inkling_qtrunk.py b/tests/test_inkling_qtrunk.py
+index 7ed5811..b5bade0 100755
+--- a/tests/test_inkling_qtrunk.py
++++ b/tests/test_inkling_qtrunk.py
+@@ -16,7 +16,8 @@ class QT(ctypes.Structure):
+               ('qbytes',ctypes.c_uint64),('scale_bytes',ctypes.c_uint64),('scale_off',ctypes.c_uint64),
+               ('rowbytes',ctypes.c_size_t),('groups',ctypes.c_size_t),('q_crc32',ctypes.c_uint32),
+               ('scale_crc32',ctypes.c_uint32),('verify_crc',ctypes.c_int),
+-              ('qrow',ctypes.POINTER(ctypes.c_ubyte)),('scales',ctypes.POINTER(ctypes.c_uint16))]
++              ('qrow',ctypes.POINTER(ctypes.c_ubyte)),('scales',ctypes.POINTER(ctypes.c_uint16)),
++              ('qdata',ctypes.POINTER(ctypes.c_ubyte)),('scale_data',ctypes.POINTER(ctypes.c_uint16))]
+ 
+ class QTrunkTest(unittest.TestCase):
+     @classmethod
+@@ -31,6 +32,11 @@ class QTrunkTest(unittest.TestCase):
+         cls.lib.waste_inkling_qtensor_close.argtypes=[ctypes.POINTER(QT)]
+         cls.lib.waste_inkling_qtensor_row.argtypes=[ctypes.POINTER(QT),ctypes.c_uint64,ctypes.POINTER(ctypes.c_float),ctypes.c_size_t]
+         cls.lib.waste_inkling_qtensor_matvec.argtypes=[ctypes.POINTER(QT),ctypes.POINTER(ctypes.c_float),ctypes.POINTER(ctypes.c_float),ctypes.c_size_t,ctypes.c_size_t]
++        cls.lib.waste_inkling_qtensor_matvec_rows.argtypes=[ctypes.POINTER(QT),ctypes.POINTER(ctypes.c_float),ctypes.POINTER(ctypes.c_float),ctypes.c_size_t,ctypes.c_size_t,ctypes.c_size_t]
++        cls.lib.waste_inkling_qtensor_load_resident.argtypes=[ctypes.POINTER(QT)]
++        cls.lib.waste_inkling_qtensor_load_resident.restype=ctypes.c_int
++        cls.lib.waste_inkling_qtensor_resident_bytes.argtypes=[ctypes.POINTER(QT)]
++        cls.lib.waste_inkling_qtensor_resident_bytes.restype=ctypes.c_size_t
+     @classmethod
+     def tearDownClass(cls): cls.bt.cleanup()
+ 
+@@ -67,6 +73,26 @@ class QTrunkTest(unittest.TestCase):
+                     torch.testing.assert_close(torch.tensor(list(y)),ref@x,rtol=2e-5,atol=2e-5)
+                 finally: self.lib.waste_inkling_qtensor_close(ctypes.byref(t))
+ 
++    def test_resident_payload_and_row_range_match_disk_path(self):
++        out=self.setup_stage(); stage=quantize_trunk(out,bits=4,group=8,chunk_rows=2)
++        meta=next(x for x in stage['tensors'] if x['target']=='inkling.layer.0.q')
++        t=self._open(out,meta)
++        try:
++            rows,cols=meta['rows'],meta['cols']
++            x=torch.linspace(-0.5,0.5,cols); xin=(ctypes.c_float*cols)(*x.tolist())
++            disk=(ctypes.c_float*2)()
++            self.assertEqual(self.lib.waste_inkling_qtensor_matvec_rows(
++                ctypes.byref(t),xin,disk,1,2,cols),0)
++            self.assertEqual(self.lib.waste_inkling_qtensor_load_resident(ctypes.byref(t)),0)
++            self.assertEqual(self.lib.waste_inkling_qtensor_resident_bytes(ctypes.byref(t)),
++                             meta['qbytes']+meta['scale_bytes'])
++            resident=(ctypes.c_float*2)()
++            self.assertEqual(self.lib.waste_inkling_qtensor_matvec_rows(
++                ctypes.byref(t),xin,resident,1,2,cols),0)
++            self.assertEqual(bytes(disk),bytes(resident))
++            self.assertNotEqual(bool(t.qdata),False)
++        finally: self.lib.waste_inkling_qtensor_close(ctypes.byref(t))
++
+     def test_sensitive_policy_and_resume(self):
+         out=self.setup_stage(); first=quantize_trunk(out,bits=4,group=8,chunk_rows=2)
+         by={x['target']:x for x in first['tensors']}
+diff --git a/tests/test_inkling_runtime_stage.py b/tests/test_inkling_runtime_stage.py
+index af5000a..86aaa98 100644
+--- a/tests/test_inkling_runtime_stage.py
++++ b/tests/test_inkling_runtime_stage.py
+@@ -14,10 +14,13 @@ sys.path.insert(0, str(REPO / "tests"))
+ from inkling_runtime_stage import (
+     BANK_ENTRY_BYTES, HEADER_BYTES, LAYER_ENTRY_BYTES, MAGIC,
+     RuntimeStageError, TENSOR_ENTRY_BYTES, VERSION, VERSION_VQ,
++    VERSION_QTRUNK_VQ, TENSOR_FLAG_QUANTIZED,
+     publish_runtime_stage, publish_runtime_vq_stage,
++    publish_runtime_qtrunk_vq_stage,
+ )
+ from inkling_stage import stage_expert_banks
+ from inkling_trunk import stage_trunk
++from inkling_qtrunk import quantize_trunk
+ from inkling_vq import VQSpec, quantize_expert_banks
+ from test_inkling_trunk import make_full_checkpoint
+ 
+@@ -81,6 +84,56 @@ class RuntimeStageTest(unittest.TestCase):
+         self.assertEqual(struct.unpack_from("<I", raw, bank0 + 112)[0], 0)
+         self.assertEqual(struct.unpack_from("<I", raw, bank0 + BANK_ENTRY_BYTES + 112)[0], 6)
+ 
++    def test_publish_qtrunk_v3_index(self):
++        td, src, _ = make_full_checkpoint()
++        self.addCleanup(td.cleanup)
++        out_td = tempfile.TemporaryDirectory()
++        self.addCleanup(out_td.cleanup)
++        out = Path(out_td.name)
++        stage_trunk(src, out, chunk_bytes=256)
++        quantize_trunk(out, bits=4, group=4, chunk_rows=2)
++        quantize_expert_banks(
++            src, out, spec=VQSpec(stages=2, vec_dim=4, entries=4, index_block=4),
++            codebook_sample=2, train_vectors=32, kmeans_iterations=1,
++            assign_chunk=64, verify=True,
++        )
++        meta = publish_runtime_qtrunk_vq_stage(src, out, require_official=False)
++        self.assertEqual(meta["schema"], "waste.inkling-private-runtime-stage.v3")
++        self.assertGreater(meta["counts"]["quantized_tensors"], 0)
++        raw = (out / "runtime-stage.bin").read_bytes()
++        self.assertEqual(struct.unpack_from("<H", raw, 4)[0], VERSION_QTRUNK_VQ)
++        layers, tensors, _ = struct.unpack_from("<III", raw, 24)
++        off = HEADER_BYTES + layers * LAYER_ENTRY_BYTES
++        seen_quantized = False
++        for i in range(tensors):
++            e = off + i * TENSOR_ENTRY_BYTES
++            flags = struct.unpack_from("<H", raw, e + 210)[0]
++            if flags & TENSOR_FLAG_QUANTIZED:
++                seen_quantized = True
++                self.assertIn(raw[e + 208], (4, 5))
++        self.assertTrue(seen_quantized)
++        self.assertFalse((out / "manifest.json").exists())
++
++    def test_qtrunk_source_identity_prevents_stale_publication(self):
++        td, src, _ = make_full_checkpoint()
++        self.addCleanup(td.cleanup)
++        out_td = tempfile.TemporaryDirectory()
++        self.addCleanup(out_td.cleanup)
++        out = Path(out_td.name)
++        stage_trunk(src, out, chunk_bytes=256)
++        quantize_trunk(out, bits=4, group=4, chunk_rows=2)
++        quantize_expert_banks(
++            src, out, spec=VQSpec(stages=2, vec_dim=4, entries=4, index_block=4),
++            codebook_sample=2, train_vectors=32, kmeans_iterations=1,
++            assign_chunk=64, verify=True,
++        )
++        trunk = json.loads((out / "trunk-stage.json").read_text())
++        trunk["tampered"] = True
++        (out / "trunk-stage.json").write_text(json.dumps(trunk))
++        with self.assertRaisesRegex(RuntimeStageError, "not built from this"):
++            publish_runtime_qtrunk_vq_stage(src, out, require_official=False)
++        self.assertFalse((out / "runtime-stage.bin").exists())
++
+     def test_missing_or_corrupt_artifact_prevents_publication(self):
+         src, out = self.build()
+         trunk = json.loads((out / "trunk-stage.json").read_text())
+diff --git a/tools/convert_inkling.py b/tools/convert_inkling.py
+index 96f682e..93f3d0b 100644
+--- a/tools/convert_inkling.py
++++ b/tools/convert_inkling.py
+@@ -35,6 +35,7 @@ from inspect_inkling import InspectError
+ from inkling_plan import PlanError, build_plan, write_json_atomic
+ from inkling_runtime_stage import (
+     RuntimeStageError, publish_runtime_stage, publish_runtime_vq_stage,
++    publish_runtime_qtrunk_vq_stage,
+ )
+ from inkling_stage import StageError, stage_expert_banks
+ from inkling_trunk import TrunkStageError, stage_trunk
+@@ -89,6 +90,11 @@ def main(argv: list[str] | None = None) -> int:
+         action="store_true",
+         help="validate trunk plus final WEXP/VQ banks and publish private runtime-stage.bin",
+     )
++    mode.add_argument(
++        "--publish-runtime-qtrunk-stage",
++        action="store_true",
++        help="publish private v3 runtime index from Q8/Q4 trunk plus final WEXP/VQ banks",
++    )
+     ap.add_argument(
+         "--allow-index-only",
+         action="store_true",
+@@ -130,9 +136,9 @@ def main(argv: list[str] | None = None) -> int:
+         ap.error("--layers and --experts require --stage-experts or --quantize-experts")
+     if args.no_resume and not (args.stage_experts or args.stage_trunk or args.quantize_experts or args.quantize_trunk):
+         ap.error("--no-resume requires --stage-experts, --stage-trunk, or --quantize-experts")
+-    if args.no_verify and not (args.stage_experts or args.stage_trunk or args.quantize_experts or args.quantize_trunk or args.publish_runtime_stage or args.publish_runtime_vq_stage):
++    if args.no_verify and not (args.stage_experts or args.stage_trunk or args.quantize_experts or args.quantize_trunk or args.publish_runtime_stage or args.publish_runtime_vq_stage or args.publish_runtime_qtrunk_stage):
+         ap.error("--no-verify requires a staging or runtime-stage mode")
+-    if args.allow_generic_inkling and not (args.publish_runtime_stage or args.publish_runtime_vq_stage):
++    if args.allow_generic_inkling and not (args.publish_runtime_stage or args.publish_runtime_vq_stage or args.publish_runtime_qtrunk_stage):
+         ap.error("--allow-generic-inkling requires a runtime-stage publication mode")
+     vq_tuned = (args.vq_stages != 3 or args.vq_entries != 256 or args.codebook_sample != 12 or
+                   args.train_vectors != 300000 or args.kmeans_iters != 10 or
+@@ -219,6 +225,23 @@ def main(argv: list[str] | None = None) -> int:
+         print("manifest.json was not written; public WASTE runtime remains disabled")
+         return 0
+ 
++    if args.publish_runtime_qtrunk_stage:
++        try:
++            meta = publish_runtime_qtrunk_vq_stage(
++                args.src, args.out, verify=not args.no_verify,
++                require_official=not args.allow_generic_inkling,
++            )
++        except RuntimeStageError as exc:
++            print(f"convert_inkling: {exc}", file=sys.stderr)
++            return 2
++        print(
++            f"published private quantized-trunk runtime stage with "
++            f"{meta['counts']['quantized_tensors']} Q8/Q4 tensors and "
++            f"{meta['counts']['banks']} WEXP banks"
++        )
++        print("manifest.json was not written; public WASTE runtime remains disabled")
++        return 0
++
+     if args.publish_runtime_vq_stage:
+         try:
+             meta = publish_runtime_vq_stage(
+@@ -273,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
+     print(
+         "convert_inkling: final container conversion is not implemented; refusing to create "
+         "a partial or misleading WASTE container. Use --plan-only, --stage-experts, --stage-trunk, "
+-        "--quantize-experts, --quantize-trunk, --publish-runtime-stage, or --publish-runtime-vq-stage.",
++        "--quantize-experts, --quantize-trunk, --publish-runtime-stage, --publish-runtime-vq-stage, or --publish-runtime-qtrunk-stage.",
+         file=sys.stderr,
+     )
+     return 2
+diff --git a/tools/inkling_qtrunk.py b/tools/inkling_qtrunk.py
+index c3000a7..91afd73 100755
+--- a/tools/inkling_qtrunk.py
++++ b/tools/inkling_qtrunk.py
+@@ -67,7 +67,7 @@ def _policy(target: str, bits: int) -> int | None:
+     # Vectors/scalars remain in the canonical BF16/F32 stage for now.
+     # Vocabulary tables and router logits are sensitivity-first Q8. The rest
+     # may use Q4 when explicitly requested.
+-    if target.endswith(("norm", "bias", "global_scale")):
++    if target.endswith(("norm", "bias", "global_scale", "rel_proj", "sconv")):
+         return None
+     if target in ("inkling.embed", "inkling.unembed") or target.endswith("router.weight"):
+         return FMT_Q8G
+diff --git a/tools/inkling_runtime_stage.py b/tools/inkling_runtime_stage.py
+index 6746e57..92dd6cb 100755
+--- a/tools/inkling_runtime_stage.py
++++ b/tools/inkling_runtime_stage.py
+@@ -26,6 +26,7 @@ from inkling_plan import PlanError, build_plan, write_json_atomic
+ from inkling_release import ReleaseError, inspect_release, require_official_small
+ from inkling_stage import StageError, verify_bank
+ from inkling_trunk import TrunkStageError, verify_tensor
++from inkling_qtrunk import QTrunkError, verify_qtensor
+ from inkling_vq import VQError, VQSpec, verify_layer_outputs
+ 
+ 
+@@ -36,6 +37,7 @@ class RuntimeStageError(RuntimeError):
+ MAGIC = 0x54524B49  # IKRT
+ VERSION = 1  # legacy BF16 private-stage index
+ VERSION_VQ = 2
++VERSION_QTRUNK_VQ = 3
+ BANK_FORMAT_BF16 = 0
+ BANK_FORMAT_VQ = 1
+ HEADER_BYTES = 256
+@@ -44,8 +46,9 @@ TENSOR_ENTRY_BYTES = 256
+ BANK_ENTRY_BYTES = 128
+ FLAG_OFFICIAL_SMALL = 1 << 0
+ TENSOR_FLAG_ROW_BACKED = 1 << 0
++TENSOR_FLAG_QUANTIZED = 1 << 1
+ 
+-DTYPE_CODE = {"BF16": 1, "F16": 2, "F32": 3}
++DTYPE_CODE = {"BF16": 1, "F16": 2, "F32": 3, "Q8": 4, "Q4": 5}
+ 
+ 
+ def _load(path: Path) -> dict[str, Any]:
+@@ -339,10 +342,12 @@ def _validate_vq_stages(
+ def _header_bytes(
+     config: dict[str, Any], release: dict[str, Any], ntensors: int, nbanks: int,
+     *, expert_format: str = "bf16", quant: dict[str, Any] | None = None,
++    quantized_trunk: bool = False,
+ ) -> bytes:
+     if expert_format not in ("bf16", "vq"):
+         raise RuntimeStageError(f"unsupported private expert format: {expert_format}")
+-    version = VERSION if expert_format == "bf16" else VERSION_VQ
++    version = (VERSION_QTRUNK_VQ if quantized_trunk else
++               VERSION if expert_format == "bf16" else VERSION_VQ)
+     b = bytearray(HEADER_BYTES)
+     struct.pack_into("<IHHI", b, 0, MAGIC, version, HEADER_BYTES,
+                      FLAG_OFFICIAL_SMALL if release.get("official_small") else 0)
+@@ -413,6 +418,30 @@ def _tensor_bytes(stage_dir: Path, item: dict[str, Any]) -> bytes:
+     return bytes(b)
+ 
+ 
++def _qtensor_bytes(item: dict[str, Any]) -> bytes:
++    b = bytearray(TENSOR_ENTRY_BYTES)
++    target = item["target"]
++    path = _safe_relative(f"qtrunk-stage/{item['file']}")
++    b[0:128] = _fixed(target, 128, "canonical tensor name")
++    b[128:208] = _fixed(path, 80, "quantized tensor path")
++    bits = int(item.get("bits", 0))
++    dtype = DTYPE_CODE.get("Q8" if bits == 8 else "Q4" if bits == 4 else "")
++    shape = item.get("shape")
++    if dtype is None or not isinstance(shape, list) or not 2 <= len(shape) <= 4 or any(
++        not isinstance(x, int) or x <= 0 for x in shape
++    ):
++        raise RuntimeStageError(f"invalid quantized tensor dtype/shape: {target}")
++    flags = TENSOR_FLAG_QUANTIZED
++    if target in ("inkling.embed", "inkling.unembed"):
++        flags |= TENSOR_FLAG_ROW_BACKED
++    struct.pack_into("<BBH", b, 208, dtype, len(shape), flags)
++    padded = shape + [0] * (4 - len(shape))
++    struct.pack_into("<4I", b, 212, *padded)
++    struct.pack_into("<QQI", b, 228, int(item["qbytes"]),
++                     int(item["stored_bytes"]), int(item["q_crc32"]))
++    return bytes(b)
++
++
+ def _bank_bytes(item: dict[str, Any], *, final_vq: bool = False) -> bytes:
+     b = bytearray(BANK_ENTRY_BYTES)
+     path = _safe_relative(str(item["file"]))
+@@ -570,6 +599,122 @@ def publish_runtime_vq_stage(
+     write_json_atomic(stage_dir / "runtime-stage.json", meta)
+     return meta
+ 
++def _validate_qtrunk_vq_stages(
++    src: Path, stage_dir: Path, *, verify: bool, require_official: bool,
++) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
++    plan, release, trunk, experts, quant = _validate_vq_stages(
++        src, stage_dir, verify=verify, require_official=require_official
++    )
++    qmeta = _load(stage_dir / "qtrunk-stage.json")
++    if qmeta.get("format") != "inkling-qtrunk-stage-v1":
++        raise RuntimeStageError("qtrunk-stage.json has an unsupported format")
++    h = hashlib.sha256((stage_dir / "trunk-stage.json").read_bytes()).hexdigest()
++    if qmeta.get("source_manifest_sha256") != h:
++        raise RuntimeStageError("quantized trunk was not built from this trunk-stage.json")
++    qitems = qmeta.get("tensors")
++    if not isinstance(qitems, list):
++        raise RuntimeStageError("qtrunk-stage.json tensors is not an array")
++    qby: dict[str, dict[str, Any]] = {}
++    for item in qitems:
++        if not isinstance(item, dict) or not isinstance(item.get("target"), str):
++            raise RuntimeStageError("malformed quantized trunk entry")
++        target = item["target"]
++        if target in qby:
++            raise RuntimeStageError(f"duplicate quantized trunk target: {target}")
++        rel = _safe_relative(str(item.get("file", "")))
++        path = stage_dir / "qtrunk-stage" / rel
++        try:
++            if verify:
++                verify_qtensor(path, item)
++            elif not path.is_file():
++                raise RuntimeStageError(f"missing quantized tensor: {path}")
++        except (OSError, QTrunkError) as exc:
++            raise RuntimeStageError(str(exc)) from exc
++        qby[target] = item
++    canonical = {item["target"]: item for item in trunk["tensors"]}
++    expected = _expected_targets(plan)
++    merged: list[dict[str, Any]] = []
++    for target in sorted(expected):
++        if target in qby:
++            merged.append(qby[target] | {"quantized": True})
++        elif target in canonical:
++            merged.append(canonical[target] | {"quantized": False})
++        else:
++            raise RuntimeStageError(f"missing canonical or quantized tensor: {target}")
++    if set(qby) - expected:
++        raise RuntimeStageError("quantized trunk contains unexpected tensor targets")
++    supported_roles = {
++        "q", "k", "v", "r", "o", "mlp.gate", "mlp.up", "mlp.down",
++        "router.weight", "shared.gate", "shared.up", "shared.down",
++    }
++    for target in qby:
++        if target in ("inkling.embed", "inkling.unembed"):
++            continue
++        parts = target.split(".", 3)
++        if len(parts) != 4 or parts[0] != "inkling" or parts[1] != "layer" or parts[3] not in supported_roles:
++            raise RuntimeStageError(f"quantized tensor has no runtime matrix backend: {target}")
++    # Every matrix except the tiny convolution and relative-bias matrices may
++    # be quantized. qtrunk policy intentionally leaves vectors/scalars in the
++    # canonical stage; requiring at least embedding/unembedding/router proves
++    # this is not a mislabeled v2 index.
++    required_q = {"inkling.embed", "inkling.unembed"}
++    required_q.update(t for t in expected if t.endswith("router.weight"))
++    missing_q = sorted(required_q - set(qby))
++    if missing_q:
++        raise RuntimeStageError(f"quantized trunk is incomplete: {missing_q[:3]}")
++    return plan, release, merged, experts, quant
++
++
++def publish_runtime_qtrunk_vq_stage(
++    src: Path, stage_dir: Path, *, verify: bool = True,
++    require_official: bool = True,
++) -> dict[str, Any]:
++    plan, release, tensors, experts, quant = _validate_qtrunk_vq_stages(
++        src, stage_dir, verify=verify, require_official=require_official
++    )
++    config = _config_values(plan)
++    banks = sorted(experts["layers"], key=lambda item: item["layer"])
++    payload = bytearray(_header_bytes(
++        config, release, len(tensors), len(banks), expert_format="vq",
++        quant=quant, quantized_trunk=True,
++    ))
++    for item in config["layers"]:
++        payload += _layer_bytes(item)
++    for item in tensors:
++        payload += (_qtensor_bytes(item) if item.get("quantized")
++                    else _tensor_bytes(stage_dir, item))
++    for item in banks:
++        payload += _bank_bytes(item, final_vq=True)
++    tmp = stage_dir / "runtime-stage.bin.tmp"
++    final = stage_dir / "runtime-stage.bin"
++    try:
++        with tmp.open("wb") as f:
++            f.write(payload); f.flush(); os.fsync(f.fileno())
++        os.replace(tmp, final)
++    except BaseException:
++        tmp.unlink(missing_ok=True)
++        raise
++    qcount = sum(bool(x.get("quantized")) for x in tensors)
++    meta = {
++        "schema": "waste.inkling-private-runtime-stage.v3",
++        "arch": "inkling-small" if release.get("official_small") else "inkling",
++        "model_id": release.get("model_id"),
++        "file": final.name, "bytes": final.stat().st_size,
++        "expert_format": "WEXP/VQ", "expert_quant": quant,
++        "trunk_format": "Q8/Q4 + canonical vectors",
++        "counts": {"layers": len(config["layers"]), "tensors": len(tensors),
++                   "quantized_tensors": qcount, "banks": len(banks)},
++        "status": {"private_runtime_stage_complete": True,
++                   "quantized_trunk": True, "final_expert_banks": True,
++                   "waste_manifest_written": False,
++                   "public_runtime_supported": False,
++                   "official_weight_logits_parity": False},
++        "publication_rule": "runtime-stage.bin is converter-private; manifest.json remains absent",
++    }
++    write_json_atomic(stage_dir / "runtime-stage.json", meta)
++    return meta
++
++
+ def main(argv: list[str] | None = None) -> int:
+     ap = argparse.ArgumentParser()
+     ap.add_argument("--src", required=True, type=Path)
+@@ -577,9 +722,13 @@ def main(argv: list[str] | None = None) -> int:
+     ap.add_argument("--no-verify", action="store_true")
+     ap.add_argument("--allow-generic-inkling", action="store_true")
+     ap.add_argument("--final-vq", action="store_true", help="publish from vq-stage.json instead of BF16 stage.json")
++    ap.add_argument("--quantized-trunk", action="store_true", help="publish v3 index using qtrunk-stage.json plus final VQ banks")
+     args = ap.parse_args(argv)
+     try:
+-        publisher = publish_runtime_vq_stage if args.final_vq else publish_runtime_stage
++        if args.quantized_trunk:
++            publisher = publish_runtime_qtrunk_vq_stage
++        else:
++            publisher = publish_runtime_vq_stage if args.final_vq else publish_runtime_stage
+         meta = publisher(
+             args.src, args.stage, verify=not args.no_verify,
+             require_official=not args.allow_generic_inkling,

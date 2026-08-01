@@ -1,0 +1,22 @@
+Patch 16 validation
+===================
+
+python -m unittest discover -s tests -p 'test_*.py'
+  Ran 99 tests
+  OK
+
+New trace coverage:
+- model, dense-layer, sparse-router, MoE, final norm and logits callbacks
+- integer routed-index callbacks
+- callback output equals returned logits
+- official-module hook naming with dense and sparse toy modules
+- immediate C callback data copying
+
+C strict compilation:
+  cc -std=c11 -Wall -Wextra -Werror -Isrc -c src/inkling_layer.c
+  cc -std=c11 -Wall -Wextra -Werror -Isrc -c src/inkling_model.c
+  cc -std=c11 -Wall -Wextra -Werror -Isrc -c src/inkling_private.c
+  PASS
+
+No official 532 GB checkpoint payload was available; real-weight parity remains
+an execution gate, not a claimed result.

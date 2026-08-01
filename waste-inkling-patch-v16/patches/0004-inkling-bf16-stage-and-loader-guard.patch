@@ -1,0 +1,1012 @@
+diff --git a/Makefile b/Makefile
+index 76f27cd..722a18b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,12 +1,14 @@
+-SRC := src/model.c src/kda.c src/backend.c src/ecache.c src/version.c \
++SRC := src/model.c src/arch.c src/inkling.c src/kda.c src/backend.c src/ecache.c src/version.c \
+        src/tokenizer.c src/waste.c src/vq.c src/vision.c src/image.c \
+        src/crc32.c
+ 
+ TESTNAMES := test_kda test_container test_forward test_tokenizer test_k3parts \
+-             test_state test_vision test_image
++             test_state test_vision test_image test_inkling
+ TESTBINS  := $(addsuffix $(EXE),$(TESTNAMES))
+ 
+ test_k3parts$(EXE): tests/test_k3parts.o libwaste.a
+ 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
++test_inkling$(EXE): tests/test_inkling.o src/arch.o src/inkling.o
++	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+ test_image$(EXE): tests/test_image.o libwaste.a
+ 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+diff --git a/src/arch.c b/src/arch.c
+new file mode 100644
+index 0000000..1b49bea
+--- /dev/null
++++ b/src/arch.c
+@@ -0,0 +1,13 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++#include "arch.h"
++
++#include <string.h>
++
++waste_arch_kind waste_arch_classify(const char *arch)
++{
++    if (arch && strncmp(arch, "inkling", 7) == 0)
++        return WASTE_ARCH_INKLING;
++    return WASTE_ARCH_LEGACY;
++}
+diff --git a/src/arch.h b/src/arch.h
+new file mode 100644
+index 0000000..ce387d5
+--- /dev/null
++++ b/src/arch.h
+@@ -0,0 +1,25 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++#ifndef WASTE_ARCH_H
++#define WASTE_ARCH_H
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef enum {
++    WASTE_ARCH_LEGACY = 0,
++    WASTE_ARCH_INKLING = 1,
++} waste_arch_kind;
++
++/* Format-v0 Kimi containers historically treated `arch` as descriptive, so
++ * unknown/empty names retain legacy behavior. Inkling is singled out because
++ * feeding its manifest into Kimi memory formulas or forward dispatch can
++ * produce plausible but invalid plans before tensor validation runs. */
++waste_arch_kind waste_arch_classify(const char *arch);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/src/model.c b/src/model.c
+index 9bd8ca9..0b7a673 100644
+--- a/src/model.c
++++ b/src/model.c
+@@ -1,3 +1,4 @@
++#include "arch.h"
+ #include "crc32.h"
+ #include "ecache.h"
+ #include "json.h"
+@@ -21,5 +22,16 @@
+             return -2;                       /* -> WASTE_E_FORMAT */
+         }
+     }
++    {
++        char arch[64];
++        js_str(&d, js_get(&d, 0, "arch"), arch, sizeof arch);
++        if (waste_arch_classify(arch) == WASTE_ARCH_INKLING) {
++            fprintf(stderr,
++                    "waste: Inkling container recognized, but this build "
++                    "has no integrated Inkling forward path\n");
++            js_free(&d); free(src);
++            return -3;                  /* -> WASTE_E_UNSUPPORTED */
++        }
++    }
+     {
+         int cfg = js_get(&d, 0, "config");
+diff --git a/src/waste.c b/src/waste.c
+index 25e2637..2fdc572 100644
+--- a/src/waste.c
++++ b/src/waste.c
+@@ -1,3 +1,4 @@
++#include "arch.h"
+ #include "json.h"
+ #include "model.h"
+ #include "platform.h"
+@@ -6,6 +7,14 @@
+ 
+     js_doc d;
+     if (js_parse(&d, src) < 0) { free(src); return WASTE_E_FORMAT; }
++    {
++        char arch[64];
++        js_str(&d, js_get(&d, 0, "arch"), arch, sizeof arch);
++        if (waste_arch_classify(arch) == WASTE_ARCH_INKLING) {
++            js_free(&d); free(src);
++            return WASTE_E_UNSUPPORTED;
++        }
++    }
+ 
+     memset(out, 0, sizeof *out);
+     /* trunk: sum the tensor payloads as they are stored, minus the ones the
+@@ -13,5 +22,6 @@
+ 
+             waste_model_free(&c->m);
+             free(c);
+-            return rc == -2 ? WASTE_E_FORMAT : WASTE_E_IO;
++            return rc == -3 ? WASTE_E_UNSUPPORTED :
++                   rc == -2 ? WASTE_E_FORMAT : WASTE_E_IO;
+         }
+diff --git a/tests/run.sh b/tests/run.sh
+index 10e91fa..d2620a7 100644
+--- a/tests/run.sh
++++ b/tests/run.sh
+@@ -1,4 +1,10 @@
+ head_ "kernels vs the reference implementations"
+ 
++if ./test_inkling 2>/dev/null | grep -q "^INKLING OK"; then
++    ok "Inkling architecture dispatch and scalar primitives"
++else
++    no "Inkling architecture dispatch and scalar primitives"
++fi
++
+ if command -v uv >/dev/null 2>&1; then
+     ./test_k3parts "$TMP/k3parts.bin" >/dev/null 2>&1
+diff --git a/tests/test_convert_inkling.py b/tests/test_convert_inkling.py
+index ab064d7..b73a952 100644
+--- a/tests/test_convert_inkling.py
++++ b/tests/test_convert_inkling.py
+@@ -6,6 +6,7 @@ import json
+ import sys
+ import tempfile
+ import unittest
++from unittest.mock import patch
+ from pathlib import Path
+ 
+ REPO = Path(__file__).resolve().parents[1]
+@@ -62,5 +63,27 @@ class ConvertInklingEntryPointTest(unittest.TestCase):
+         self.assertFalse(plan["status"]["payload_headers_complete"])
+ 
+ 
++class InklingStageCliTest(unittest.TestCase):
++    def test_stage_experts_writes_stage_not_manifest(self):
++        from test_inkling_weights import make_weight_checkpoint
++
++        td, root, _ = make_weight_checkpoint()
++        self.addCleanup(td.cleanup)
++        out_td = tempfile.TemporaryDirectory()
++        self.addCleanup(out_td.cleanup)
++        out = Path(out_td.name)
++        plan = {
++            "source_dialect": "provider_raw",
++            "model": {"sparse_mlp_layers": [1], "top_k": 2, "shared_experts": 2},
++        }
++        with patch("inkling_stage.build_plan", return_value=plan):
++            rc = convert_inkling.main(
++                ["--src", str(root), "--out", str(out), "--stage-experts", "--layers", "1", "--experts", "2"]
++            )
++        self.assertEqual(rc, 0)
++        self.assertTrue((out / "stage.json").exists())
++        self.assertFalse((out / "manifest.json").exists())
++
++
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/tests/test_inkling.c b/tests/test_inkling.c
+new file mode 100644
+index 0000000..6094d1a
+--- /dev/null
++++ b/tests/test_inkling.c
+@@ -0,0 +1,41 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++#include <math.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "../src/arch.h"
++#include "../src/inkling.h"
++
++static int closef(float a, float b)
++{
++    return fabsf(a - b) < 1e-6f;
++}
++
++int main(void)
++{
++    int fail = 0;
++    fail += waste_arch_classify(NULL) != WASTE_ARCH_LEGACY;
++    fail += waste_arch_classify("") != WASTE_ARCH_LEGACY;
++    fail += waste_arch_classify("kimi-k3") != WASTE_ARCH_LEGACY;
++    fail += waste_arch_classify("inkling-small") != WASTE_ARCH_INKLING;
++    fail += waste_arch_classify("inkling") != WASTE_ARCH_INKLING;
++
++    {
++        const float logits[] = { 2.0f, -1.0f, 0.5f, 1.0f };
++        const float bias[] = { 0.0f, 0.0f, 0.0f };
++        int idx[2]; float rw[2], sw[1];
++        fail += waste_inkling_route(logits, bias, 3, 1, 2, 1.0f, 1.0f,
++                                    idx, rw, sw) != 0;
++        fail += idx[0] != 0 || idx[1] != 2;
++        fail += !closef(rw[0] + rw[1] + sw[0], 1.0f);
++    }
++
++    if (fail) {
++        fprintf(stderr, "INKLING FAIL %d\n", fail);
++        return 1;
++    }
++    puts("INKLING OK");
++    return 0;
++}
+diff --git a/tests/test_inkling_stage.py b/tests/test_inkling_stage.py
+new file mode 100644
+index 0000000..6563386
+--- /dev/null
++++ b/tests/test_inkling_stage.py
+@@ -0,0 +1,158 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 SQLite Cloud, Inc.
++
++import json
++import sys
++import tempfile
++import unittest
++from types import SimpleNamespace
++from unittest.mock import patch
++import zlib
++from pathlib import Path
++
++import torch
++
++REPO = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(REPO / "tools"))
++sys.path.insert(0, str(REPO / "tests"))
++
++from inkling_stage import HEADER, StageError, parse_header, stage_expert_banks, verify_bank, write_bank
++from inkling_weights import ProviderRawInklingWeights
++from test_inkling_weights import make_weight_checkpoint
++
++
++def minimal_plan():
++    return {
++        "source_dialect": "provider_raw",
++        "model": {
++            "sparse_mlp_layers": [1],
++            "top_k": 2,
++            "shared_experts": 2,
++        },
++    }
++
++
++class InklingStageTest(unittest.TestCase):
++    def test_aligned_bank_round_trip_and_commit_order(self):
++        td, root, expected = make_weight_checkpoint()
++        self.addCleanup(td.cleanup)
++        out_td = tempfile.TemporaryDirectory()
++        self.addCleanup(out_td.cleanup)
++        out = Path(out_td.name)
++
++        with patch("inkling_stage.build_plan", return_value=minimal_plan()):
++            stage = stage_expert_banks(root, out, layers=[1])
++        self.assertFalse((out / "manifest.json").exists())
++        self.assertFalse((out / "trunk.bin").exists())
++        self.assertTrue((out / "stage.json").exists())
++        meta = stage["banks"][0]
++        bank = out / meta["file"]
++        self.assertEqual(bank.stat().st_size, meta["record_bytes"] * 4)
++        self.assertEqual(meta["record_bytes"] % 4096, 0)
++        verify_bank(bank, meta)
++
++        inter = 8
++        hidden = 16
++        with bank.open("rb") as f:
++            for expert in range(4):
++                rec = f.read(meta["record_bytes"])
++                header = parse_header(rec)
++                self.assertEqual((header.layer, header.expert), (1, expert))
++                payload = rec[HEADER.size : HEADER.size + header.payload_bytes]
++                self.assertEqual(zlib.crc32(payload) & 0xFFFFFFFF, header.crc32)
++                gate_n = inter * hidden * 2
++                down_n = hidden * inter * 2
++                gate = torch.frombuffer(bytearray(payload[:gate_n]), dtype=torch.bfloat16).reshape(inter, hidden)
++                up = torch.frombuffer(bytearray(payload[gate_n : 2 * gate_n]), dtype=torch.bfloat16).reshape(inter, hidden)
++                down = torch.frombuffer(bytearray(payload[2 * gate_n : 2 * gate_n + down_n]), dtype=torch.bfloat16).reshape(hidden, inter)
++                self.assertTrue(torch.equal(gate.float(), expected["routed_gate"][expert]))
++                self.assertTrue(torch.equal(up.float(), expected["routed_up"][expert]))
++                self.assertTrue(torch.equal(down.float(), expected["routed_down"][expert]))
++
++        published = json.loads((out / "stage.json").read_text())
++        self.assertEqual(published["schema"], "waste.inkling-bf16-expert-stage.v1")
++        self.assertFalse(published["status"]["waste_manifest_written"])
++
++    def test_writer_removes_temporary_bank_on_failure(self):
++        td, root, _ = make_weight_checkpoint()
++        self.addCleanup(td.cleanup)
++        source = ProviderRawInklingWeights(root)
++        original = source.routed_expert
++
++        def fail(layer, expert, *, float32=True):
++            if expert == 2:
++                raise RuntimeError("injected failure")
++            return original(layer, expert, float32=float32)
++
++        source.routed_expert = fail  # type: ignore[method-assign]
++        out_td = tempfile.TemporaryDirectory()
++        self.addCleanup(out_td.cleanup)
++        bank = Path(out_td.name) / "experts-L1.bf16.stage"
++        with self.assertRaisesRegex(RuntimeError, "injected failure"):
++            write_bank(source, bank, 1)
++        self.assertFalse(bank.exists())
++        self.assertFalse(bank.with_name(bank.name + ".tmp").exists())
++
++    def test_rejects_dense_layer_and_non_bf16_source(self):
++        td, root, _ = make_weight_checkpoint()
++        self.addCleanup(td.cleanup)
++        source = ProviderRawInklingWeights(root)
++        out_td = tempfile.TemporaryDirectory()
++        self.addCleanup(out_td.cleanup)
++        with self.assertRaisesRegex(StageError, "not a sparse"):
++            write_bank(source, Path(out_td.name) / "bad", 0)
++
++        original_location = source.reader.location
++        source.reader.location = lambda name: SimpleNamespace(dtype="F16")  # type: ignore[method-assign]
++        try:
++            with self.assertRaisesRegex(StageError, "requires BF16"):
++                write_bank(source, Path(out_td.name) / "f16", 1, expert_limit=1)
++        finally:
++            source.reader.location = original_location  # type: ignore[method-assign]
++
++    def test_crc_verification_detects_corruption(self):
++        td, root, _ = make_weight_checkpoint()
++        self.addCleanup(td.cleanup)
++        source = ProviderRawInklingWeights(root)
++        out_td = tempfile.TemporaryDirectory()
++        self.addCleanup(out_td.cleanup)
++        bank = Path(out_td.name) / "experts-L1.bf16.stage"
++        meta = write_bank(source, bank, 1, expert_limit=1)
++        with bank.open("r+b") as f:
++            f.seek(HEADER.size + 7)
++            old = f.read(1)
++            f.seek(HEADER.size + 7)
++            f.write(bytes([old[0] ^ 1]))
++        with self.assertRaisesRegex(StageError, "CRC mismatch"):
++            verify_bank(bank, meta)
++
++    def test_matching_bank_sidecar_resumes_without_rewrite(self):
++        td, root, _ = make_weight_checkpoint()
++        self.addCleanup(td.cleanup)
++        out_td = tempfile.TemporaryDirectory()
++        self.addCleanup(out_td.cleanup)
++        out = Path(out_td.name)
++        with patch("inkling_stage.build_plan", return_value=minimal_plan()):
++            first = stage_expert_banks(root, out, layers=[1], expert_limit=2)
++        self.assertFalse(first["banks"][0]["reused"])
++        self.assertTrue((out / "experts-L1.bf16.stage.json").exists())
++        with patch("inkling_stage.build_plan", return_value=minimal_plan()), \
++             patch("inkling_stage.write_bank", side_effect=AssertionError("bank rewritten")):
++            second = stage_expert_banks(root, out, layers=[1], expert_limit=2)
++        self.assertTrue(second["banks"][0]["reused"])
++
++    def test_expert_limit_marks_stage_incomplete(self):
++        td, root, _ = make_weight_checkpoint()
++        self.addCleanup(td.cleanup)
++        out_td = tempfile.TemporaryDirectory()
++        self.addCleanup(out_td.cleanup)
++        with patch("inkling_stage.build_plan", return_value=minimal_plan()):
++            stage = stage_expert_banks(root, Path(out_td.name), layers=[1], expert_limit=2)
++        self.assertEqual(stage["banks"][0]["experts"], 2)
++        self.assertFalse(stage["banks"][0]["complete"])
++        self.assertFalse(stage["status"]["stage_complete_for_requested_layers"])
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tools/convert_inkling.py b/tools/convert_inkling.py
+index 7aa6bcd..9ea58b8 100644
+--- a/tools/convert_inkling.py
++++ b/tools/convert_inkling.py
+@@ -3,11 +3,15 @@
+ # Copyright 2026 SQLite Cloud, Inc.
+ """Inkling-family conversion entry point.
+ 
+-Patch 2 intentionally implements only the source audit and deterministic
+-conversion plan.  It will not create a directory that looks like a usable
+-WASTE container until payload conversion and the C runtime are implemented and
+-validated.  This preserves atomic publication and prevents a plan-only run from
+-leaving a misleading manifest.json behind.
++The command has two safe modes:
++
++* ``--plan-only`` validates metadata and tensor shapes, then writes only
++  ``conversion-plan.json``.
++* ``--stage-experts`` writes converter-internal aligned BF16 routed-expert
++  banks and ``stage.json``.  It still does not publish a WASTE manifest.
++
++Normal container conversion remains disabled until trunk staging, integrated
++Inkling loader/forward dispatch, and differential parity are complete.
+ """
+ 
+ from __future__ import annotations
+@@ -18,46 +22,82 @@ from pathlib import Path
+ 
+ from inspect_inkling import InspectError
+ from inkling_plan import PlanError, build_plan, write_json_atomic
++from inkling_stage import StageError, stage_expert_banks
++
++
++def _csv_ints(value: str) -> list[int]:
++    try:
++        return [int(item) for item in value.split(",") if item != ""]
++    except ValueError as exc:
++        raise argparse.ArgumentTypeError("expected a comma-separated integer list") from exc
+ 
+ 
+ def main(argv: list[str] | None = None) -> int:
+     ap = argparse.ArgumentParser()
+     ap.add_argument("--src", required=True, type=Path, help="official Inkling checkpoint directory")
+-    ap.add_argument("--out", required=True, type=Path, help="future WASTE output directory")
+-    ap.add_argument(
++    ap.add_argument("--out", required=True, type=Path, help="staging/future WASTE output directory")
++    mode = ap.add_mutually_exclusive_group()
++    mode.add_argument(
+         "--plan-only",
+         action="store_true",
+         help="validate metadata/shapes and write conversion-plan.json only",
+     )
++    mode.add_argument(
++        "--stage-experts",
++        action="store_true",
++        help="write aligned BF16 routed-expert staging banks; never writes manifest.json",
++    )
+     ap.add_argument(
+         "--allow-index-only",
+         action="store_true",
+-        help="allow a review plan when shards are not downloaded; never valid for conversion",
++        help="allow a review plan when shards are not downloaded; valid only with --plan-only",
+     )
++    ap.add_argument("--layers", type=_csv_ints, help="sparse layers to stage, comma-separated")
++    ap.add_argument("--experts", type=int, help="debug limit per bank; marks the stage incomplete")
++    ap.add_argument("--no-verify", action="store_true", help="skip the post-write CRC pass over staged banks")
++    ap.add_argument("--no-resume", action="store_true", help="rewrite requested staging banks even when sidecars match")
+     args = ap.parse_args(argv)
+ 
+-    if not args.plan_only:
+-        print(
+-            "convert_inkling: payload conversion is not implemented in this patch; "
+-            "refusing to create a partial or misleading WASTE container. "
+-            "Run with --plan-only to validate the official source checkpoint.",
+-            file=sys.stderr,
+-        )
+-        return 2
++    if args.allow_index_only and not args.plan_only:
++        ap.error("--allow-index-only is valid only with --plan-only")
++    if (args.layers is not None or args.experts is not None or args.no_verify or args.no_resume) and not args.stage_experts:
++        ap.error("--layers, --experts, --no-verify, and --no-resume require --stage-experts")
+ 
+-    try:
+-        plan = build_plan(args.src, require_payloads=not args.allow_index_only)
+-    except (InspectError, PlanError) as exc:
+-        print(f"convert_inkling: {exc}", file=sys.stderr)
+-        return 2
+-
+-    # A plan is a side artifact, not a container commit record.  In particular,
+-    # do not create manifest.json, trunk.bin, banks, or codebooks.bin here.
+-    path = args.out / "conversion-plan.json"
+-    write_json_atomic(path, plan)
+-    print(f"wrote {path}")
+-    print("no WASTE container files were created")
+-    return 0
++    if args.plan_only:
++        try:
++            plan = build_plan(args.src, require_payloads=not args.allow_index_only)
++        except (InspectError, PlanError) as exc:
++            print(f"convert_inkling: {exc}", file=sys.stderr)
++            return 2
++        path = args.out / "conversion-plan.json"
++        write_json_atomic(path, plan)
++        print(f"wrote {path}")
++        print("no WASTE container files were created")
++        return 0
++
++    if args.stage_experts:
++        try:
++            stage = stage_expert_banks(
++                args.src,
++                args.out,
++                layers=args.layers,
++                expert_limit=args.experts,
++                verify=not args.no_verify,
++                resume=not args.no_resume,
++            )
++        except StageError as exc:
++            print(f"convert_inkling: {exc}", file=sys.stderr)
++            return 2
++        print(f"wrote {len(stage['banks'])} BF16 expert staging bank(s) and {args.out / 'stage.json'}")
++        print("manifest.json was not written; this is not a runnable WASTE container")
++        return 0
++
++    print(
++        "convert_inkling: final container conversion is not implemented; refusing to create "
++        "a partial or misleading WASTE container. Use --plan-only or --stage-experts.",
++        file=sys.stderr,
++    )
++    return 2
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/tools/inkling_stage.py b/tools/inkling_stage.py
+new file mode 100644
+index 0000000..2835065
+--- /dev/null
++++ b/tools/inkling_stage.py
+@@ -0,0 +1,381 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 SQLite Cloud, Inc.
++"""Stage Inkling routed experts as aligned BF16 records.
++
++This is deliberately not the WASTE container writer.  It consumes the exact
++source adapter and produces a converter-internal staging directory whose commit
++record is ``stage.json``.  No ``manifest.json`` is written, so an existing
++WASTE runtime cannot mistake the output for a runnable model.
++
++Each routed expert is one 4 KiB-aligned record containing gate, up, and down
++BF16 matrices.  The record is self-describing enough for round-trip validation
++and one positional read, while remaining independent of WASTE format v0's
++VQ-only expert header.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import os
++import struct
++import zlib
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any, Iterable
++
++import torch
++
++from inkling_plan import PlanError, build_plan, write_json_atomic
++from inkling_weights import ProviderRawInklingWeights, WeightError
++
++
++class StageError(RuntimeError):
++    pass
++
++
++ALIGN = 4096
++MAGIC = 0x46424B49  # "IKBF" little-endian: Inkling BF16 stage record
++VERSION = 1
++DTYPE_BF16 = 1
++HEADER = struct.Struct("<IHHHBBIIQQQQI8x")
++assert HEADER.size == 64
++
++
++@dataclass(frozen=True)
++class StageHeader:
++    layer: int
++    expert: int
++    hidden: int
++    intermediate: int
++    gate_off: int
++    up_off: int
++    down_off: int
++    payload_bytes: int
++    crc32: int
++
++
++def _align(n: int, alignment: int = ALIGN) -> int:
++    return (n + alignment - 1) // alignment * alignment
++
++
++def _tensor_bytes(tensor: torch.Tensor) -> bytes:
++    if tensor.dtype != torch.bfloat16:
++        raise StageError(f"stage payload must be BF16, got {tensor.dtype}")
++    raw = tensor.detach().cpu().contiguous().view(torch.uint8)
++    return raw.numpy().tobytes()
++
++
++def record_geometry(hidden: int, intermediate: int) -> dict[str, int]:
++    if hidden <= 0 or intermediate <= 0:
++        raise StageError("hidden and intermediate sizes must be positive")
++    gate_bytes = intermediate * hidden * 2
++    up_bytes = gate_bytes
++    down_bytes = hidden * intermediate * 2
++    gate_off = HEADER.size
++    up_off = gate_off + gate_bytes
++    down_off = up_off + up_bytes
++    payload_bytes = gate_bytes + up_bytes + down_bytes
++    return {
++        "gate_off": gate_off,
++        "up_off": up_off,
++        "down_off": down_off,
++        "payload_bytes": payload_bytes,
++        "record_bytes": _align(HEADER.size + payload_bytes),
++    }
++
++
++def parse_header(data: bytes) -> StageHeader:
++    if len(data) < HEADER.size:
++        raise StageError("short Inkling stage header")
++    (
++        magic,
++        version,
++        layer,
++        expert,
++        dtype,
++        flags,
++        hidden,
++        intermediate,
++        gate_off,
++        up_off,
++        down_off,
++        payload_bytes,
++        crc32,
++    ) = HEADER.unpack_from(data)
++    if magic != MAGIC or version != VERSION or dtype != DTYPE_BF16 or flags != 0:
++        raise StageError("invalid Inkling stage header identity")
++    geom = record_geometry(hidden, intermediate)
++    for key, actual in (
++        ("gate_off", gate_off),
++        ("up_off", up_off),
++        ("down_off", down_off),
++        ("payload_bytes", payload_bytes),
++    ):
++        if actual != geom[key]:
++            raise StageError(f"invalid {key} in Inkling stage header: {actual} != {geom[key]}")
++    return StageHeader(
++        layer=layer,
++        expert=expert,
++        hidden=hidden,
++        intermediate=intermediate,
++        gate_off=gate_off,
++        up_off=up_off,
++        down_off=down_off,
++        payload_bytes=payload_bytes,
++        crc32=crc32,
++    )
++
++
++def _source_dtype_ok(source: ProviderRawInklingWeights, layer: int) -> None:
++    prefix = source._layer(layer)  # adapter owns the provider-raw grammar
++    for name in (
++        f"{prefix}.mlp.experts.w13_weight",
++        f"{prefix}.mlp.experts.w2_weight",
++    ):
++        loc = source.reader.location(name)
++        if loc.dtype != "BF16":
++            raise StageError(
++                f"BF16 parity staging requires BF16 source tensors; {name} is {loc.dtype}"
++            )
++
++
++def write_bank(
++    source: ProviderRawInklingWeights,
++    out_path: Path,
++    layer: int,
++    *,
++    expert_limit: int | None = None,
++) -> dict[str, Any]:
++    if layer < source.dense_count or layer >= source.n_layers:
++        raise StageError(f"layer {layer} is not a sparse Inkling layer")
++    _source_dtype_ok(source, layer)
++    count = source.n_experts if expert_limit is None else min(expert_limit, source.n_experts)
++    if count <= 0:
++        raise StageError("expert limit must select at least one expert")
++    geom = record_geometry(source.hidden, source.intermediate)
++    tmp = out_path.with_name(out_path.name + ".tmp")
++    tmp.parent.mkdir(parents=True, exist_ok=True)
++    try:
++        with tmp.open("wb") as f:
++            for expert in range(count):
++                weights = source.routed_expert(layer, expert, float32=False)
++                gate = _tensor_bytes(weights.gate)
++                up = _tensor_bytes(weights.up)
++                down = _tensor_bytes(weights.down)
++                payload = gate + up + down
++                if len(payload) != geom["payload_bytes"]:
++                    raise StageError(
++                        f"layer {layer} expert {expert} payload is {len(payload)} bytes; "
++                        f"expected {geom['payload_bytes']}"
++                    )
++                crc = zlib.crc32(payload) & 0xFFFFFFFF
++                header = HEADER.pack(
++                    MAGIC,
++                    VERSION,
++                    layer,
++                    expert,
++                    DTYPE_BF16,
++                    0,
++                    source.hidden,
++                    source.intermediate,
++                    geom["gate_off"],
++                    geom["up_off"],
++                    geom["down_off"],
++                    geom["payload_bytes"],
++                    crc,
++                )
++                f.write(header)
++                f.write(payload)
++                f.write(b"\0" * (geom["record_bytes"] - HEADER.size - len(payload)))
++            f.flush()
++            os.fsync(f.fileno())
++        os.replace(tmp, out_path)
++    except BaseException:
++        try:
++            tmp.unlink()
++        except FileNotFoundError:
++            pass
++        raise
++    return {
++        "layer": layer,
++        "file": out_path.name,
++        "dtype": "BF16",
++        "experts": count,
++        "model_experts": source.n_experts,
++        "complete": count == source.n_experts,
++        "hidden_size": source.hidden,
++        "intermediate_size": source.intermediate,
++        "header_bytes": HEADER.size,
++        "payload_bytes": geom["payload_bytes"],
++        "record_bytes": geom["record_bytes"],
++        "bytes": out_path.stat().st_size,
++        "alignment": ALIGN,
++        "crc": "zlib crc32 over gate|up|down payload",
++    }
++
++
++def verify_bank(path: Path, meta: dict[str, Any], *, verify_crc: bool = True) -> None:
++    record_bytes = int(meta["record_bytes"])
++    count = int(meta["experts"])
++    expected_size = record_bytes * count
++    if path.stat().st_size != expected_size:
++        raise StageError(f"{path} size differs from stage metadata")
++    with path.open("rb") as f:
++        for expert in range(count):
++            rec = f.read(record_bytes)
++            if len(rec) != record_bytes:
++                raise StageError(f"short record {expert} in {path}")
++            header = parse_header(rec)
++            if header.layer != int(meta["layer"]) or header.expert != expert:
++                raise StageError(f"record identity mismatch in {path}: {header}")
++            if verify_crc:
++                payload = rec[HEADER.size : HEADER.size + header.payload_bytes]
++                if zlib.crc32(payload) & 0xFFFFFFFF != header.crc32:
++                    raise StageError(f"record CRC mismatch: layer {header.layer} expert {expert}")
++
++
++def _sha256(path: Path) -> str:
++    h = hashlib.sha256()
++    with path.open("rb") as f:
++        while True:
++            chunk = f.read(1 << 20)
++            if not chunk:
++                break
++            h.update(chunk)
++    return h.hexdigest()
++
++
++def _bank_sidecar(path: Path) -> Path:
++    return path.with_name(path.name + ".json")
++
++
++def _load_bank_sidecar(path: Path) -> dict[str, Any] | None:
++    try:
++        value = json.loads(path.read_text(encoding="utf-8"))
++    except (FileNotFoundError, OSError, json.JSONDecodeError):
++        return None
++    return value if isinstance(value, dict) else None
++
++
++def _resume_matches(
++    meta: dict[str, Any],
++    *,
++    layer: int,
++    file_name: str,
++    count: int,
++    source: ProviderRawInklingWeights,
++    config_sha256: str,
++    index_sha256: str,
++) -> bool:
++    expected = {
++        "schema": "waste.inkling-bf16-bank.v1",
++        "layer": layer,
++        "file": file_name,
++        "dtype": "BF16",
++        "experts": count,
++        "model_experts": source.n_experts,
++        "hidden_size": source.hidden,
++        "intermediate_size": source.intermediate,
++        "source_config_sha256": config_sha256,
++        "source_index_sha256": index_sha256,
++    }
++    return all(meta.get(key) == value for key, value in expected.items())
++
++
++def stage_expert_banks(
++    src: Path,
++    out: Path,
++    *,
++    layers: Iterable[int] | None = None,
++    expert_limit: int | None = None,
++    verify: bool = True,
++    resume: bool = True,
++) -> dict[str, Any]:
++    try:
++        plan = build_plan(src, require_payloads=True)
++        if plan["source_dialect"] != "provider_raw":
++            raise StageError("BF16 staging currently accepts the official provider-raw checkpoint only")
++        source = ProviderRawInklingWeights(src)
++    except (PlanError, WeightError) as exc:
++        raise StageError(str(exc)) from exc
++
++    sparse = list(plan["model"]["sparse_mlp_layers"])
++    selected = sparse if layers is None else list(layers)
++    if len(set(selected)) != len(selected):
++        raise StageError("duplicate layer in staging request")
++    invalid = [layer for layer in selected if layer not in sparse]
++    if invalid:
++        raise StageError(f"requested non-sparse or out-of-range layers: {invalid}")
++
++    out.mkdir(parents=True, exist_ok=True)
++    config_sha256 = _sha256(src / "config.json")
++    index_sha256 = _sha256(src / "model.safetensors.index.json")
++    count = source.n_experts if expert_limit is None else min(expert_limit, source.n_experts)
++    banks = []
++    for layer in selected:
++        bank_path = out / f"experts-L{layer}.bf16.stage"
++        sidecar_path = _bank_sidecar(bank_path)
++        meta = _load_bank_sidecar(sidecar_path) if resume else None
++        reused = False
++        if meta is not None and _resume_matches(
++            meta,
++            layer=layer,
++            file_name=bank_path.name,
++            count=count,
++            source=source,
++            config_sha256=config_sha256,
++            index_sha256=index_sha256,
++        ):
++            try:
++                verify_bank(bank_path, meta, verify_crc=verify)
++                reused = True
++            except (FileNotFoundError, OSError, StageError):
++                meta = None
++        if not reused:
++            meta = write_bank(source, bank_path, layer, expert_limit=expert_limit)
++            meta.update(
++                {
++                    "schema": "waste.inkling-bf16-bank.v1",
++                    "source_config_sha256": config_sha256,
++                    "source_index_sha256": index_sha256,
++                }
++            )
++            if verify:
++                verify_bank(bank_path, meta, verify_crc=True)
++            write_json_atomic(sidecar_path, meta)
++        assert meta is not None
++        published = dict(meta)
++        published["reused"] = reused
++        published["sidecar"] = sidecar_path.name
++        banks.append(published)
++
++    stage = {
++        "schema": "waste.inkling-bf16-expert-stage.v1",
++        "arch": "inkling-small",
++        "scope": "routed-experts-only",
++        "source": {
++            "path": str(src),
++            "config_sha256": config_sha256,
++            "index_sha256": index_sha256,
++            "dialect": plan["source_dialect"],
++        },
++        "model": {
++            "hidden_size": source.hidden,
++            "intermediate_size": source.intermediate,
++            "routed_experts": source.n_experts,
++            "top_k": plan["model"]["top_k"],
++            "shared_experts": plan["model"]["shared_experts"],
++        },
++        "banks": banks,
++        "status": {
++            "stage_complete_for_requested_layers": all(bank["complete"] for bank in banks),
++            "waste_manifest_written": False,
++            "waste_runtime_supported": False,
++            "reference_parity": False,
++        },
++        "publication_rule": "stage.json is converter-internal; manifest.json remains absent",
++    }
++    write_json_atomic(out / "stage.json", stage)
++    return stage
+--- a/docs/INKLING.md
++++ b/docs/INKLING.md
+@@ -216,31 +216,54 @@
+ The C code independently implements equations described by the official
+ Apache-2.0 Transformers source. No third-party kernel code is copied.
+ 
+-### Patch 4 — next: BF16 text payload writer
++### Patch 4 — completed: BF16 expert staging and architecture guard
+ 
+-1. Feed the bounded source adapter into the resident trunk writer.
+-2. Write one routed expert at a time into existing WEXP records.
+-3. Keep shared experts resident and exclude MTP, vision, and audio.
+-4. Copy official tokenizer and chat-template sidecars verbatim.
+-5. Add expert-bank, CRC, index, resume, and manifest round-trip tests.
+-6. Verify the staging tree, then publish `manifest.json` last.
+-
+-The initial correctness build should preserve BF16/F32 reference fixtures or a
+-loss-minimized debug representation before production VQ/Q4/Q8 conversion is
+-enabled.
++- adds a converter-internal BF16 expert stage rather than extending frozen
++  format-v0 WEXP records with an unsupported payload type;
++- writes one routed expert at a time as gate|up|down in one 4 KiB-aligned
++  record, with a fixed 64-byte header and CRC32 over the BF16 payload;
++- validates every staged bank by record identity, geometry, size, and CRC;
++- removes temporary banks after conversion failure and publishes `stage.json`
++  only after all requested banks are complete;
++- never writes `manifest.json`, `trunk.bin`, or a file accepted by the current
++  WASTE bank loader;
++- adds architecture classification shared by memory planning and model loading;
++- makes both paths return explicit unsupported status for Inkling until its
++  state planner and forward dispatch are integrated;
++- wires the standalone Inkling scalar module and C unit test into the build.
++
++The current WEXP header and `record_check()` are VQ2R/VQ3R-specific. Reusing
++that header for BF16 staging would either change frozen format v0 or make an old
++runtime interpret BF16 bytes as VQ indices. The separate staging magic avoids
++both failure modes.
++
++For the official Small dimensions, one staged expert record is 50,335,744
++bytes: a 48 MiB BF16 gate/up/down payload plus header and page padding, or
++12,289 pages. A complete 256-expert layer bank is about 12.001 GiB. Per-bank
++sidecars bind a finished bank to the SHA-256 hashes of the source config and
++index so conversion can resume without trusting an unrelated same-shape file.
++
++### Patch 5 — resident trunk stage and integrated text configuration
++
++- stage all non-routed text tensors without materializing the embedding table;
++- split dense and shared fused projections into canonical tensor records;
++- copy official tokenizer and chat-template assets verbatim;
++- add Inkling config structs and parse exact per-layer descriptors;
++- implement Inkling-specific state and scratch memory planning;
++- teach the loader to accept the verified staging/container schema only after
++  all required text tensors and banks validate.
+ 
+-### Patch 5 — integrated C text runtime
++### Patch 6 — integrated C text forward and parity
+ 
+-- add architecture enum and Inkling config structs;
+-- parse per-layer descriptors;
+ - wire the tested primitives into local/global GQA and four convolution rings;
+ - implement dense and sparse MLPs and resident shared experts;
+ - preserve WASTE's expert cache and direct-I/O path;
+-- add layerwise debug dumps and Python differential harness.
++- add layerwise debug dumps and the Python differential harness;
++- publish `manifest.json` last only after fixed-prompt logits pass tolerance.
+ 
+-### Patches 6-9
++### Patches 7-10
+ 
+-Tokenizer/chat integration, vision, audio, then OpenAI-compatible serving.
++Tokenizer/chat completion, vision, audio, then OpenAI-compatible serving.
+ 
+ ## 6. Tests
+ 
+@@ -262,7 +285,10 @@
+ - one-expert axis-0 reads and bounded byte accounting;
+ - exact interleave inverse and dense/routed/shared fused-weight splits;
+ - C/PyTorch differential checks for routing, short convolution, relative bias,
+-  and global log scaling.
++  and global log scaling;
++- aligned BF16 expert-record round trip, CRC corruption detection, incomplete
++  debug stages, and atomic temporary-file cleanup;
++- explicit Inkling classification independent of legacy Kimi config probing.
+ 
+ Run:
+ 
+@@ -273,8 +299,9 @@
+   -s tests -p 'test_*inkling*.py' -v
+ ```
+ 
+-Expected at this review boundary: **23 tests, all passing**. The C differential
+-suite compiles `src/inkling.c` with `-std=c11 -Wall -Wextra -Werror`.
++Expected at this review boundary: **29 Python tests, all passing**, plus the
++standalone `test_inkling` C target. The C code compiles with
++`-std=c11 -Wall -Wextra -Werror`.
+ 
+ ## 7. Risks and fallback paths
+ 

@@ -1,0 +1,2307 @@
+diff --git a/KNOWN-ERRATA.md b/KNOWN-ERRATA.md
+index 8043378..dd51a15 100644
+--- a/KNOWN-ERRATA.md
++++ b/KNOWN-ERRATA.md
+@@ -17,5 +17,6 @@ Patch 10 is therefore mandatory for Small work. It:
+ - proves synthetic staged-directory open-to-logits parity;
+ - leaves the public WASTE manifest and loader guard unchanged.
+ 
+-Do not rely on the provenance conclusions in a v9-or-earlier handoff. Apply all
+-patches through Patch 10 or use the complete v10 bundle.
++Do not rely on the provenance conclusions in a v9-or-earlier handoff. Patch 10
++is the provenance correction; Patch 11 is the first direct final-format expert
++quantizer. Apply all patches through Patch 11 or use the complete v11 bundle.
+diff --git a/PATCH-HANDOFF.md b/PATCH-HANDOFF.md
+index 84deeff..c55a180 100644
+--- a/PATCH-HANDOFF.md
++++ b/PATCH-HANDOFF.md
+@@ -1,8 +1,8 @@
+-# WASTE Inkling-Small patch series v10
++# WASTE Inkling-Small patch series v11
+ 
+-Apply patches `0001` through `0010` in order. Patch 10 supersedes the old
+-Small-release erratum and binds the released official profile to a complete
+-converter-private staged-directory runtime.
++Apply patches `0001` through `0011` in order. Patch 11 adds direct, bounded
++conversion of official BF16 routed experts into WASTE's final WEXP/WCBK
++layouts plus an independent C reader and complete-model quantized callback test.
+ 
+ ## Official target
+ 
+@@ -35,6 +35,14 @@ python tools/convert_inkling.py --src /models/Inkling-Small \
+   --out /models/Inkling-Small.stage --publish-runtime-stage
+ ```
+ 
++For direct final-format routed experts, without the 480+ GiB BF16 expert stage:
++
++```sh
++python tools/convert_inkling.py --src /models/Inkling-Small \
++  --out /models/Inkling-Small.final-stage --quantize-experts \
++  --vq-stages 3 --device cpu
++```
++
+ All operations are resumable and source-hash-bound. The final command publishes
+ `runtime-stage.bin`, not `manifest.json`.
+ 
+@@ -51,9 +59,15 @@ All operations are resumable and source-hash-bound. The final command publishes
+ - executes complete token-to-logits inference through the private model wrapper;
+ - cleans up every partially opened resource on failure.
+ 
+-It is deliberately not connected to `waste_open()`. The public runtime still
++`src/inkling_wexp.[ch]` now validates and dequantizes final WEXP/WCBK routed
++experts through the model's streaming callback. It is deliberately not yet
++connected to the private stage index or `waste_open()`. The public runtime still
+ returns unsupported for Inkling and no WASTE manifest is written.
+ 
++Exact VQ3R routed-bank geometry for Small is 9,457,664 bytes per expert,
++2,421,161,984 bytes per layer, and 96,846,479,360 bytes for all 40 sparse
++layers (about 90.20 GiB).
++
+ ## Validation
+ 
+ Run from the artifact root:
+@@ -70,7 +84,7 @@ cc -std=c11 -Wall -Wextra -Werror -Isrc \
+ Validation in this artifact tree produced:
+ 
+ ```text
+-Ran 70 tests
++Ran 80 tests
+ OK
+ INKLING OK
+ ```
+diff --git a/TEST-RESULTS.txt b/TEST-RESULTS.txt
+index 6b90af6..d51018e 100644
+--- a/TEST-RESULTS.txt
++++ b/TEST-RESULTS.txt
+@@ -1,4 +1,4 @@
+-WASTE Inkling-Small patch series v10 validation
++WASTE Inkling-Small patch series v11 validation
+ Date: 2026-08-01
+ 
+ Python compile:
+@@ -7,7 +7,7 @@ Python compile:
+ 
+ Python tests:
+   PYTHONPATH=tools:tests python3 -m unittest discover -s tests -p 'test_*.py'
+-  Ran 70 tests in 2.432s
++  Ran 80 tests in 2.454s
+   OK
+ 
+ Standalone C target:
+@@ -16,28 +16,30 @@ Standalone C target:
+     src/inkling_attention.c src/inkling_layer.c -lm -o test_inkling
+   INKLING OK
+ 
+-Private runtime compile gate:
++Private/final-format C compile gate:
+   cc -std=c11 -Wall -Wextra -Werror -fsyntax-only -Isrc \
+-    src/inkling_private.c src/inkling_stage_reader.c src/inkling_bind.c \
+-    src/inkling_model.c src/inkling_layer.c src/inkling_attention.c \
+-    src/inkling_config.c src/inkling.c -lm
++    src/inkling_wexp.c src/inkling_private.c src/inkling_stage_reader.c \
++    src/inkling_bind.c src/inkling_model.c src/inkling_layer.c \
++    src/inkling_attention.c src/inkling_config.c src/inkling.c -lm
+   PASS
+ 
+-Covered by Patch 10:
+-  - exact official Inkling-Small profile/package fixture validation
+-  - official-vs-generic fail-closed classification
+-  - canonical Conv1d singleton-axis removal
+-  - complete private runtime-stage publication
+-  - strict binary index/config/tensor/bank parsing
+-  - bounded row-backed embedding and unembedding
+-  - resident trunk conversion and exact binding
+-  - streamed expert identity/geometry/CRC validation
+-  - private staged-directory open -> multi-token logits parity
+-  - deterministic reset
+-  - partial-open cleanup and corruption rejection
++Covered by Patch 11:
++  - direct one-expert-at-a-time BF16 -> WEXP/WCBK conversion
++  - deterministic residual codebook training and blocked index layout
++  - optional libwastevq final encoder with pure-Torch fallback
++  - absolute codebook IDs and exact WASTE v0 record/header compatibility
++  - source- and training-identity-bound resume
++  - post-write identity, geometry, codebook and CRC verification
++  - independent Python dequantization
++  - independent dependency-free C WEXP/WCBK reader
++  - C/Python dequantization parity
++  - complete multi-token model logits through the final WEXP expert callback
++  - exact official Small VQ3R routed-bank geometry (90.20 GiB total)
++  - no manifest publication and no public loader behavior change
+ 
+ Not run in this environment:
+   - actual 532 GB official weight payload conversion
+-  - official PyTorch layerwise/final-logit parity
+-  - upstream complete WASTE repository suite
+-  - native MinGW or WSL2 execution
++  - official Small codebook-quality measurement and PyTorch logit parity
++  - complete upstream WASTE repository suite
++  - native MinGW or WSL2 conversion/runtime execution
++  - sustained conversion throughput and thermal behavior on a laptop
+diff --git a/docs/INKLING.md b/docs/INKLING.md
+index 19d6866..b9ae7e2 100644
+--- a/docs/INKLING.md
++++ b/docs/INKLING.md
+@@ -1,9 +1,10 @@
+ # Inkling-Small support in WASTE
+ 
+ Status: **the official Inkling-Small release is identified exactly; source
+-inspection, conversion planning, bounded BF16 staging, private staged-directory
+-opening, and synthetic token-to-logits inference are implemented. Public WASTE
+-container publication, public loader integration, quantized parity, tokenizer
++inspection, conversion planning, bounded staging, direct final-format routed
++expert quantization, private staged-directory opening, and synthetic
++quantized token-to-logits inference are implemented. Public WASTE container
++publication, public loader integration, quantized trunk execution, tokenizer
+ execution, and official-weight differential validation remain gated.**
+ 
+ ## 1. Official release identity
+@@ -82,6 +83,42 @@ BF16 gate/up/down record. Each record carries layer/expert identity, exact
+ geometry, and a payload CRC. Completed banks are source-hash-bound and
+ resumable.
+ 
++### Direct final-format routed-expert quantization
++
++`tools/inkling_vq.py` reads one official BF16 routed expert at a time and writes
++WASTE's existing `WEXP` plus `WCBK` layouts directly. It does not require or
++consume the intermediate BF16 expert stage.
++
++The converter:
++
++- samples normalized 8-value vectors from a bounded set of experts;
++- trains separate residual codebooks for gate, up, and down matrices;
++- uses deterministic residual Lloyd iterations;
++- optionally uses `libwastevq` for the expensive final nearest-centroid encode;
++- writes blocked indices in WASTE's existing `[block][vector][row][stage]`
++  layout;
++- writes FP16 per-output-row scales and the existing payload CRC;
++- publishes one source- and training-identity-bound sidecar per layer;
++- verifies every record, codebook ID, offset, identity, and CRC before reuse;
++- publishes `vq-stage.json`, never `manifest.json`.
++
++For the released Small dimensions at VQ3R, one routed expert record is exactly
++9,457,664 bytes. A complete 256-expert layer is 2,421,161,984 bytes, and all 40
++sparse layers occupy 96,846,479,360 bytes (about 90.20 GiB), before the trunk
++and filesystem metadata. This is exact record geometry, not a measured final
++container size.
++
++Example:
++
++```sh
++python tools/convert_inkling.py --src MODEL --out FINAL-STAGE \
++  --quantize-experts --vq-stages 3 --device cpu
++```
++
++The pure-Torch path is correctness-first. A locally built `libwastevq` is used
++automatically for final expert encoding when available; official-checkpoint
++conversion throughput still needs measurement on Windows and Linux.
++
+ ### Private runtime-stage publication
+ 
+ `tools/inkling_runtime_stage.py` verifies the complete trunk and all 40 sparse
+@@ -97,6 +134,14 @@ python tools/convert_inkling.py --src MODEL --out STAGE --stage-experts
+ python tools/convert_inkling.py --src MODEL --out STAGE --publish-runtime-stage
+ ```
+ 
++The BF16 expert stage above remains the private parity path. The direct
++final-format expert path is separate until its index is wired into the private
++opener:
++
++```sh
++python tools/convert_inkling.py --src MODEL --out FINAL-STAGE --quantize-experts
++```
++
+ `manifest.json` remains absent throughout.
+ 
+ ## 4. Architecture-private C runtime
+@@ -147,6 +192,22 @@ The stage reader includes POSIX and Windows positional-read code paths. Native
+ Windows execution is not yet claimed because MinGW and Windows filesystem tests
+ have not run.
+ 
++## 6. Patch 11 final-format expert path
++
++`src/inkling_wexp.[ch]` independently reads the final `WEXP` and per-layer
++`WCBK` files. It validates codebook headers, dense absolute codebook IDs,
++record identity, blocked-index geometry, offsets, file size, reserved fields,
++and optional payload CRC before exposing one dequantized expert through the
++same callback used by the private model.
++
++The reader is intentionally scalar and materializes one F32 expert for parity.
++The public runtime should ultimately reuse WASTE's optimized LUT/VQ compute
++path rather than retain this validation implementation as the hot kernel.
++
++A complete synthetic model test now streams routed experts from final WEXP
++records and matches a reference constructed from an independent Python
++dequantizer across multiple tokens.
++
+ ## 6. Correctness evidence
+ 
+ Current tests cover:
+@@ -164,8 +225,11 @@ Current tests cover:
+ - resident and callback-backed vocabulary tables;
+ - strict canonical tensor binding;
+ - private runtime-index publication and corruption rejection;
+-- private staged-directory open, multiple token steps, streamed experts, reset,
+-  and bit-identical logits versus the already verified direct C model.
++- private staged-directory open, multiple token steps, streamed BF16 experts,
++  reset, and bit-identical logits versus the already verified direct C model;
++- deterministic WEXP/WCBK output, source/training-bound resume, CRC corruption
++  rejection, independent Python/C dequantization parity, and complete-model
++  logits through the final-format expert callback.
+ 
+ The last comparison uses small synthetic BF16-rounded weights. It validates the
+ container-private binding and execution path, not official checkpoint quality.
+@@ -193,8 +257,10 @@ That is a correctness implementation, not the final laptop layout. Before
+ public Windows deployment:
+ 
+ - quantize resident attention, dense, router, and shared-expert tensors;
+-- convert routed BF16 staging directly into final WASTE expert banks;
+-- document quantized tolerances separately from BF16 parity;
++- wire the completed final WEXP banks into the private runtime index and public
++  expert cache;
++- measure codebook quality on official Small tensors and document quantized
++  tolerances separately from BF16 parity;
+ - avoid requiring source, BF16 stage, and final container simultaneously;
+ - benchmark expert read amplification, top-6 cache behavior, and shared-expert
+   compute.
+diff --git a/src/inkling_wexp.c b/src/inkling_wexp.c
+new file mode 100644
+index 0000000..46f5fb3
+--- /dev/null
++++ b/src/inkling_wexp.c
+@@ -0,0 +1,326 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#define _POSIX_C_SOURCE 200809L
++#include "inkling_wexp.h"
++
++#include <fcntl.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++#ifdef _WIN32
++#include <io.h>
++#include <sys/stat.h>
++#include <windows.h>
++#ifndef O_BINARY
++#define O_BINARY _O_BINARY
++#endif
++#define OPEN_RO(path) _open((path), _O_RDONLY | O_BINARY)
++#define CLOSE_FD(fd) _close(fd)
++#else
++#include <sys/stat.h>
++#include <unistd.h>
++#ifndef O_BINARY
++#define O_BINARY 0
++#endif
++#define OPEN_RO(path) open((path), O_RDONLY | O_BINARY)
++#define CLOSE_FD(fd) close(fd)
++#endif
++
++#define WEXP_MAGIC 0x50584557u
++#define WCBK_MAGIC 0x4b424357u
++#define WQ_VQ3R 4u
++#define WQ_VQ2R 5u
++#define WASTE_ALIGN 4096u
++#define WEXP_HEADER 48u
++#define WCBK_HEADER 16u
++
++static uint16_t rd16(const unsigned char *p)
++{
++    return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
++}
++
++static uint32_t rd32(const unsigned char *p)
++{
++    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
++           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++}
++
++static float f16_to_f32(uint16_t h)
++{
++    unsigned s = h >> 15, e = (h >> 10) & 31u, m = h & 1023u;
++    union { uint32_t u; float f; } v;
++    if (!e) {
++        if (!m) v.u = s << 31;
++        else {
++            int ee = 1;
++            while (!(m & 1024u)) { m <<= 1; ee--; }
++            m &= 1023u;
++            v.u = (s << 31) | ((uint32_t)(ee + 112) << 23) | (m << 13);
++        }
++    } else if (e == 31) {
++        v.u = (s << 31) | 0x7f800000u | (m << 13);
++    } else {
++        v.u = (s << 31) | ((e + 112u) << 23) | (m << 13);
++    }
++    return v.f;
++}
++
++static uint32_t crc32_update(uint32_t c, const unsigned char *p, size_t n)
++{
++    for (size_t i = 0; i < n; i++) {
++        c ^= p[i];
++        for (int k = 0; k < 8; k++)
++            c = (c >> 1) ^ ((0u - (c & 1u)) & 0xedb88320u);
++    }
++    return c;
++}
++
++static uint32_t crc32u(const unsigned char *p, size_t n)
++{
++    return ~crc32_update(~0u, p, n);
++}
++
++static int preadn(int fd, void *buf, size_t n, uint64_t off)
++{
++    unsigned char *p = (unsigned char *)buf;
++#ifdef _WIN32
++    HANDLE h = (HANDLE)_get_osfhandle(fd);
++    if (h == INVALID_HANDLE_VALUE) return -1;
++    while (n) {
++        DWORD ask = n > 0x7fffffffu ? 0x7fffffffu : (DWORD)n;
++        DWORD got = 0;
++        OVERLAPPED ov;
++        memset(&ov, 0, sizeof ov);
++        ov.Offset = (DWORD)off;
++        ov.OffsetHigh = (DWORD)(off >> 32);
++        if (!ReadFile(h, p, ask, &got, &ov) || got == 0) return -1;
++        p += got; n -= got; off += got;
++    }
++#else
++    while (n) {
++        ssize_t got = pread(fd, p, n, (off_t)off);
++        if (got <= 0) return -1;
++        p += (size_t)got; n -= (size_t)got; off += (uint64_t)got;
++    }
++#endif
++    return 0;
++}
++
++static int file_size(int fd, uint64_t *out)
++{
++#ifdef _WIN32
++    struct _stat64 st;
++    if (_fstat64(fd, &st) || st.st_size < 0) return -1;
++    *out = (uint64_t)st.st_size;
++#else
++    struct stat st;
++    if (fstat(fd, &st) || st.st_size < 0) return -1;
++    *out = (uint64_t)st.st_size;
++#endif
++    return 0;
++}
++
++static int mul_size(size_t a, size_t b, size_t *out)
++{
++    if (!out || (a && b > SIZE_MAX / a)) return -1;
++    *out = a * b;
++    return 0;
++}
++
++static size_t padded_rows(int rows, int block)
++{
++    return ((size_t)rows + (size_t)block - 1u) / (size_t)block * (size_t)block;
++}
++
++static int index_bytes(int rows, int cols, int vec_dim, int stages,
++                       int block, size_t *out)
++{
++    size_t value;
++    if (rows <= 0 || cols <= 0 || vec_dim <= 0 || stages <= 0 || block <= 0 ||
++        cols % vec_dim || mul_size(padded_rows(rows, block),
++                                  (size_t)(cols / vec_dim), &value) ||
++        mul_size(value, (size_t)stages, &value)) return -1;
++    *out = value;
++    return 0;
++}
++
++static int load_codebooks(waste_inkling_wexp_bank *b, const char *path)
++{
++    const int fd = OPEN_RO(path);
++    const size_t count = (size_t)3 * (size_t)b->stages;
++    size_t values, payload, record;
++    uint64_t actual;
++    unsigned char header[WCBK_HEADER];
++    if (fd < 0 || mul_size((size_t)b->entries, (size_t)b->vec_dim, &values) ||
++        mul_size(values, 2u, &payload) || payload > SIZE_MAX - WCBK_HEADER) {
++        if (fd >= 0) CLOSE_FD(fd);
++        return -1;
++    }
++    record = WCBK_HEADER + payload;
++    if (file_size(fd, &actual) || actual != (uint64_t)record * count ||
++        mul_size(count, values, &values) || values > SIZE_MAX / sizeof(float) ||
++        !(b->codebooks = (float *)malloc(values * sizeof(float)))) {
++        CLOSE_FD(fd); return -1;
++    }
++    unsigned char *raw = (unsigned char *)malloc(payload);
++    if (!raw) { CLOSE_FD(fd); return -1; }
++    for (size_t i = 0; i < count; i++) {
++        const uint64_t off = (uint64_t)i * record;
++        if (preadn(fd, header, sizeof header, off) ||
++            rd32(header) != WCBK_MAGIC ||
++            rd16(header + 4) != (uint16_t)(b->codebook_base + (int)i) ||
++            header[6] != (unsigned)b->fmt || header[7] != (unsigned)b->vec_dim ||
++            rd32(header + 8) != (uint32_t)b->entries || rd32(header + 12) != 0 ||
++            preadn(fd, raw, payload, off + WCBK_HEADER)) {
++            free(raw); CLOSE_FD(fd); return -1;
++        }
++        float *dst = b->codebooks + i * (size_t)b->entries * (size_t)b->vec_dim;
++        for (size_t j = 0; j < payload / 2u; j++) dst[j] = f16_to_f32(rd16(raw + 2u * j));
++    }
++    free(raw);
++    CLOSE_FD(fd);
++    return 0;
++}
++
++static int record_identity(const waste_inkling_wexp_bank *b,
++                           const unsigned char *h, int expert,
++                           size_t *scale_end)
++{
++    size_t gate_idx, up_idx, down_idx;
++    if (index_bytes(b->intermediate, b->hidden, b->vec_dim, b->stages,
++                    b->index_block, &gate_idx) ||
++        index_bytes(b->intermediate, b->hidden, b->vec_dim, b->stages,
++                    b->index_block, &up_idx) ||
++        index_bytes(b->hidden, b->intermediate, b->vec_dim, b->stages,
++                    b->index_block, &down_idx)) return -1;
++    const size_t gate_off = WEXP_HEADER;
++    const size_t up_off = gate_off + gate_idx;
++    const size_t down_off = up_off + up_idx;
++    const size_t corr_off = down_off + down_idx;
++    const size_t end = corr_off + (size_t)(2 * b->intermediate + b->hidden) * 2u;
++    if (rd32(h) != WEXP_MAGIC || rd16(h + 4) != (uint16_t)b->layer ||
++        rd16(h + 6) != (uint16_t)expert || h[8] != (unsigned)b->fmt || h[9] != 0 ||
++        rd16(h + 10) != (uint16_t)b->codebook_base || rd16(h + 12) != 0 ||
++        rd16(h + 14) != 0 || rd32(h + 16) * WASTE_ALIGN != b->record_bytes ||
++        rd32(h + 20) != gate_off || rd32(h + 24) != up_off ||
++        rd32(h + 28) != down_off || rd32(h + 32) != corr_off ||
++        rd32(h + 40) != 0 || rd32(h + 44) != 0 || end > b->record_bytes)
++        return -1;
++    *scale_end = end;
++    return 0;
++}
++
++static void decode_matrix(const waste_inkling_wexp_bank *b,
++                          int kind, int rows, int cols,
++                          size_t index_off, size_t scale_off, float *out)
++{
++    const int nvr = cols / b->vec_dim;
++    const unsigned char *idx = b->record + index_off;
++    const unsigned char *scales = b->record + scale_off;
++    for (int row = 0; row < rows; row++) {
++        const int block = row / b->index_block;
++        const int in_block = row % b->index_block;
++        const float scale = f16_to_f32(rd16(scales + (size_t)row * 2u));
++        for (int vector = 0; vector < nvr; vector++) {
++            float *dst = out + ((size_t)row * (size_t)nvr + (size_t)vector) * (size_t)b->vec_dim;
++            for (int d = 0; d < b->vec_dim; d++) dst[d] = 0.0f;
++            const size_t base = (((size_t)block * (size_t)nvr + (size_t)vector) *
++                                 (size_t)b->index_block + (size_t)in_block) *
++                                (size_t)b->stages;
++            for (int stage = 0; stage < b->stages; stage++) {
++                const unsigned code = idx[base + (size_t)stage];
++                const float *book = b->codebooks +
++                    ((size_t)kind * (size_t)b->stages + (size_t)stage) *
++                    (size_t)b->entries * (size_t)b->vec_dim +
++                    (size_t)code * (size_t)b->vec_dim;
++                for (int d = 0; d < b->vec_dim; d++) dst[d] += book[d];
++            }
++            for (int d = 0; d < b->vec_dim; d++) dst[d] *= scale;
++        }
++    }
++}
++
++int waste_inkling_wexp_bank_open(
++    waste_inkling_wexp_bank *b, const char *bank_path, const char *codebook_path,
++    int layer, int experts, int hidden, int intermediate,
++    int stages, int entries, int vec_dim, int index_block,
++    int codebook_base, int verify_crc)
++{
++    unsigned char h[WEXP_HEADER];
++    uint64_t actual;
++    size_t matrix;
++    if (!b || !bank_path || !codebook_path || layer < 0 || experts <= 0 ||
++        hidden <= 0 || intermediate <= 0 || (stages != 2 && stages != 3) ||
++        entries <= 1 || entries > 256 || vec_dim <= 0 || vec_dim > 64 ||
++        index_block <= 0 || codebook_base < 0 || codebook_base > 65535 ||
++        hidden % vec_dim || intermediate % vec_dim ||
++        mul_size((size_t)hidden, (size_t)intermediate, &matrix)) return -1;
++    memset(b, 0, sizeof *b);
++    b->bank_fd = -1;
++    b->layer = layer; b->experts = experts; b->hidden = hidden;
++    b->intermediate = intermediate; b->stages = stages; b->entries = entries;
++    b->vec_dim = vec_dim; b->index_block = index_block;
++    b->fmt = stages == 3 ? WQ_VQ3R : WQ_VQ2R;
++    b->codebook_base = codebook_base; b->verify_crc = verify_crc;
++    b->matrix_floats = matrix;
++    if (load_codebooks(b, codebook_path)) goto fail;
++    b->bank_fd = OPEN_RO(bank_path);
++    if (b->bank_fd < 0 || preadn(b->bank_fd, h, sizeof h, 0) ||
++        rd32(h) != WEXP_MAGIC || rd32(h + 16) == 0) goto fail;
++    b->record_bytes = (uint64_t)rd32(h + 16) * WASTE_ALIGN;
++    if (file_size(b->bank_fd, &actual) || actual != b->record_bytes * (uint64_t)experts)
++        goto fail;
++    size_t scale_end;
++    if (record_identity(b, h, 0, &scale_end)) goto fail;
++    (void)scale_end;
++    b->record_capacity = (size_t)b->record_bytes;
++    b->record = (unsigned char *)malloc(b->record_capacity);
++    b->gate = (float *)malloc(matrix * sizeof(float));
++    b->up = (float *)malloc(matrix * sizeof(float));
++    b->down = (float *)malloc(matrix * sizeof(float));
++    if (!b->record || !b->gate || !b->up || !b->down) goto fail;
++    return 0;
++fail:
++    waste_inkling_wexp_bank_close(b);
++    return -1;
++}
++
++int waste_inkling_wexp_expert_get(void *ctx, int layer, int expert,
++                                  waste_inkling_expert_weights *out)
++{
++    waste_inkling_wexp_bank *b = (waste_inkling_wexp_bank *)ctx;
++    size_t scale_end, gate_idx, up_idx, down_idx;
++    if (!b || !out || b->bank_fd < 0 || layer != b->layer || expert < 0 ||
++        expert >= b->experts ||
++        preadn(b->bank_fd, b->record, b->record_capacity,
++               (uint64_t)expert * b->record_bytes) ||
++        record_identity(b, b->record, expert, &scale_end) ||
++        (b->verify_crc && crc32u(b->record + WEXP_HEADER, scale_end - WEXP_HEADER) !=
++                          rd32(b->record + 36)) ||
++        index_bytes(b->intermediate, b->hidden, b->vec_dim, b->stages,
++                    b->index_block, &gate_idx) ||
++        index_bytes(b->intermediate, b->hidden, b->vec_dim, b->stages,
++                    b->index_block, &up_idx) ||
++        index_bytes(b->hidden, b->intermediate, b->vec_dim, b->stages,
++                    b->index_block, &down_idx)) return -1;
++    const size_t gate_off = WEXP_HEADER;
++    const size_t up_off = gate_off + gate_idx;
++    const size_t down_off = up_off + up_idx;
++    const size_t corr_off = down_off + down_idx;
++    decode_matrix(b, 0, b->intermediate, b->hidden, gate_off, corr_off, b->gate);
++    decode_matrix(b, 1, b->intermediate, b->hidden, up_off,
++                  corr_off + (size_t)b->intermediate * 2u, b->up);
++    decode_matrix(b, 2, b->hidden, b->intermediate, down_off,
++                  corr_off + (size_t)b->intermediate * 4u, b->down);
++    out->gate = b->gate; out->up = b->up; out->down = b->down;
++    return 0;
++}
++
++void waste_inkling_wexp_bank_close(waste_inkling_wexp_bank *b)
++{
++    if (!b) return;
++    if (b->bank_fd >= 0) CLOSE_FD(b->bank_fd);
++    free(b->codebooks); free(b->gate); free(b->up); free(b->down); free(b->record);
++    memset(b, 0, sizeof *b);
++    b->bank_fd = -1;
++}
+diff --git a/src/inkling_wexp.h b/src/inkling_wexp.h
+new file mode 100644
+index 0000000..0ed1b01
+--- /dev/null
++++ b/src/inkling_wexp.h
+@@ -0,0 +1,45 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Converter-private WEXP/VQ reader for Inkling routed experts.
++ */
++#ifndef WASTE_INKLING_WEXP_H
++#define WASTE_INKLING_WEXP_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#include "inkling_layer.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct {
++    int bank_fd;
++    int layer, experts, hidden, intermediate;
++    int stages, entries, vec_dim, index_block, fmt, codebook_base;
++    uint64_t record_bytes;
++    int verify_crc;
++    float *codebooks; /* [3*stages][entries][vec_dim] */
++    float *gate, *up, *down;
++    unsigned char *record;
++    size_t matrix_floats, record_capacity;
++} waste_inkling_wexp_bank;
++
++int waste_inkling_wexp_bank_open(
++    waste_inkling_wexp_bank *bank,
++    const char *bank_path,
++    const char *codebook_path,
++    int layer, int experts, int hidden, int intermediate,
++    int stages, int entries, int vec_dim, int index_block,
++    int codebook_base, int verify_crc);
++
++int waste_inkling_wexp_expert_get(
++    void *ctx, int layer, int expert,
++    waste_inkling_expert_weights *out);
++
++void waste_inkling_wexp_bank_close(waste_inkling_wexp_bank *bank);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/tests/test_convert_inkling.py b/tests/test_convert_inkling.py
+index 99d9d49..a37fc29 100644
+--- a/tests/test_convert_inkling.py
++++ b/tests/test_convert_inkling.py
+@@ -85,6 +85,29 @@ class InklingStageCliTest(unittest.TestCase):
+         self.assertFalse((out / "manifest.json").exists())
+ 
+ 
++    def test_quantize_experts_writes_final_layer_artifacts_not_manifest(self):
++        from test_inkling_weights import make_weight_checkpoint
++
++        td, root, _ = make_weight_checkpoint()
++        self.addCleanup(td.cleanup)
++        out_td = tempfile.TemporaryDirectory()
++        self.addCleanup(out_td.cleanup)
++        out = Path(out_td.name)
++        plan = {"source_dialect": "provider_raw", "official_small": False}
++        with patch("inkling_vq.build_plan", return_value=plan):
++            rc = convert_inkling.main([
++                "--src", str(root), "--out", str(out), "--quantize-experts",
++                "--layers", "1", "--experts", "2", "--vq-stages", "2",
++                "--vq-entries", "16", "--codebook-sample", "2",
++                "--train-vectors", "32", "--kmeans-iters", "2",
++                "--assign-chunk", "16",
++            ])
++        self.assertEqual(rc, 0)
++        self.assertTrue((out / "experts-L1.bin").exists())
++        self.assertTrue((out / "codebooks-L1.bin").exists())
++        self.assertTrue((out / "vq-stage.json").exists())
++        self.assertFalse((out / "manifest.json").exists())
++
+     def test_publish_private_runtime_stage_never_writes_manifest(self):
+         from inkling_stage import stage_expert_banks
+         from inkling_trunk import stage_trunk
+diff --git a/tests/test_inkling_model_c.py b/tests/test_inkling_model_c.py
+index a41f4b2..4794328 100644
+--- a/tests/test_inkling_model_c.py
++++ b/tests/test_inkling_model_c.py
+@@ -14,7 +14,12 @@ import torch
+ 
+ REPO = Path(__file__).resolve().parents[1]
+ sys.path.insert(0, str(REPO / "tests"))
++sys.path.insert(0, str(REPO / "tools"))
+ 
++from inkling_vq import (
++    KIND_NAMES, VQSpec, dequantize_record, quantize_matrix, read_codebooks,
++    train_codebooks, write_codebooks, write_expert_record,
++)
+ from test_inkling_attention_c import rmsnorm
+ from test_inkling_config_c import Args, Config
+ from test_inkling_layer_c import (
+@@ -68,6 +73,22 @@ def as_tensor(values, n):
+     return torch.tensor(list(values)[:n], dtype=torch.float32)
+ 
+ 
++class WexpBank(ctypes.Structure):
++    _fields_ = [
++        ("bank_fd", ctypes.c_int), ("layer", ctypes.c_int),
++        ("experts", ctypes.c_int), ("hidden", ctypes.c_int),
++        ("intermediate", ctypes.c_int), ("stages", ctypes.c_int),
++        ("entries", ctypes.c_int), ("vec_dim", ctypes.c_int),
++        ("index_block", ctypes.c_int), ("fmt", ctypes.c_int),
++        ("codebook_base", ctypes.c_int), ("record_bytes", ctypes.c_uint64),
++        ("verify_crc", ctypes.c_int), ("codebooks", FP),
++        ("gate", FP), ("up", FP), ("down", FP),
++        ("record", ctypes.POINTER(ctypes.c_ubyte)),
++        ("matrix_floats", ctypes.c_size_t),
++        ("record_capacity", ctypes.c_size_t),
++    ]
++
++
+ class InklingModelCDifferentialTest(unittest.TestCase):
+     @classmethod
+     def setUpClass(cls):
+@@ -85,6 +106,7 @@ class InklingModelCDifferentialTest(unittest.TestCase):
+                 str(REPO / "src" / "inkling_attention.c"),
+                 str(REPO / "src" / "inkling_config.c"),
+                 str(REPO / "src" / "inkling.c"),
++                str(REPO / "src" / "inkling_wexp.c"),
+                 "-lm", "-o", str(lib_path),
+             ],
+             check=True, capture_output=True,
+@@ -116,6 +138,18 @@ class InklingModelCDifferentialTest(unittest.TestCase):
+             ExpertCallback, ctypes.c_void_p,
+         ]
+         cls.lib.waste_inkling_model_step.restype = ctypes.c_int
++        cls.lib.waste_inkling_wexp_bank_open.argtypes = [
++            ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p,
++            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
++            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
++            ctypes.c_int, ctypes.c_int,
++        ]
++        cls.lib.waste_inkling_wexp_bank_open.restype = ctypes.c_int
++        cls.lib.waste_inkling_wexp_bank_close.argtypes = [ctypes.c_void_p]
++        # The fixture helper builds its Config through the same library. Make
++        # the model test independently runnable instead of relying on unittest
++        # module ordering to initialize the layer-test class first.
++        InklingLayerCDifferentialTest.lib = cls.lib
+ 
+     @classmethod
+     def tearDownClass(cls):
+@@ -296,6 +330,98 @@ class InklingModelCDifferentialTest(unittest.TestCase):
+                                    rtol=0, atol=0)
+         self.assertIsNotNone((keep, runtime_keep))
+ 
++    def test_final_wexp_callback_matches_dequantized_reference(self):
++        helper, cfg, mw, common, extras, tables, keep = self.build_fixture()
++        layer = 1
++        routed = extras[layer]
++        spec = VQSpec(stages=2, vec_dim=2, entries=8, index_block=4)
++        books = {}
++        for kind, values in zip(
++            KIND_NAMES,
++            (routed["routed_gate"], routed["routed_up"], routed["routed_down"]),
++        ):
++            vectors = []
++            for matrix in values:
++                scale = matrix.abs().amax(1, keepdim=True).clamp_min(1e-8)
++                vectors.append((matrix / scale).reshape(-1, spec.vec_dim))
++            books[kind] = train_codebooks(
++                torch.cat(vectors), spec, iterations=4, assign_chunk=16,
++                seed=40 + KIND_NAMES.index(kind),
++            )
++
++        stage_td = tempfile.TemporaryDirectory()
++        self.addCleanup(stage_td.cleanup)
++        root = Path(stage_td.name)
++        book_path = root / "codebooks-L1.bin"
++        bank_path = root / "experts-L1.bin"
++        write_codebooks(book_path, 0, books, spec)
++        record_bytes = 0
++        with bank_path.open("wb") as f:
++            for expert in range(cfg.n_routed_experts):
++                matrices = [
++                    quantize_matrix(values[expert], books[kind], spec, native=False,
++                                    assign_chunk=16)
++                    for kind, values in zip(
++                        KIND_NAMES,
++                        (routed["routed_gate"], routed["routed_up"], routed["routed_down"]),
++                    )
++                ]
++                record_bytes = write_expert_record(f, layer, expert, 0, matrices, spec)
++
++        loaded_books = read_codebooks(book_path, spec)
++        qgate, qup, qdown = [], [], []
++        with bank_path.open("rb") as f:
++            for expert in range(cfg.n_routed_experts):
++                decoded = dequantize_record(
++                    f.read(record_bytes), loaded_books,
++                    ((cfg.moe_intermediate, cfg.hidden),
++                     (cfg.moe_intermediate, cfg.hidden),
++                     (cfg.hidden, cfg.moe_intermediate)),
++                    spec, expected_layer=layer, expected_expert=expert,
++                )
++                qgate.append(decoded.gate); qup.append(decoded.up); qdown.append(decoded.down)
++        extras[layer] = dict(extras[layer])
++        extras[layer]["routed_gate"] = torch.stack(qgate)
++        extras[layer]["routed_up"] = torch.stack(qup)
++        extras[layer]["routed_down"] = torch.stack(qdown)
++        mw.layer[layer].routed_gate = None
++        mw.layer[layer].routed_up = None
++        mw.layer[layer].routed_down = None
++
++        bank = WexpBank()
++        self.assertEqual(self.lib.waste_inkling_wexp_bank_open(
++            ctypes.byref(bank), str(bank_path).encode(), str(book_path).encode(),
++            layer, cfg.n_routed_experts, cfg.hidden, cfg.moe_intermediate,
++            spec.stages, spec.entries, spec.vec_dim, spec.index_block, 0, 1,
++        ), 0)
++        callback = ctypes.cast(self.lib.waste_inkling_wexp_expert_get, ExpertCallback)
++        try:
++            capacity = 5
++            state, scratch, runtime_keep = self.init_runtime(cfg, capacity)
++            py_state = self.py_states(cfg, capacity)
++            for position, token in enumerate((3, 5, 7)):
++                x = rmsnorm(tables["embedding"][token], tables["embed_norm"], cfg.rms_eps)
++                for current in range(cfg.n_layers):
++                    x = helper.reference_layer(
++                        cfg, current, common[current], extras[current], x,
++                        position, py_state[current],
++                    )
++                x = rmsnorm(x, tables["final_norm"], cfg.rms_eps)
++                want = tables["unembedding"] @ (x / cfg.logits_width_multiplier)
++                out = (ctypes.c_float * cfg.unpadded_vocab)()
++                self.assertEqual(self.lib.waste_inkling_model_step(
++                    ctypes.byref(cfg), ctypes.byref(mw), ctypes.byref(state),
++                    ctypes.byref(scratch), token, position, out,
++                    cfg.unpadded_vocab, callback, ctypes.byref(bank),
++                ), 0)
++                torch.testing.assert_close(
++                    as_tensor(out, cfg.unpadded_vocab), want,
++                    rtol=3e-4, atol=3e-4,
++                )
++            self.assertIsNotNone((keep, runtime_keep, callback))
++        finally:
++            self.lib.waste_inkling_wexp_bank_close(ctypes.byref(bank))
++
+     def test_position_and_output_bounds_fail_closed(self):
+         _helper, cfg, mw, _common, _extras, _tables, keep = self.build_fixture()
+         state, scratch, runtime_keep = self.init_runtime(cfg, 2)
+diff --git a/tests/test_inkling_vq.py b/tests/test_inkling_vq.py
+new file mode 100644
+index 0000000..b93340f
+--- /dev/null
++++ b/tests/test_inkling_vq.py
+@@ -0,0 +1,209 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++import json
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++from unittest.mock import patch
++
++import torch
++
++REPO = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(REPO / "tools"))
++sys.path.insert(0, str(REPO / "tests"))
++
++from inkling_vq import (
++    EXPERT_HEADER,
++    VQError,
++    VQSpec,
++    dequantize_record,
++    parse_record_header,
++    quantize_expert_banks,
++    quantize_layer,
++    read_codebooks,
++    record_geometry,
++    verify_layer_outputs,
++)
++from inkling_weights import ProviderRawInklingWeights
++from test_inkling_weights import make_weight_checkpoint
++
++
++def plan():
++    return {"source_dialect": "provider_raw", "official_small": False}
++
++
++class InklingVQTest(unittest.TestCase):
++    def setUp(self):
++        self.src_td, self.src, self.expected = make_weight_checkpoint()
++        self.out_td = tempfile.TemporaryDirectory()
++        self.out = Path(self.out_td.name)
++        self.addCleanup(self.src_td.cleanup)
++        self.addCleanup(self.out_td.cleanup)
++        self.spec = VQSpec(stages=2, entries=16)
++
++    def convert(self):
++        source = ProviderRawInklingWeights(self.src)
++        return quantize_layer(
++            source,
++            self.out,
++            1,
++            spec=self.spec,
++            codebook_sample=4,
++            train_vectors=64,
++            kmeans_iterations=4,
++            assign_chunk=32,
++            verify=True,
++        )
++
++    def test_wexp_codebook_round_trip_and_quality(self):
++        meta = self.convert()
++        bank = self.out / meta["file"]
++        codebooks = self.out / meta["codebooks_file"]
++        self.assertEqual(bank.stat().st_size, meta["record_bytes"] * 4)
++        self.assertEqual(meta["record_bytes"] % 4096, 0)
++        self.assertEqual(meta["codebook_base"], 0)
++        verify_layer_outputs(
++            bank,
++            codebooks,
++            layer=1,
++            experts=4,
++            hidden=16,
++            intermediate=8,
++            spec=self.spec,
++            codebook_base=0,
++        )
++        books = read_codebooks(codebooks, self.spec)
++        with bank.open("rb") as f:
++            for expert in range(4):
++                record = f.read(meta["record_bytes"])
++                header = parse_record_header(record)
++                self.assertEqual((header.layer, header.expert), (1, expert))
++                got = dequantize_record(
++                    record,
++                    books,
++                    ((8, 16), (8, 16), (16, 8)),
++                    self.spec,
++                    expected_layer=1,
++                    expected_expert=expert,
++                )
++                for value, reference in zip(
++                    (got.gate, got.up, got.down),
++                    (
++                        self.expected["routed_gate"][expert],
++                        self.expected["routed_up"][expert],
++                        self.expected["routed_down"][expert],
++                    ),
++                ):
++                    relative = float((value - reference).norm() / reference.norm().clamp_min(1e-8))
++                    self.assertLess(relative, 0.2)
++
++    def test_deterministic_conversion(self):
++        first = self.convert()
++        raw_bank = (self.out / first["file"]).read_bytes()
++        raw_books = (self.out / first["codebooks_file"]).read_bytes()
++        second_td = tempfile.TemporaryDirectory()
++        self.addCleanup(second_td.cleanup)
++        source = ProviderRawInklingWeights(self.src)
++        second = quantize_layer(
++            source,
++            Path(second_td.name),
++            1,
++            spec=self.spec,
++            codebook_sample=4,
++            train_vectors=64,
++            kmeans_iterations=4,
++            assign_chunk=32,
++        )
++        self.assertEqual(raw_bank, (Path(second_td.name) / second["file"]).read_bytes())
++        self.assertEqual(raw_books, (Path(second_td.name) / second["codebooks_file"]).read_bytes())
++
++    def test_crc_corruption_fails(self):
++        meta = self.convert()
++        bank = self.out / meta["file"]
++        with bank.open("r+b") as f:
++            f.seek(EXPERT_HEADER.size + 3)
++            byte = f.read(1)
++            f.seek(EXPERT_HEADER.size + 3)
++            f.write(bytes([byte[0] ^ 1]))
++        with self.assertRaisesRegex(VQError, "CRC"):
++            verify_layer_outputs(
++                bank,
++                self.out / meta["codebooks_file"],
++                layer=1,
++                experts=4,
++                hidden=16,
++                intermediate=8,
++                spec=self.spec,
++                codebook_base=0,
++            )
++
++    def test_source_bound_resume(self):
++        with patch("inkling_vq.build_plan", return_value=plan()):
++            first = quantize_expert_banks(
++                self.src,
++                self.out,
++                layers=[1],
++                spec=self.spec,
++                codebook_sample=4,
++                train_vectors=64,
++                kmeans_iterations=2,
++                assign_chunk=32,
++            )
++        self.assertFalse(first["layers"][0]["reused"])
++        with patch("inkling_vq.build_plan", return_value=plan()), patch(
++            "inkling_vq.quantize_layer", side_effect=AssertionError("rewritten")
++        ):
++            second = quantize_expert_banks(
++                self.src,
++                self.out,
++                layers=[1],
++                spec=self.spec,
++                codebook_sample=4,
++                train_vectors=64,
++                kmeans_iterations=2,
++                assign_chunk=32,
++            )
++        self.assertTrue(second["layers"][0]["reused"])
++        stage = json.loads((self.out / "vq-stage.json").read_text())
++        self.assertFalse(stage["manifest_published"])
++
++        # Training identity is part of resume safety. Changing the Lloyd
++        # iteration count must rebuild instead of silently reusing a bank.
++        with patch("inkling_vq.build_plan", return_value=plan()), patch(
++            "inkling_vq.quantize_layer", wraps=quantize_layer
++        ) as rebuilt:
++            third = quantize_expert_banks(
++                self.src,
++                self.out,
++                layers=[1],
++                spec=self.spec,
++                codebook_sample=4,
++                train_vectors=64,
++                kmeans_iterations=3,
++                assign_chunk=32,
++            )
++        self.assertFalse(third["layers"][0]["reused"])
++        self.assertEqual(rebuilt.call_count, 1)
++
++    def test_official_small_vq3_geometry(self):
++        geometry = record_geometry(4096, 2048, VQSpec())
++        self.assertEqual(geometry["record_bytes"], 9_457_664)
++        self.assertEqual(geometry["record_bytes"] * 256, 2_421_161_984)
++        self.assertEqual(geometry["record_bytes"] * 256 * 40, 96_846_479_360)
++
++    def test_invalid_training_geometry_fails_closed(self):
++        source = ProviderRawInklingWeights(self.src)
++        with self.assertRaisesRegex(VQError, "train_vectors"):
++            quantize_layer(
++                source,
++                self.out,
++                1,
++                spec=VQSpec(stages=2, entries=32),
++                codebook_sample=1,
++                train_vectors=16,
++            )
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_inkling_wexp_c.py b/tests/test_inkling_wexp_c.py
+new file mode 100644
+index 0000000..edaa301
+--- /dev/null
++++ b/tests/test_inkling_wexp_c.py
+@@ -0,0 +1,184 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++import ctypes
++import shutil
++import subprocess
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++
++import torch
++
++REPO = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(REPO / "tools"))
++sys.path.insert(0, str(REPO / "tests"))
++
++from inkling_vq import VQSpec, dequantize_record, quantize_layer, read_codebooks
++from inkling_weights import ProviderRawInklingWeights
++from test_inkling_weights import make_weight_checkpoint
++
++FP = ctypes.POINTER(ctypes.c_float)
++
++
++class Expert(ctypes.Structure):
++    _fields_ = [("gate", FP), ("up", FP), ("down", FP)]
++
++
++class Bank(ctypes.Structure):
++    _fields_ = [
++        ("bank_fd", ctypes.c_int),
++        ("layer", ctypes.c_int),
++        ("experts", ctypes.c_int),
++        ("hidden", ctypes.c_int),
++        ("intermediate", ctypes.c_int),
++        ("stages", ctypes.c_int),
++        ("entries", ctypes.c_int),
++        ("vec_dim", ctypes.c_int),
++        ("index_block", ctypes.c_int),
++        ("fmt", ctypes.c_int),
++        ("codebook_base", ctypes.c_int),
++        ("record_bytes", ctypes.c_uint64),
++        ("verify_crc", ctypes.c_int),
++        ("codebooks", FP),
++        ("gate", FP),
++        ("up", FP),
++        ("down", FP),
++        ("record", ctypes.POINTER(ctypes.c_ubyte)),
++        ("matrix_floats", ctypes.c_size_t),
++        ("record_capacity", ctypes.c_size_t),
++    ]
++
++
++class InklingWexpCTest(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cc = shutil.which("cc")
++        if not cc:
++            raise unittest.SkipTest("C compiler unavailable")
++        cls.build_td = tempfile.TemporaryDirectory()
++        so = Path(cls.build_td.name) / "libwexp.so"
++        subprocess.run(
++            [
++                cc,
++                "-std=c11",
++                "-Wall",
++                "-Wextra",
++                "-Werror",
++                "-shared",
++                "-fPIC",
++                f"-I{REPO / 'src'}",
++                str(REPO / "src" / "inkling_wexp.c"),
++                "-o",
++                str(so),
++            ],
++            check=True,
++            capture_output=True,
++        )
++        cls.lib = ctypes.CDLL(str(so))
++        cls.lib.waste_inkling_wexp_bank_open.argtypes = [
++            ctypes.POINTER(Bank), ctypes.c_char_p, ctypes.c_char_p,
++            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
++            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
++            ctypes.c_int, ctypes.c_int,
++        ]
++        cls.lib.waste_inkling_wexp_bank_open.restype = ctypes.c_int
++        cls.lib.waste_inkling_wexp_expert_get.argtypes = [
++            ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.POINTER(Expert)
++        ]
++        cls.lib.waste_inkling_wexp_expert_get.restype = ctypes.c_int
++        cls.lib.waste_inkling_wexp_bank_close.argtypes = [ctypes.POINTER(Bank)]
++
++    @classmethod
++    def tearDownClass(cls):
++        cls.build_td.cleanup()
++
++    def setUp(self):
++        self.src_td, self.src, _ = make_weight_checkpoint()
++        self.out_td = tempfile.TemporaryDirectory()
++        self.addCleanup(self.src_td.cleanup)
++        self.addCleanup(self.out_td.cleanup)
++        self.out = Path(self.out_td.name)
++        self.spec = VQSpec(stages=2, entries=16)
++        self.meta = quantize_layer(
++            ProviderRawInklingWeights(self.src),
++            self.out,
++            1,
++            spec=self.spec,
++            codebook_sample=4,
++            train_vectors=64,
++            kmeans_iterations=3,
++            assign_chunk=32,
++        )
++
++    def test_c_dequantization_matches_python(self):
++        bank_path = self.out / self.meta["file"]
++        book_path = self.out / self.meta["codebooks_file"]
++        bank = Bank()
++        rc = self.lib.waste_inkling_wexp_bank_open(
++            ctypes.byref(bank),
++            str(bank_path).encode(),
++            str(book_path).encode(),
++            1, 4, 16, 8, 2, 16, 8, 64, 0, 1,
++        )
++        self.assertEqual(rc, 0)
++        try:
++            expert = Expert()
++            self.assertEqual(
++                self.lib.waste_inkling_wexp_expert_get(
++                    ctypes.byref(bank), 1, 2, ctypes.byref(expert)
++                ),
++                0,
++            )
++            record_bytes = self.meta["record_bytes"]
++            with bank_path.open("rb") as f:
++                f.seek(2 * record_bytes)
++                raw = f.read(record_bytes)
++            reference = dequantize_record(
++                raw,
++                read_codebooks(book_path, self.spec),
++                ((8, 16), (8, 16), (16, 8)),
++                self.spec,
++                expected_layer=1,
++                expected_expert=2,
++            )
++            for ptr, shape, expected in (
++                (expert.gate, (8, 16), reference.gate),
++                (expert.up, (8, 16), reference.up),
++                (expert.down, (16, 8), reference.down),
++            ):
++                got = torch.tensor([ptr[i] for i in range(shape[0] * shape[1])]).reshape(shape)
++                torch.testing.assert_close(got, expected, rtol=1e-6, atol=1e-6)
++        finally:
++            self.lib.waste_inkling_wexp_bank_close(ctypes.byref(bank))
++
++    def test_c_reader_rejects_crc_corruption(self):
++        bank_path = self.out / self.meta["file"]
++        book_path = self.out / self.meta["codebooks_file"]
++        with bank_path.open("r+b") as f:
++            f.seek(48 + 5)
++            byte = f.read(1)
++            f.seek(48 + 5)
++            f.write(bytes([byte[0] ^ 1]))
++        bank = Bank()
++        self.assertEqual(
++            self.lib.waste_inkling_wexp_bank_open(
++                ctypes.byref(bank), str(bank_path).encode(), str(book_path).encode(),
++                1, 4, 16, 8, 2, 16, 8, 64, 0, 1,
++            ),
++            0,
++        )
++        try:
++            expert = Expert()
++            self.assertEqual(
++                self.lib.waste_inkling_wexp_expert_get(
++                    ctypes.byref(bank), 1, 0, ctypes.byref(expert)
++                ),
++                -1,
++            )
++        finally:
++            self.lib.waste_inkling_wexp_bank_close(ctypes.byref(bank))
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tools/convert_inkling.py b/tools/convert_inkling.py
+index d1f6914..cf2d0e9 100644
+--- a/tools/convert_inkling.py
++++ b/tools/convert_inkling.py
+@@ -13,6 +13,8 @@ The command has four safe modes:
+   tensor and ``trunk-stage.json`` using bounded source reads.
+ * ``--publish-runtime-stage`` validates completed trunk/expert stages and
+   publishes only the private ``runtime-stage.bin`` index.
++* ``--quantize-experts`` converts routed experts directly to final WEXP/VQ
++  layer artifacts, but still does not publish ``manifest.json``.
+ 
+ Neither staging mode publishes a WASTE manifest.
+ 
+@@ -31,6 +33,7 @@ from inkling_plan import PlanError, build_plan, write_json_atomic
+ from inkling_runtime_stage import RuntimeStageError, publish_runtime_stage
+ from inkling_stage import StageError, stage_expert_banks
+ from inkling_trunk import TrunkStageError, stage_trunk
++from inkling_vq import VQError, VQSpec, quantize_expert_banks
+ 
+ 
+ def _csv_ints(value: str) -> list[int]:
+@@ -60,6 +63,11 @@ def main(argv: list[str] | None = None) -> int:
+         action="store_true",
+         help="write resumable resident-trunk staging artifacts; never writes trunk.bin or manifest.json",
+     )
++    mode.add_argument(
++        "--quantize-experts",
++        action="store_true",
++        help="write final-format WEXP/VQ layer artifacts; never writes manifest.json",
++    )
+     mode.add_argument(
+         "--publish-runtime-stage",
+         action="store_true",
+@@ -70,10 +78,17 @@ def main(argv: list[str] | None = None) -> int:
+         action="store_true",
+         help="allow a review plan when shards are not downloaded; valid only with --plan-only",
+     )
+-    ap.add_argument("--layers", type=_csv_ints, help="sparse layers to stage, comma-separated")
++    ap.add_argument("--layers", type=_csv_ints, help="sparse layers to stage/quantize, comma-separated")
+     ap.add_argument("--experts", type=int, help="debug limit per bank; marks the stage incomplete")
+     ap.add_argument("--no-verify", action="store_true", help="skip post-write CRC verification")
+     ap.add_argument("--no-resume", action="store_true", help="rewrite requested staging artifacts even when sidecars match")
++    ap.add_argument("--vq-stages", type=int, choices=(2, 3), default=3, help="VQ residual stages (default: 3)")
++    ap.add_argument("--vq-entries", type=int, default=256, help="codebook entries; 256 for production")
++    ap.add_argument("--codebook-sample", type=int, default=12, help="experts sampled per layer for codebook training")
++    ap.add_argument("--train-vectors", type=int, default=300000, help="maximum normalized vectors per matrix kind")
++    ap.add_argument("--kmeans-iters", type=int, default=10, help="Lloyd iterations per residual stage")
++    ap.add_argument("--assign-chunk", type=int, default=32768, help="maximum vectors per nearest-centroid chunk")
++    ap.add_argument("--device", default="cpu", help="torch device for VQ training/encoding")
+     ap.add_argument(
+         "--allow-generic-inkling",
+         action="store_true",
+@@ -89,14 +104,23 @@ def main(argv: list[str] | None = None) -> int:
+ 
+     if args.allow_index_only and not args.plan_only:
+         ap.error("--allow-index-only is valid only with --plan-only")
+-    if (args.layers is not None or args.experts is not None) and not args.stage_experts:
+-        ap.error("--layers and --experts require --stage-experts")
+-    if args.no_resume and not (args.stage_experts or args.stage_trunk):
+-        ap.error("--no-resume requires --stage-experts or --stage-trunk")
+-    if args.no_verify and not (args.stage_experts or args.stage_trunk or args.publish_runtime_stage):
++    if (args.layers is not None or args.experts is not None) and not (args.stage_experts or args.quantize_experts):
++        ap.error("--layers and --experts require --stage-experts or --quantize-experts")
++    if args.no_resume and not (args.stage_experts or args.stage_trunk or args.quantize_experts):
++        ap.error("--no-resume requires --stage-experts, --stage-trunk, or --quantize-experts")
++    if args.no_verify and not (args.stage_experts or args.stage_trunk or args.quantize_experts or args.publish_runtime_stage):
+         ap.error("--no-verify requires a staging or runtime-stage mode")
+     if args.allow_generic_inkling and not args.publish_runtime_stage:
+         ap.error("--allow-generic-inkling requires --publish-runtime-stage")
++    vq_tuned = (args.vq_stages != 3 or args.vq_entries != 256 or args.codebook_sample != 12 or
++                  args.train_vectors != 300000 or args.kmeans_iters != 10 or
++                  args.assign_chunk != 32768 or args.device != "cpu")
++    if vq_tuned and not args.quantize_experts:
++        ap.error("VQ tuning options require --quantize-experts")
++    if args.vq_entries < 2 or args.vq_entries > 256:
++        ap.error("--vq-entries must be in 2..256")
++    if min(args.codebook_sample, args.train_vectors, args.kmeans_iters, args.assign_chunk) <= 0:
++        ap.error("VQ training values must be positive")
+     if args.chunk_mib != 8 and not args.stage_trunk:
+         ap.error("--chunk-mib requires --stage-trunk")
+     if args.chunk_mib <= 0:
+@@ -131,6 +155,29 @@ def main(argv: list[str] | None = None) -> int:
+         print("manifest.json was not written; this is not a runnable WASTE container")
+         return 0
+ 
++    if args.quantize_experts:
++        try:
++            stage = quantize_expert_banks(
++                args.src,
++                args.out,
++                layers=args.layers,
++                spec=VQSpec(stages=args.vq_stages, entries=args.vq_entries),
++                expert_limit=args.experts,
++                codebook_sample=args.codebook_sample,
++                train_vectors=args.train_vectors,
++                kmeans_iterations=args.kmeans_iters,
++                device=args.device,
++                assign_chunk=args.assign_chunk,
++                verify=not args.no_verify,
++                resume=not args.no_resume,
++            )
++        except VQError as exc:
++            print(f"convert_inkling: {exc}", file=sys.stderr)
++            return 2
++        print(f"wrote {len(stage['layers'])} final-format WEXP/VQ layer bank(s) and {args.out / 'vq-stage.json'}")
++        print("manifest.json was not written; public WASTE runtime remains disabled")
++        return 0
++
+     if args.publish_runtime_stage:
+         try:
+             meta = publish_runtime_stage(
+@@ -169,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
+     print(
+         "convert_inkling: final container conversion is not implemented; refusing to create "
+         "a partial or misleading WASTE container. Use --plan-only, --stage-experts, --stage-trunk, "
+-        "or --publish-runtime-stage.",
++        "--quantize-experts, or --publish-runtime-stage.",
+         file=sys.stderr,
+     )
+     return 2
+diff --git a/tools/inkling_vq.py b/tools/inkling_vq.py
+new file mode 100755
+index 0000000..7707114
+--- /dev/null
++++ b/tools/inkling_vq.py
+@@ -0,0 +1,927 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 SQLite Cloud, Inc.
++"""Direct Inkling routed-expert conversion to WASTE VQ records.
++
++This module is the first converter path that writes the final WASTE expert
++record and codebook layouts.  It deliberately writes one layer at a time and
++publishes only ``vq-stage.json``; ``manifest.json`` remains gated on public
++runtime integration and official-weight parity.
++
++Memory is bounded to:
++
++* one source expert (gate/up/down);
++* a fixed reservoir of normalized 8-value training vectors per matrix kind;
++* one quantization distance chunk; and
++* the codebooks for one layer.
++
++The output is compatible with ``waste_expert_hdr`` and
++``waste_codebook_hdr`` from ``src/waste_format.h``.
++"""
++
++from __future__ import annotations
++
++import ctypes
++import hashlib
++import json
++import math
++import os
++import struct
++import zlib
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any, Iterable, Sequence
++
++import torch
++
++from inspect_inkling import InspectError
++from inkling_plan import PlanError, build_plan, write_json_atomic
++from inkling_weights import ExpertWeights, ProviderRawInklingWeights, WeightError
++
++
++class VQError(RuntimeError):
++    pass
++
++
++MAGIC_EXPERT = 0x50584557      # WEXP
++MAGIC_CODEBOOK = 0x4B424357    # WCBK
++ALIGN = 4096
++FMT_VQ3R = 4
++FMT_VQ2R = 5
++EXPERT_HEADER = struct.Struct("<IHHBBHHHIIIIIIII")
++CODEBOOK_HEADER = struct.Struct("<IHBBII")
++assert EXPERT_HEADER.size == 48
++assert CODEBOOK_HEADER.size == 16
++
++KIND_NAMES = ("gate", "up", "down")
++
++
++@dataclass(frozen=True)
++class VQSpec:
++    stages: int = 3
++    vec_dim: int = 8
++    entries: int = 256
++    index_block: int = 64
++
++    def validate(self) -> None:
++        if self.stages not in (2, 3):
++            raise VQError("WASTE expert VQ stages must be 2 or 3")
++        if self.vec_dim <= 0 or self.vec_dim > 64:
++            raise VQError("invalid VQ vector dimension")
++        if self.entries <= 1 or self.entries > 256:
++            raise VQError("VQ entries must be in 2..256")
++        if self.index_block <= 0 or self.index_block > 4096:
++            raise VQError("invalid VQ index block")
++
++    @property
++    def fmt(self) -> int:
++        return FMT_VQ3R if self.stages == 3 else FMT_VQ2R
++
++
++@dataclass
++class QuantizedMatrix:
++    indices: torch.Tensor  # uint8 [stages, rows*cols/vec_dim]
++    scales: torch.Tensor   # float16 [rows]
++    shape: tuple[int, int]
++
++
++@dataclass
++class ParsedRecord:
++    layer: int
++    expert: int
++    fmt: int
++    codebook_base: int
++    record_bytes: int
++    offsets: tuple[int, int, int]
++    correction_off: int
++    crc32: int
++
++
++def _align(value: int, alignment: int = ALIGN) -> int:
++    if value < 0 or alignment <= 0:
++        raise VQError("invalid alignment request")
++    return (value + alignment - 1) // alignment * alignment
++
++
++def _raw(tensor: torch.Tensor) -> bytes:
++    return tensor.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes()
++
++
++def _sha256(path: Path) -> str:
++    h = hashlib.sha256()
++    with path.open("rb") as f:
++        while True:
++            chunk = f.read(1 << 20)
++            if not chunk:
++                break
++            h.update(chunk)
++    return h.hexdigest()
++
++
++def _source_hashes(src: Path) -> tuple[str, str]:
++    return _sha256(src / "config.json"), _sha256(src / "model.safetensors.index.json")
++
++
++def _assign_nearest(x: torch.Tensor, centroids: torch.Tensor, chunk: int) -> torch.Tensor:
++    if x.ndim != 2 or centroids.ndim != 2 or x.shape[1] != centroids.shape[1]:
++        raise VQError("invalid nearest-centroid shapes")
++    if chunk <= 0:
++        raise VQError("assignment chunk must be positive")
++    out = torch.empty(x.shape[0], dtype=torch.long, device=x.device)
++    cn = (centroids * centroids).sum(1)
++    for start in range(0, x.shape[0], chunk):
++        part = x[start : start + chunk]
++        distances = (part * part).sum(1, keepdim=True) + cn.unsqueeze(0)
++        distances.addmm_(part, centroids.T, beta=1.0, alpha=-2.0)
++        out[start : start + part.shape[0]] = distances.argmin(1)
++    return out
++
++
++def train_codebooks(
++    vectors: torch.Tensor,
++    spec: VQSpec,
++    *,
++    device: str | torch.device = "cpu",
++    iterations: int = 10,
++    assign_chunk: int = 32768,
++    seed: int = 0,
++) -> list[torch.Tensor]:
++    """Train residual codebooks on normalized vectors."""
++    spec.validate()
++    if vectors.ndim != 2 or vectors.shape[1] != spec.vec_dim:
++        raise VQError(f"training vectors must be [n,{spec.vec_dim}]")
++    if vectors.shape[0] < spec.entries:
++        raise VQError(
++            f"need at least {spec.entries} training vectors, received {vectors.shape[0]}"
++        )
++    if iterations < 1:
++        raise VQError("k-means iterations must be positive")
++    dev = torch.device(device)
++    residual = vectors.to(device=dev, dtype=torch.float32).contiguous()
++    generator = torch.Generator(device="cpu").manual_seed(seed)
++    books: list[torch.Tensor] = []
++    for stage in range(spec.stages):
++        perm = torch.randperm(residual.shape[0], generator=generator)[: spec.entries]
++        centroids = residual[perm.to(residual.device)].clone()
++        for _ in range(iterations):
++            assignment = _assign_nearest(residual, centroids, assign_chunk)
++            sums = torch.zeros_like(centroids)
++            sums.index_add_(0, assignment, residual)
++            counts = torch.bincount(assignment, minlength=spec.entries).to(residual.dtype)
++            live = counts > 0
++            centroids[live] = sums[live] / counts[live, None]
++        books.append(centroids.detach().cpu().contiguous())
++        assignment = _assign_nearest(residual, centroids, assign_chunk)
++        residual = residual - centroids[assignment]
++    return books
++
++
++def _normalized_vectors(matrix: torch.Tensor, vec_dim: int) -> torch.Tensor:
++    if matrix.ndim != 2 or matrix.shape[1] % vec_dim:
++        raise VQError(
++            f"matrix shape {list(matrix.shape)} is incompatible with vector dimension {vec_dim}"
++        )
++    matrix = matrix.float().contiguous()
++    scale = matrix.abs().amax(1, keepdim=True).clamp_min(1e-8)
++    return (matrix / scale).reshape(-1, vec_dim)
++
++
++def collect_training_vectors(
++    source: ProviderRawInklingWeights,
++    layer: int,
++    expert_ids: Sequence[int],
++    spec: VQSpec,
++    *,
++    train_vectors: int,
++    seed: int = 1234,
++) -> dict[str, torch.Tensor]:
++    """Read every sampled expert once and build bounded per-kind reservoirs."""
++    spec.validate()
++    if not expert_ids:
++        raise VQError("at least one codebook-sample expert is required")
++    if train_vectors < spec.entries:
++        raise VQError("train_vectors must be at least the codebook entry count")
++    per = max(1, math.ceil(train_vectors / len(expert_ids)))
++    chunks: dict[str, list[torch.Tensor]] = {name: [] for name in KIND_NAMES}
++    for expert in expert_ids:
++        weights = source.routed_expert(layer, expert, float32=True)
++        for kind, matrix in zip(KIND_NAMES, (weights.gate, weights.up, weights.down)):
++            vectors = _normalized_vectors(matrix, spec.vec_dim)
++            count = min(per, vectors.shape[0])
++            generator = torch.Generator(device="cpu").manual_seed(
++                seed + layer * 100003 + expert * 97 + KIND_NAMES.index(kind) * 13
++            )
++            selected = torch.randperm(vectors.shape[0], generator=generator)[:count]
++            chunks[kind].append(vectors[selected].cpu())
++    output: dict[str, torch.Tensor] = {}
++    for kind in KIND_NAMES:
++        values = torch.cat(chunks[kind], dim=0)
++        if values.shape[0] < spec.entries:
++            raise VQError(
++                f"{kind} reservoir has {values.shape[0]} vectors; need {spec.entries}"
++            )
++        output[kind] = values[:train_vectors].contiguous()
++    return output
++
++
++_NATIVE_VQ: tuple[Any, Any] | bool | None = None
++
++
++def _native_vq() -> tuple[Any, Any] | None:
++    global _NATIVE_VQ
++    if _NATIVE_VQ is False:
++        return None
++    if _NATIVE_VQ is not None:
++        return _NATIVE_VQ
++    root = Path(__file__).resolve().parents[1]
++    for name in ("libwastevq.dll", "libwastevq.so", "libwastevq.dylib"):
++        path = root / name
++        if not path.exists():
++            continue
++        lib = ctypes.CDLL(str(path))
++        fp = ctypes.POINTER(ctypes.c_float)
++        lib.waste_vq_encode.argtypes = [
++            fp,
++            ctypes.c_int,
++            fp,
++            ctypes.c_int,
++            ctypes.c_int,
++            ctypes.c_int,
++            ctypes.POINTER(ctypes.c_uint8),
++            ctypes.c_int,
++        ]
++        lib.waste_vq_encode.restype = None
++        _NATIVE_VQ = (lib, ctypes)
++        return _NATIVE_VQ
++    _NATIVE_VQ = False
++    return None
++
++
++def quantize_matrix(
++    matrix: torch.Tensor,
++    books: Sequence[torch.Tensor],
++    spec: VQSpec,
++    *,
++    device: str | torch.device = "cpu",
++    assign_chunk: int = 32768,
++    native: bool = True,
++) -> QuantizedMatrix:
++    spec.validate()
++    if len(books) != spec.stages:
++        raise VQError("codebook stage count mismatch")
++    if matrix.ndim != 2 or matrix.shape[1] % spec.vec_dim:
++        raise VQError("expert matrix is not vector-dimension aligned")
++    rows, cols = map(int, matrix.shape)
++    work = matrix.float().contiguous()
++    scales = work.abs().amax(1, keepdim=True).clamp_min(1e-8)
++    vectors = (work / scales).reshape(-1, spec.vec_dim).contiguous()
++
++    native_lib = _native_vq() if native and torch.device(device).type == "cpu" else None
++    if native_lib is not None:
++        lib, cmod = native_lib
++        stacked = torch.stack([book.float().cpu() for book in books]).contiguous()
++        output = torch.empty(vectors.shape[0] * spec.stages, dtype=torch.uint8)
++        fp = cmod.POINTER(cmod.c_float)
++        lib.waste_vq_encode(
++            cmod.cast(vectors.data_ptr(), fp),
++            vectors.shape[0],
++            cmod.cast(stacked.data_ptr(), fp),
++            spec.stages,
++            spec.entries,
++            spec.vec_dim,
++            cmod.cast(output.data_ptr(), cmod.POINTER(cmod.c_uint8)),
++            0,
++        )
++        indices = output.view(vectors.shape[0], spec.stages).T.contiguous()
++    else:
++        dev = torch.device(device)
++        residual = vectors.to(dev)
++        encoded: list[torch.Tensor] = []
++        for book in books:
++            centroids = book.to(device=dev, dtype=torch.float32)
++            idx = _assign_nearest(residual, centroids, assign_chunk)
++            encoded.append(idx.to(torch.uint8).cpu())
++            residual = residual - centroids[idx]
++        indices = torch.stack(encoded).contiguous()
++    return QuantizedMatrix(indices, scales.flatten().half().cpu(), (rows, cols))
++
++
++def block_indices(indices: torch.Tensor, shape: tuple[int, int], spec: VQSpec) -> torch.Tensor:
++    rows, cols = shape
++    if indices.dtype != torch.uint8 or list(indices.shape) != [spec.stages, rows * cols // spec.vec_dim]:
++        raise VQError("invalid VQ index tensor")
++    vectors_per_row = cols // spec.vec_dim
++    tensor = indices.view(spec.stages, rows, vectors_per_row).permute(1, 2, 0)
++    pad = (-rows) % spec.index_block
++    if pad:
++        tensor = torch.cat(
++            [
++                tensor,
++                torch.zeros(
++                    pad,
++                    vectors_per_row,
++                    spec.stages,
++                    dtype=torch.uint8,
++                ),
++            ],
++            dim=0,
++        )
++    blocks = tensor.shape[0] // spec.index_block
++    return tensor.view(blocks, spec.index_block, vectors_per_row, spec.stages).permute(
++        0, 2, 1, 3
++    ).contiguous()
++
++
++def unblock_indices(data: bytes, shape: tuple[int, int], spec: VQSpec) -> torch.Tensor:
++    rows, cols = shape
++    vectors_per_row = cols // spec.vec_dim
++    padded_rows = _align(rows, spec.index_block)
++    expected = padded_rows * vectors_per_row * spec.stages
++    if len(data) != expected:
++        raise VQError(f"blocked index payload is {len(data)} bytes; expected {expected}")
++    blocks = padded_rows // spec.index_block
++    raw = torch.frombuffer(bytearray(data), dtype=torch.uint8).view(
++        blocks, vectors_per_row, spec.index_block, spec.stages
++    )
++    return (
++        raw.permute(0, 2, 1, 3)
++        .reshape(padded_rows, vectors_per_row, spec.stages)[:rows]
++        .permute(2, 0, 1)
++        .reshape(spec.stages, rows * vectors_per_row)
++        .contiguous()
++    )
++
++
++def write_codebooks(
++    path: Path,
++    base: int,
++    books: dict[str, Sequence[torch.Tensor]],
++    spec: VQSpec,
++) -> dict[str, Any]:
++    spec.validate()
++    tmp = path.with_name(path.name + ".tmp")
++    try:
++        with tmp.open("wb") as f:
++            for kind_index, kind in enumerate(KIND_NAMES):
++                values = books.get(kind)
++                if values is None or len(values) != spec.stages:
++                    raise VQError(f"missing {kind} codebooks")
++                for stage, book in enumerate(values):
++                    if list(book.shape) != [spec.entries, spec.vec_dim]:
++                        raise VQError(f"invalid {kind} codebook shape {list(book.shape)}")
++                    codebook_id = base + kind_index * spec.stages + stage
++                    if codebook_id > 0xFFFF:
++                        raise VQError("codebook id exceeds WASTE u16 field")
++                    f.write(
++                        CODEBOOK_HEADER.pack(
++                            MAGIC_CODEBOOK,
++                            codebook_id,
++                            spec.fmt,
++                            spec.vec_dim,
++                            spec.entries,
++                            0,
++                        )
++                    )
++                    f.write(_raw(book.half()))
++            f.flush()
++            os.fsync(f.fileno())
++        os.replace(tmp, path)
++    except BaseException:
++        tmp.unlink(missing_ok=True)
++        raise
++    return {
++        "file": path.name,
++        "base": base,
++        "records": len(KIND_NAMES) * spec.stages,
++        "bytes": path.stat().st_size,
++    }
++
++
++def _record_body(
++    matrices: Sequence[QuantizedMatrix], spec: VQSpec
++) -> tuple[bytes, tuple[int, int, int], int]:
++    if len(matrices) != 3:
++        raise VQError("expert record requires gate, up, and down")
++    offset = EXPERT_HEADER.size
++    offsets: list[int] = []
++    body = bytearray()
++    for matrix in matrices:
++        offsets.append(offset)
++        payload = _raw(block_indices(matrix.indices, matrix.shape, spec))
++        body.extend(payload)
++        offset += len(payload)
++    correction_off = offset
++    for matrix in matrices:
++        payload = _raw(matrix.scales)
++        body.extend(payload)
++        offset += len(payload)
++    return bytes(body), (offsets[0], offsets[1], offsets[2]), correction_off
++
++
++def write_expert_record(
++    f: Any,
++    layer: int,
++    expert: int,
++    codebook_base: int,
++    matrices: Sequence[QuantizedMatrix],
++    spec: VQSpec,
++) -> int:
++    body, offsets, correction_off = _record_body(matrices, spec)
++    total = EXPERT_HEADER.size + len(body)
++    record_bytes = _align(total)
++    blocks = record_bytes // ALIGN
++    header = EXPERT_HEADER.pack(
++        MAGIC_EXPERT,
++        layer,
++        expert,
++        spec.fmt,
++        0,
++        codebook_base,
++        0,
++        0,
++        blocks,
++        offsets[0],
++        offsets[1],
++        offsets[2],
++        correction_off,
++        zlib.crc32(body) & 0xFFFFFFFF,
++        0,
++        0,
++    )
++    f.write(header)
++    f.write(body)
++    f.write(b"\0" * (record_bytes - total))
++    return record_bytes
++
++
++def parse_record_header(data: bytes) -> ParsedRecord:
++    if len(data) < EXPERT_HEADER.size:
++        raise VQError("short WEXP header")
++    (
++        magic,
++        layer,
++        expert,
++        fmt,
++        flags,
++        codebook_base,
++        lowrank,
++        reserved0,
++        blocks,
++        gate_off,
++        up_off,
++        down_off,
++        correction_off,
++        crc32,
++        reserved1,
++        reserved2,
++    ) = EXPERT_HEADER.unpack_from(data)
++    if magic != MAGIC_EXPERT or fmt not in (FMT_VQ2R, FMT_VQ3R) or flags != 0:
++        raise VQError("invalid WEXP record identity")
++    if lowrank or reserved0 or reserved1 or reserved2 or blocks <= 0:
++        raise VQError("unsupported or nonzero WEXP reserved fields")
++    record_bytes = blocks * ALIGN
++    if not (
++        EXPERT_HEADER.size <= gate_off < up_off < down_off < correction_off <= record_bytes
++    ):
++        raise VQError("invalid WEXP payload offsets")
++    return ParsedRecord(
++        layer,
++        expert,
++        fmt,
++        codebook_base,
++        record_bytes,
++        (gate_off, up_off, down_off),
++        correction_off,
++        crc32,
++    )
++
++
++def read_codebooks(path: Path, spec: VQSpec) -> dict[int, torch.Tensor]:
++    spec.validate()
++    record_bytes = CODEBOOK_HEADER.size + spec.entries * spec.vec_dim * 2
++    raw = path.read_bytes()
++    if len(raw) % record_bytes:
++        raise VQError("codebook file ends inside a record")
++    output: dict[int, torch.Tensor] = {}
++    for offset in range(0, len(raw), record_bytes):
++        magic, codebook_id, fmt, vec_dim, entries, reserved = CODEBOOK_HEADER.unpack_from(raw, offset)
++        if (
++            magic != MAGIC_CODEBOOK
++            or fmt != spec.fmt
++            or vec_dim != spec.vec_dim
++            or entries != spec.entries
++            or reserved != 0
++            or codebook_id in output
++        ):
++            raise VQError("invalid WASTE codebook record")
++        start = offset + CODEBOOK_HEADER.size
++        payload = raw[start : start + spec.entries * spec.vec_dim * 2]
++        output[codebook_id] = torch.frombuffer(
++            bytearray(payload), dtype=torch.float16
++        ).reshape(spec.entries, spec.vec_dim).float()
++    return output
++
++
++def _index_payload_bytes(shape: tuple[int, int], spec: VQSpec) -> int:
++    rows, cols = shape
++    if rows <= 0 or cols <= 0 or cols % spec.vec_dim:
++        raise VQError("invalid matrix shape for WEXP geometry")
++    return _align(rows, spec.index_block) * (cols // spec.vec_dim) * spec.stages
++
++
++def record_geometry(hidden: int, intermediate: int, spec: VQSpec) -> dict[str, int]:
++    """Exact final WEXP geometry for one Inkling routed expert."""
++    spec.validate()
++    shapes = ((intermediate, hidden), (intermediate, hidden), (hidden, intermediate))
++    index_bytes = [_index_payload_bytes(shape, spec) for shape in shapes]
++    scale_bytes = (2 * intermediate + hidden) * 2
++    body_bytes = sum(index_bytes) + scale_bytes
++    return {
++        "gate_index_bytes": index_bytes[0],
++        "up_index_bytes": index_bytes[1],
++        "down_index_bytes": index_bytes[2],
++        "scale_bytes": scale_bytes,
++        "body_bytes": body_bytes,
++        "record_bytes": _align(EXPERT_HEADER.size + body_bytes),
++    }
++
++
++def dequantize_record(
++    record: bytes,
++    books: dict[int, torch.Tensor],
++    shapes: Sequence[tuple[int, int]],
++    spec: VQSpec,
++    *,
++    expected_layer: int | None = None,
++    expected_expert: int | None = None,
++    verify_crc: bool = True,
++) -> ExpertWeights:
++    header = parse_record_header(record)
++    if len(record) != header.record_bytes:
++        raise VQError("WEXP record byte length differs from header")
++    if expected_layer is not None and header.layer != expected_layer:
++        raise VQError("WEXP layer identity mismatch")
++    if expected_expert is not None and header.expert != expected_expert:
++        raise VQError("WEXP expert identity mismatch")
++    if header.fmt != spec.fmt:
++        raise VQError("WEXP format differs from requested VQ spec")
++    scale_end = header.correction_off + sum(shape[0] for shape in shapes) * 2
++    if scale_end > len(record):
++        raise VQError("WEXP correction payload exceeds record")
++    if verify_crc and zlib.crc32(record[EXPERT_HEADER.size:scale_end]) & 0xFFFFFFFF != header.crc32:
++        raise VQError("WEXP payload CRC mismatch")
++
++    results: list[torch.Tensor] = []
++    scale_cursor = header.correction_off
++    for kind, shape in enumerate(shapes):
++        begin = header.offsets[kind]
++        end = header.offsets[kind + 1] if kind < 2 else header.correction_off
++        expected_indices = _index_payload_bytes(shape, spec)
++        if end - begin != expected_indices:
++            raise VQError("WEXP index payload size differs from shape")
++        indices = unblock_indices(record[begin:end], shape, spec).view(
++            spec.stages, shape[0], shape[1] // spec.vec_dim
++        )
++        rows = shape[0]
++        scales = torch.frombuffer(
++            bytearray(record[scale_cursor : scale_cursor + rows * 2]), dtype=torch.float16
++        ).float()
++        scale_cursor += rows * 2
++        reconstructed = torch.zeros(
++            shape[0], shape[1] // spec.vec_dim, spec.vec_dim, dtype=torch.float32
++        )
++        for stage in range(spec.stages):
++            book_id = header.codebook_base + kind * spec.stages + stage
++            book = books.get(book_id)
++            if book is None or list(book.shape) != [spec.entries, spec.vec_dim]:
++                raise VQError(f"missing codebook {book_id}")
++            reconstructed += book[indices[stage].long()]
++        results.append(reconstructed.reshape(shape) * scales[:, None])
++    return ExpertWeights(gate=results[0], up=results[1], down=results[2])
++
++
++def verify_layer_outputs(
++    bank_path: Path,
++    codebook_path: Path,
++    *,
++    layer: int,
++    experts: int,
++    hidden: int,
++    intermediate: int,
++    spec: VQSpec,
++    codebook_base: int,
++    verify_crc: bool = True,
++) -> dict[str, Any]:
++    books = read_codebooks(codebook_path, spec)
++    expected_ids = set(range(codebook_base, codebook_base + 3 * spec.stages))
++    if set(books) != expected_ids:
++        raise VQError("layer codebook ids are not dense at their declared base")
++    raw_size = bank_path.stat().st_size
++    with bank_path.open("rb") as f:
++        first = f.read(EXPERT_HEADER.size)
++        header = parse_record_header(first)
++        if header.layer != layer or header.expert != 0 or header.codebook_base != codebook_base:
++            raise VQError("first WEXP record identity mismatch")
++        if raw_size != header.record_bytes * experts:
++            raise VQError("expert bank size differs from record count")
++        shapes = ((intermediate, hidden), (intermediate, hidden), (hidden, intermediate))
++        for expert in range(experts):
++            f.seek(expert * header.record_bytes)
++            record = f.read(header.record_bytes)
++            dequantize_record(
++                record,
++                books,
++                shapes,
++                spec,
++                expected_layer=layer,
++                expected_expert=expert,
++                verify_crc=verify_crc,
++            )
++    return {
++        "record_bytes": header.record_bytes,
++        "bytes": raw_size,
++        "experts": experts,
++        "codebooks": len(books),
++    }
++
++
++def _sample_ids(n_experts: int, count: int) -> list[int]:
++    if count <= 0:
++        raise VQError("codebook sample count must be positive")
++    count = min(count, n_experts)
++    if count == 1:
++        return [0]
++    return sorted({round(i * (n_experts - 1) / (count - 1)) for i in range(count)})
++
++
++def quantize_layer(
++    source: ProviderRawInklingWeights,
++    out: Path,
++    layer: int,
++    *,
++    spec: VQSpec = VQSpec(),
++    expert_limit: int | None = None,
++    codebook_sample: int = 12,
++    train_vectors: int = 300000,
++    kmeans_iterations: int = 10,
++    device: str = "cpu",
++    assign_chunk: int = 32768,
++    verify: bool = True,
++) -> dict[str, Any]:
++    spec.validate()
++    if layer < source.dense_count or layer >= source.n_layers:
++        raise VQError(f"layer {layer} is not a sparse Inkling layer")
++    count = source.n_experts if expert_limit is None else min(expert_limit, source.n_experts)
++    if count <= 0:
++        raise VQError("expert limit must select at least one expert")
++    sample_pool = count if expert_limit is not None else source.n_experts
++    sample_ids = _sample_ids(sample_pool, codebook_sample)
++    vectors = collect_training_vectors(
++        source, layer, sample_ids, spec, train_vectors=train_vectors
++    )
++    books = {
++        kind: train_codebooks(
++            vectors[kind],
++            spec,
++            device=device,
++            iterations=kmeans_iterations,
++            assign_chunk=assign_chunk,
++            seed=layer * 17 + kind_index,
++        )
++        for kind_index, kind in enumerate(KIND_NAMES)
++    }
++
++    codebook_base = (layer - source.dense_count) * 3 * spec.stages
++    bank_path = out / f"experts-L{layer}.bin"
++    codebook_path = out / f"codebooks-L{layer}.bin"
++    out.mkdir(parents=True, exist_ok=True)
++    codebook_meta = write_codebooks(codebook_path, codebook_base, books, spec)
++    tmp = bank_path.with_name(bank_path.name + ".tmp")
++    record_bytes = 0
++    try:
++        with tmp.open("wb") as f:
++            for expert in range(count):
++                weights = source.routed_expert(layer, expert, float32=True)
++                matrices = [
++                    quantize_matrix(
++                        matrix,
++                        books[kind],
++                        spec,
++                        device=device,
++                        assign_chunk=assign_chunk,
++                    )
++                    for kind, matrix in zip(
++                        KIND_NAMES, (weights.gate, weights.up, weights.down)
++                    )
++                ]
++                this_record = write_expert_record(
++                    f, layer, expert, codebook_base, matrices, spec
++                )
++                if record_bytes and this_record != record_bytes:
++                    raise VQError("expert record size changed within a layer")
++                record_bytes = this_record
++            f.flush()
++            os.fsync(f.fileno())
++        os.replace(tmp, bank_path)
++    except BaseException:
++        tmp.unlink(missing_ok=True)
++        bank_path.unlink(missing_ok=True)
++        codebook_path.unlink(missing_ok=True)
++        raise
++
++    if verify:
++        try:
++            verify_layer_outputs(
++                bank_path,
++                codebook_path,
++                layer=layer,
++                experts=count,
++                hidden=source.hidden,
++                intermediate=source.intermediate,
++                spec=spec,
++                codebook_base=codebook_base,
++            )
++        except BaseException:
++            bank_path.unlink(missing_ok=True)
++            codebook_path.unlink(missing_ok=True)
++            raise
++    return {
++        "schema": "waste.inkling-vq-layer.v1",
++        "layer": layer,
++        "file": bank_path.name,
++        "codebooks_file": codebook_path.name,
++        "experts": count,
++        "model_experts": source.n_experts,
++        "complete": count == source.n_experts,
++        "hidden_size": source.hidden,
++        "intermediate_size": source.intermediate,
++        "record_bytes": record_bytes,
++        "geometry": record_geometry(source.hidden, source.intermediate, spec),
++        "bytes": bank_path.stat().st_size,
++        "codebook_base": codebook_base,
++        "codebooks": codebook_meta,
++        "quant": {
++            "fmt": "VQ3R" if spec.stages == 3 else "VQ2R",
++            "stages": spec.stages,
++            "vec_dim": spec.vec_dim,
++            "entries": spec.entries,
++            "index_block": spec.index_block,
++            "bits_per_weight": float(spec.stages),
++        },
++        "training": {
++            "algorithm": "residual-lloyd-v1",
++            "codebook_sample": codebook_sample,
++            "requested_train_vectors": train_vectors,
++            "sample_experts": sample_ids,
++            "vectors_per_kind": {kind: int(vectors[kind].shape[0]) for kind in KIND_NAMES},
++            "iterations": kmeans_iterations,
++            "device": str(device),
++        },
++    }
++
++
++def _sidecar_matches(
++    meta: dict[str, Any],
++    *,
++    layer: int,
++    source: ProviderRawInklingWeights,
++    spec: VQSpec,
++    count: int,
++    config_sha: str,
++    index_sha: str,
++    codebook_sample: int,
++    train_vectors: int,
++    kmeans_iterations: int,
++    device: str,
++) -> bool:
++    quant = meta.get("quant") if isinstance(meta.get("quant"), dict) else {}
++    training = meta.get("training") if isinstance(meta.get("training"), dict) else {}
++    return (
++        meta.get("schema") == "waste.inkling-vq-layer.v1"
++        and meta.get("layer") == layer
++        and meta.get("experts") == count
++        and meta.get("model_experts") == source.n_experts
++        and meta.get("source_config_sha256") == config_sha
++        and meta.get("source_index_sha256") == index_sha
++        and quant.get("stages") == spec.stages
++        and quant.get("vec_dim") == spec.vec_dim
++        and quant.get("entries") == spec.entries
++        and quant.get("index_block") == spec.index_block
++        and training.get("algorithm") == "residual-lloyd-v1"
++        and training.get("codebook_sample") == codebook_sample
++        and training.get("requested_train_vectors") == train_vectors
++        and training.get("iterations") == kmeans_iterations
++        and training.get("device") == str(device)
++    )
++
++
++def quantize_expert_banks(
++    src: Path,
++    out: Path,
++    *,
++    layers: Iterable[int] | None = None,
++    spec: VQSpec = VQSpec(),
++    expert_limit: int | None = None,
++    codebook_sample: int = 12,
++    train_vectors: int = 300000,
++    kmeans_iterations: int = 10,
++    device: str = "cpu",
++    assign_chunk: int = 32768,
++    verify: bool = True,
++    resume: bool = True,
++) -> dict[str, Any]:
++    try:
++        plan = build_plan(src, require_payloads=True)
++        source = ProviderRawInklingWeights(src)
++    except (InspectError, PlanError, WeightError) as exc:
++        raise VQError(str(exc)) from exc
++    if plan.get("source_dialect") != "provider_raw":
++        raise VQError("direct VQ conversion accepts the official provider-raw checkpoint only")
++    selected = list(layers) if layers is not None else list(range(source.dense_count, source.n_layers))
++    if not selected or len(set(selected)) != len(selected):
++        raise VQError("layers must be a nonempty unique list")
++    for layer in selected:
++        if layer < source.dense_count or layer >= source.n_layers:
++            raise VQError(f"layer {layer} is not sparse")
++    count = source.n_experts if expert_limit is None else min(expert_limit, source.n_experts)
++    config_sha, index_sha = _source_hashes(src)
++    out.mkdir(parents=True, exist_ok=True)
++    results: list[dict[str, Any]] = []
++    for layer in selected:
++        sidecar = out / f"experts-L{layer}.bin.json"
++        bank = out / f"experts-L{layer}.bin"
++        codebooks = out / f"codebooks-L{layer}.bin"
++        reused = False
++        if resume:
++            try:
++                old = json.loads(sidecar.read_text(encoding="utf-8"))
++            except (FileNotFoundError, OSError, json.JSONDecodeError):
++                old = None
++            if isinstance(old, dict) and _sidecar_matches(
++                old,
++                layer=layer,
++                source=source,
++                spec=spec,
++                count=count,
++                config_sha=config_sha,
++                index_sha=index_sha,
++                codebook_sample=codebook_sample,
++                train_vectors=train_vectors,
++                kmeans_iterations=kmeans_iterations,
++                device=device,
++            ):
++                try:
++                    verify_layer_outputs(
++                        bank,
++                        codebooks,
++                        layer=layer,
++                        experts=count,
++                        hidden=source.hidden,
++                        intermediate=source.intermediate,
++                        spec=spec,
++                        codebook_base=int(old["codebook_base"]),
++                        verify_crc=verify,
++                    )
++                    meta = old
++                    reused = True
++                except (OSError, KeyError, TypeError, ValueError, VQError):
++                    reused = False
++        if not reused:
++            try:
++                meta = quantize_layer(
++                    source,
++                    out,
++                    layer,
++                    spec=spec,
++                    expert_limit=expert_limit,
++                    codebook_sample=codebook_sample,
++                    train_vectors=train_vectors,
++                    kmeans_iterations=kmeans_iterations,
++                    device=device,
++                    assign_chunk=assign_chunk,
++                    verify=verify,
++                )
++            except WeightError as exc:
++                raise VQError(str(exc)) from exc
++            meta["source_config_sha256"] = config_sha
++            meta["source_index_sha256"] = index_sha
++            write_json_atomic(sidecar, meta)
++        result = dict(meta)
++        result["reused"] = reused
++        results.append(result)
++    stage = {
++        "schema": "waste.inkling-vq-stage.v1",
++        "architecture": "inkling",
++        "official_small": bool(plan.get("official_small")),
++        "source_config_sha256": config_sha,
++        "source_index_sha256": index_sha,
++        "layers": results,
++        "totals": {
++            "bank_bytes": sum(int(item.get("bytes", 0)) for item in results),
++            "codebook_bytes": sum(int(item.get("codebooks", {}).get("bytes", 0)) for item in results),
++        },
++        "complete": all(item.get("complete") for item in results),
++        "manifest_published": False,
++    }
++    write_json_atomic(out / "vq-stage.json", stage)
++    return stage

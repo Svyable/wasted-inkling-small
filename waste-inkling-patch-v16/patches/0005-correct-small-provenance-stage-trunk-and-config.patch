@@ -1,0 +1,2203 @@
+diff --git a/Makefile b/Makefile
+index 722a18bef4c06345b1e3af6f462065dd7766f35c..c8bb1125a42a57105b1d3b2a7a49dfd25897a6a2 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,4 +1,4 @@
+-SRC := src/model.c src/arch.c src/inkling.c src/kda.c src/backend.c src/ecache.c src/version.c \
++SRC := src/model.c src/arch.c src/inkling.c src/inkling_config.c src/kda.c src/backend.c src/ecache.c src/version.c \
+        src/tokenizer.c src/waste.c src/vq.c src/vision.c src/image.c \
+        src/crc32.c
+ 
+@@ -8,7 +8,7 @@ TESTBINS  := $(addsuffix $(EXE),$(TESTNAMES))
+ 
+ test_k3parts$(EXE): tests/test_k3parts.o libwaste.a
+ 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+-test_inkling$(EXE): tests/test_inkling.o src/arch.o src/inkling.o
++test_inkling$(EXE): tests/test_inkling.o src/arch.o src/inkling.o src/inkling_config.o
+ 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+ test_image$(EXE): tests/test_image.o libwaste.a
+ 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+diff --git a/docs/INKLING.md b/docs/INKLING.md
+index b4a34f6ec468f5e18285859bb0ae178e38b21a7f..4558295b8c672968b9dcf4e7a647358299fb2eb9 100644
+--- a/docs/INKLING.md
++++ b/docs/INKLING.md
+@@ -1,324 +1,255 @@
+-# Inkling-Small support in WASTE
++# Inkling-family support in WASTE
+ 
+-Status: **source audit, deterministic conversion planning, bounded BF16
+-weight access, and isolated C math primitives are implemented. Container
+-payload writing and runtime integration are not yet implemented.**
++Status: **source audit, deterministic conversion planning, bounded BF16 expert
++and trunk staging, architecture-specific C configuration, and isolated C math
++primitives are implemented. A runnable WASTE container and integrated Inkling
++forward pass are not yet implemented.**
+ 
+-Inkling-Small was released on 2026-07-30. This document uses only the official
+-release assets and the official Apache-2.0 Transformers implementation as
+-architecture sources:
++## Provenance correction
+ 
+-- `thinkingmachines/Inkling-Small/config.json`
+-- `thinkingmachines/Inkling-Small/model.safetensors.index.json`
+-- `thinkingmachines/Inkling-Small/processor_config.json`
+-- `thinkingmachines/Inkling-Small/tokenizer_config.json`
+-- `thinkingmachines/Inkling-Small/chat_template.jinja`
+-- `transformers/models/inkling/*`
+-- the official Transformers checkpoint-conversion mapping for
+-  `inkling_mm_model`
++As of **2026-08-01**, Thinking Machines describes Inkling-Small as a preview and
++states that its full weights will be released after testing. No official
++`thinkingmachines/Inkling-Small` config, tokenizer, tensor index, or checkpoint
++was found. Therefore:
+ 
+-No value from the larger Inkling model is used as an Inkling-Small default.
++- no Small-specific dimension is treated as confirmed;
++- the 42-layer profile used in one synthetic test is explicitly an
++  **unverified candidate fixture**, not release metadata;
++- implementation is parameterized against the released Inkling architecture
++  and will consume Small's own config and tensor headers when they exist;
++- final Small support, conversion success, and logit parity cannot be claimed
++  before the official Small assets are available.
++
++The released `thinkingmachines/Inkling` checkpoint and the Apache-2.0
++Transformers Inkling implementation are used only to establish family-level
++semantics and exact source transformations.
+ 
+ ## 1. Executive assessment
+ 
+-WASTE's resident-trunk plus streamed-expert-bank design is a good fit for
+-Inkling-Small. The 40 sparse layers each have 256 routed experts, while six are
+-active per token. The two shared experts in every sparse layer are always
+-active and therefore belong in the resident trunk, not the streamed bank.
+-
+-The existing WEXP record can continue to hold one expert's gate, up, and down
+-matrices after the official fused `w13` layout is deterministically reordered
+-and split. The expert cache, aligned `pread`, CRC validation, chunk-level expert
+-deduplication, and bounded cache policy can be reused.
+-
+-The current C forward pass cannot execute Inkling-Small. Inkling attention is
+-neither KDA nor MLA and requires:
+-
+-- local/global grouped-query attention;
+-- per-head Q/K RMS normalization;
+-- a learned hidden-state-conditioned relative-logit projection;
+-- attention scale `1 / head_dim`, not `1 / sqrt(head_dim)`;
+-- four depthwise causal short-convolution states per layer;
+-- global-layer query and relative-bias log scaling;
+-- exact routed-plus-shared expert normalization.
+-
+-The current patch series stops before publishing container bytes. It provides a
+-deterministic, shape-checked conversion plan, a bounded safetensors reader that
+-loads one routed expert slice at a time, exact fused-weight transforms, and
+-standalone C implementations of the new router, relative-bias, log-scaling, and
+-short-convolution equations. It does not create `manifest.json`, `trunk.bin`,
+-expert banks, or codebooks, and the C primitives are not yet wired into
+-`model.c`.
+-
+-## 2. Confirmed Inkling-Small architecture mapping
+-
+-| Field | Value | Provenance |
++WASTE's resident-trunk plus streamed-expert-bank architecture is compatible in
++principle with the Inkling family:
++
++- routed experts can remain disk-streamed and cache-managed;
++- shared experts must remain resident because every token uses them;
++- attention, normalization, relative-position, convolution, and routing math
++  require a new architecture path rather than reuse of KDA or MLA;
++- manifest publication must remain blocked until the new loader and forward
++  path are integrated and differentially validated.
++
++The current series deliberately produces converter-internal staging artifacts,
++not a runnable `.waste` model. This prevents a Kimi-specific runtime from
++accepting plausible but semantically invalid Inkling metadata.
++
++## 2. Confirmed family architecture
++
++The following is confirmed from the released full Inkling config, tensor index,
++and official implementation. These values describe **released Inkling**, not
++Inkling-Small unless a future Small release independently confirms them.
++
++| Field | Released Inkling value | Provenance |
+ |---|---:|---|
+-| architecture | `InklingForConditionalGeneration` / `inkling_mm_model` | confirmed from config |
+-| source numerics | BF16 release; separate NVFP4 release | confirmed from release files |
+-| hidden size | 4096 | confirmed from config |
+-| decoder layers | 42 | confirmed from config |
+-| configured maximum context | 1,048,576 | confirmed from config |
+-| vocabulary rows | 201,024 | confirmed from config |
+-| unembed rows | 200,058 | confirmed from config |
+-| dense MLP layers | 0-1 | confirmed from `dense_mlp_idx=2` |
+-| sparse MLP layers | 2-41 | derived from config |
+-| dense intermediate | 16,384 | confirmed from config |
+-| routed intermediate | 2,048 | confirmed from config |
+-| routed experts | 256 | confirmed from config |
+-| routed top-k | 6 | confirmed from config |
+-| shared experts | 2 | confirmed from config |
+-| router activation | sigmoid | confirmed from config and code |
+-| route scale | 8.0 | confirmed from config |
+-| router correction bias | one value per routed expert | confirmed from index and code |
+-| global Q/KV heads | 32 / 8 | confirmed from config |
+-| local Q/KV heads | 32 / 8 | confirmed from config |
+-| head dimension | 128 | confirmed from config |
+-| local window | 512 | confirmed from config |
+-| local layers | 0-4, 6-10, 12-16, 18-22, 24-28, 30-34, 36-40 | confirmed from config |
+-| global layers | 5, 11, 17, 23, 29, 35, 41 | complement of config local IDs |
+-| relative state dimension | 16 | confirmed from config |
+-| global relative extent | 1,024 | confirmed from config |
+-| local relative extent | 512 | confirmed from official code |
+-| short-convolution kernel | 4 | confirmed from config |
+-| convolution states | K, V, attention output, MLP output | confirmed from official code |
+-| EOS | 200006 | confirmed from config |
+-| image placeholder | `<|unused_200054|>` -> 200054 | processor plus tokenizer metadata |
+-| audio placeholder | `<|unused_200053|>` -> 200053 | processor plus tokenizer metadata |
+-| image BOS | `<|content_image|>` -> 200005 | processor plus tokenizer metadata |
+-| audio BOS | `<|content_audio_input|>` -> 200020 | processor plus tokenizer metadata |
+-| vision | hMLP, patch 40, temporal patch 2, RGB, four linear stages | confirmed from config/index |
+-| audio | 16 kHz, 80 mel bands, 50 ms hop, 1,600-point FFT, 16 dMel bins | processor/config |
+-| prompt format | official `chat_template.jinja` | official sidecar |
+-
+-### Exact text source grammar
+-
+-The official BF16 source uses provider-raw names:
++| architecture | `InklingForConditionalGeneration` / `inkling_mm_model` | config |
++| source numerics | BF16, plus a separate NVFP4 checkpoint | release assets |
++| hidden size | 6,144 | config |
++| decoder layers | 66 | config |
++| configured context | 1,048,576 | config |
++| vocabulary rows | 201,024 | config |
++| unembed rows | 200,058 | config |
++| dense MLP layers | 0-1 | `dense_mlp_idx=2` |
++| routed experts | 256 | config |
++| routed top-k | 6 | config |
++| shared experts | 2 | config |
++| dense intermediate | 24,576 | config |
++| routed intermediate | 3,072 | config |
++| global Q/KV heads | 64 / 8 | config |
++| local Q/KV heads | 64 / 16 | config |
++| head dimension | 128 | config |
++| local window | 512 | config |
++| relative state dimension | 16 | config |
++| global relative extent | 1,024 | config |
++| short-convolution kernel | 4 | config |
++| routing | sigmoid choice bias; selected routed plus all shared normalized jointly | config and code |
++| convolution states | K, V, attention branch, MLP branch | official code |
++| attention scaling | `1 / head_dim` after per-head Q/K RMSNorm | official code |
++
++Publicly confirmed Small facts are limited to the preview description: 276B
++total parameters and 12B active. Layer count, hidden width, head layout,
++intermediate widths, exact tensor grammar, tokenizer assets, and multimodal
++metadata remain unknown until release.
++
++## 3. Exact released-source grammar and transforms
++
++The released BF16 provider-raw checkpoint uses:
+ 
+ - core: `model.llm.embed`, `embed_norm`, `norm`, `unembed`;
+ - attention: `wq_du`, `wk_dv`, `wv_dv`, `wr_du`, `wo_ud`, Q/K norms,
+   relative-logit projection, K/V short convolutions;
+ - residual short convolutions: `attn_sconv`, `mlp_sconv`;
+ - dense MLP: `w13_dn`, `w2_md`, `global_scale`;
+-- sparse MLP: `experts.w13_weight`, `experts.w2_weight`, router weight,
+-  correction bias, router global scale, and shared-expert fused weights.
+-
+-The official Transformers conversion mapping establishes these transformations:
+-
+-- dense `w13_dn`: interleave axis 0, then split axis 0 into gate/up;
+-- routed `experts.w13_weight`: interleave axis 1 into grouped gate/up;
+-- shared `shared_w13_weight`: interleave axis 1, then split axis 1;
+-- attention projections and short-convolution weights: rename without a
+-  transpose;
+-- MTP tensors: ignored by the base model and excluded from baseline parity.
+-
+-Patch 2 encodes and shape-checks those transformations. Patch 3 reads the
+-provider-raw BF16 payload lazily, applies the official interleave operation,
+-and splits dense, routed, and shared fused weights. Routed expert access reads
+-only the requested axis-0 expert slice.
+-
+-## 3. Remaining blockers
+-
+-### Blocking payload conversion
+-
+-- A local BF16 checkpoint must include all 32 required shards. The index alone
+-  is sufficient for audit but not conversion.
+-- Every required tensor header must expose the expected shape and dtype.
+-- The payload writer must feed the already-bounded source adapter into WASTE
+-  trunk and expert-bank writers without introducing a full-layer materialization.
+-- The proposed manifest extension must be accepted only by an Inkling-aware
+-  loader; the current Kimi loader must never interpret it.
+-- Expert-bank round-trip, resume, index, CRC, and shape tests must pass.
+-
+-### Blocking text inference parity
+-
+-- `WASTE_ARCH_INKLING` and fail-closed architecture dispatch.
+-- Per-layer local/global KV caches and four convolution rings.
+-- Relative-logit attention and exact global scaling.
+-- Dense MLP global scaling.
+-- Exact router/shared-expert equations.
+-- Layerwise BF16 differential tests against the official Python implementation.
+-- Final-logit tolerance documented before any WASTE quantization is enabled.
+-
+-### Deferred, not blocking text-only parity
+-
+-- Vision hMLP and exact patch construction.
+-- Audio STFT, Slaney mel bank, log10 and dMel quantization.
+-- Multimodal placeholder expansion.
+-- OpenAI-compatible image/audio request handling.
+-- MTP heads.
+-- NVFP4 source conversion.
+-
+-## 4. Compatibility matrix
+-
+-| Area | Classification | Result |
+-|---|---|---|
+-| aligned expert records and CRC | already generic | reuse |
+-| streamed banks and bounded expert cache | already generic | reuse |
+-| trunk tensor registry and quantized matmul | already generic | reuse with Inkling names |
+-| raw completion API | already generic | preserve |
+-| architecture detection | parameterized in patch 1 | explicit Inkling identifiers only |
+-| source inventory and provenance | implemented | provider-raw and normalized dialects |
+-| nested tokenizer discovery | implemented | includes `tiktoken/tokenizer.model` |
+-| exact processor token-ID resolution | implemented in patch 2 | no token-name guessing |
+-| payload availability gate | implemented in patch 2 | index-only and local-shard readiness separated |
+-| deterministic conversion plan | implemented in patch 2 | 42 layer descriptors and 40 banks |
+-| bounded BF16 source reads | implemented in patch 3 | one routed expert slice at a time |
+-| fused `w13` payload transforms | implemented in patch 3 | dense, routed, and shared |
+-| shared experts | source adapter complete; runtime absent | resident trunk |
+-| hybrid attention | component equations started | integration and attention loop remain |
+-| router | exact scalar C primitive implemented | not yet wired into `model.c` |
+-| vision | needs new implementation | existing K3 tower is incompatible |
+-| audio | needs new implementation | new dependency-free C path |
+-| serving | needs parameterization | official template only |
+-
+-## 5. Implemented milestone order
+-
+-### Patch 1 — completed
+-
+-- `tools/inkling_source.py`: explicit architecture identification.
+-- `tools/inspect_inkling.py`: config/index/tensor/sidecar audit.
+-- `tools/convert.py`: fail closed before the Kimi conversion path.
+-- synthetic inventory tests.
+-
+-### Patch 2 — completed
+-
+-- distinguishes metadata readiness from local payload/header readiness;
+-- resolves media token IDs from official tokenizer metadata;
+-- adds exact official-Small dimensions and schedule tests;
+-- adds `tools/inkling_plan.py`:
+-  - exact layer descriptors;
+-  - shape probes derived from official config and code;
+-  - resident trunk inventory;
+-  - streamed routed-expert bank inventory;
+-  - explicit MTP/vision/audio exclusions;
+-  - manifest preview that is never published as a container;
+-- adds `tools/convert_inkling.py --plan-only`;
+-- refuses normal conversion and leaves no partial output.
+-
+-### Patch 3 — completed
+-
+-- adds `tools/inkling_weights.py`, a lazy sharded safetensors reader for BF16,
+-  F16, and F32 source tensors;
+-- validates source payload byte counts against shape and dtype;
+-- reads routed expert tensors by bounded axis-0 slice rather than loading a
+-  complete expert layer;
+-- implements the exact official interleave operation and dense/routed/shared
+-  fused-`w13` splits;
+-- adds standalone dependency-free C primitives for:
+-  - routed-plus-shared expert normalization;
+-  - cached depthwise short convolution;
+-  - learned relative-position bias;
+-  - global attention log scaling;
+-- differentially checks those C equations against PyTorch before integrating
+-  them into the forward pass.
+-
+-The C code independently implements equations described by the official
+-Apache-2.0 Transformers source. No third-party kernel code is copied.
+-
+-### Patch 4 — completed: BF16 expert staging and architecture guard
+-
+-- adds a converter-internal BF16 expert stage rather than extending frozen
+-  format-v0 WEXP records with an unsupported payload type;
+-- writes one routed expert at a time as gate|up|down in one 4 KiB-aligned
+-  record, with a fixed 64-byte header and CRC32 over the BF16 payload;
+-- validates every staged bank by record identity, geometry, size, and CRC;
+-- removes temporary banks after conversion failure and publishes `stage.json`
+-  only after all requested banks are complete;
+-- never writes `manifest.json`, `trunk.bin`, or a file accepted by the current
+-  WASTE bank loader;
+-- adds architecture classification shared by memory planning and model loading;
+-- makes both paths return explicit unsupported status for Inkling until its
+-  state planner and forward dispatch are integrated;
+-- wires the standalone Inkling scalar module and C unit test into the build.
+-
+-The current WEXP header and `record_check()` are VQ2R/VQ3R-specific. Reusing
+-that header for BF16 staging would either change frozen format v0 or make an old
+-runtime interpret BF16 bytes as VQ indices. The separate staging magic avoids
+-both failure modes.
+-
+-For the official Small dimensions, one staged expert record is 50,335,744
+-bytes: a 48 MiB BF16 gate/up/down payload plus header and page padding, or
+-12,289 pages. A complete 256-expert layer bank is about 12.001 GiB. Per-bank
+-sidecars bind a finished bank to the SHA-256 hashes of the source config and
+-index so conversion can resume without trusting an unrelated same-shape file.
+-
+-### Patch 5 — resident trunk stage and integrated text configuration
+-
+-- stage all non-routed text tensors without materializing the embedding table;
+-- split dense and shared fused projections into canonical tensor records;
+-- copy official tokenizer and chat-template assets verbatim;
+-- add Inkling config structs and parse exact per-layer descriptors;
+-- implement Inkling-specific state and scratch memory planning;
+-- teach the loader to accept the verified staging/container schema only after
+-  all required text tensors and banks validate.
+-
+-### Patch 6 — integrated C text forward and parity
+-
+-- wire the tested primitives into local/global GQA and four convolution rings;
+-- implement dense and sparse MLPs and resident shared experts;
+-- preserve WASTE's expert cache and direct-I/O path;
+-- add layerwise debug dumps and the Python differential harness;
+-- publish `manifest.json` last only after fixed-prompt logits pass tolerance.
+-
+-### Patches 7-10
+-
+-Tokenizer/chat completion, vision, audio, then OpenAI-compatible serving.
+-
+-## 6. Tests
+-
+-The current series adds deterministic tests for:
+-
+-- explicit architecture detection;
+-- official source grammar and nested tokenizer path;
+-- official processor token strings resolving to exact IDs;
+-- index-only versus payload-ready checkpoints;
+-- missing required sparse tensors;
+-- MTP and quantized-source deferral;
+-- raw mode when no official template exists;
+-- exact Small dimensions and global-layer schedule;
+-- all conversion-plan shape probes;
+-- shared experts resident and routed experts streamed;
+-- mismatch rejection before conversion;
+-- plan-only output containing no container commit files;
+-- safetensors dtype/shape/byte-count validation;
+-- one-expert axis-0 reads and bounded byte accounting;
+-- exact interleave inverse and dense/routed/shared fused-weight splits;
+-- C/PyTorch differential checks for routing, short convolution, relative bias,
+-  and global log scaling;
+-- aligned BF16 expert-record round trip, CRC corruption detection, incomplete
+-  debug stages, and atomic temporary-file cleanup;
+-- explicit Inkling classification independent of legacy Kimi config probing.
++- sparse MLP: routed fused `w13`, routed `w2`, router weight, correction bias,
++  router global scale, and shared fused weights.
++
++The official conversion mapping establishes:
++
++- dense `w13_dn`: deinterleave rows, then split into gate and up;
++- routed `experts.w13_weight`: deinterleave the fused axis per expert;
++- shared `shared_w13_weight`: deinterleave the fused axis per shared expert;
++- attention and short-convolution tensors: rename without transpose;
++- MTP tensors: exclude from baseline text parity.
++
++All mappings are shape-checked from the supplied checkpoint. No released
++Inkling geometry is used as a fallback for a future Small checkpoint.
++
++## 4. Implemented patch series
++
++### Patch 1 — source inspection and fail-closed converter dispatch
++
++- explicit Inkling architecture identification;
++- dependency-free config, index, shard-header, tokenizer, processor, and chat
++  template inventory;
++- exact provenance labels: confirmed from config, inferred from weights,
++  inferred from code, or unknown;
++- refusal to pass an Inkling source through the Kimi converter.
++
++### Patch 2 — deterministic conversion plan
++
++- derives every layer descriptor from the source config;
++- separates local/global attention and dense/sparse MLP layers;
++- inventories resident tensors, streamed routed experts, shared experts, and
++  deferred MTP/vision/audio assets;
++- validates every required tensor shape before payload conversion;
++- writes only `conversion-plan.json` in `--plan-only` mode;
++- retains an explicitly synthetic 42-layer candidate fixture solely to prove
++  that the planner is parameterized.
++
++### Patch 3 — bounded source adapter and C math primitives
++
++- lazy sharded safetensors reader for BF16, F16, and F32;
++- bounded axis-0 expert reads;
++- exact fused gate/up transforms for dense, routed, and shared weights;
++- standalone dependency-free C implementations of routing, relative bias,
++  global log scaling, and cached depthwise short convolution;
++- PyTorch/C differential tests.
++
++### Patch 4 — routed-expert BF16 staging and runtime guard
++
++- one routed expert at a time;
++- one 4 KiB-aligned record containing gate, up, and down BF16 payloads;
++- fixed header, payload CRC32, source-hash sidecars, atomic publication, and
++  resumable verified banks;
++- no WEXP/VQ claim and no `manifest.json`;
++- architecture classification in both memory planning and model loading;
++- explicit unsupported status until an Inkling forward path exists.
++
++For any supplied config, staged expert payload bytes are:
++
++```text
++3 * hidden_size * routed_intermediate_size * 2
++```
++
++The record size is that payload plus the 64-byte staging header, rounded up to
++4 KiB. No Small-specific record size is asserted before Small's config exists.
++
++### Patch 5 — resident trunk staging and C configuration contract
++
++- streams large identity tensors in bounded chunks, including embeddings and
++  unembedding weights;
++- deinterleaves dense and shared fused gate/up tensors in one source pass;
++- publishes one atomic canonical tensor artifact and source-bound sidecar per
++  resident tensor;
++- verifies shape, dtype, target identity, file geometry, and CRC;
++- resumes verified artifacts without reading source payloads again;
++- publishes `trunk-stage.json` last, while keeping `trunk.bin` and
++  `manifest.json` absent;
++- adds a dependency-free `waste_inkling_config` builder that validates all
++  dimensions and derives every layer's exact local/global geometry;
++- adds an overflow-checked decode memory contract for:
++  - local-window and global K/V caches;
++  - all four convolution rings per layer;
++  - token vectors, Q/K/V/relative projections, attention scores, routing,
++    routed expert workspace, dense/shared activations, and logits.
++
++The public WASTE planner remains guarded. The new Inkling memory helper is not
++used for `waste_open()` until loader tensor validation and the actual allocator
++implement the same field-by-field contract.
++
++## 5. Current compatibility matrix
++
++| Area | State |
++|---|---|
++| architecture/source identification | implemented |
++| tokenizer/processor/chat asset discovery | implemented |
++| source tensor grammar and shape probes | implemented for released family grammar |
++| bounded routed-expert reads | implemented |
++| routed-expert BF16 staging | implemented, converter-internal |
++| bounded resident-trunk staging | implemented, converter-internal |
++| dense/shared fused-weight canonicalization | implemented |
++| exact router and convolution scalar math | implemented and differential-tested |
++| per-layer C configuration | implemented and unit-tested |
++| Inkling state/scratch memory contract | implemented but not wired to public planner |
++| runtime tensor loading | not implemented |
++| local/global attention loop | not implemented |
++| dense/shared/routed integrated MLP | not implemented |
++| tokenizer generation path | not implemented |
++| final-logit parity | not established |
++| vision/audio | deferred |
++| OpenAI-compatible serving | deferred |
++| official Inkling-Small conversion | blocked on official assets |
++
++## 6. Correctness and publication gates
++
++A runnable manifest remains blocked until all of the following pass:
++
++1. Small's official config, tokenizer, index, and shard headers are available.
++2. The source inspector reports no required unknowns or tensor mismatches.
++3. Trunk and every requested expert bank verify against source-bound sidecars.
++4. The C loader validates every required canonical tensor and exact shape.
++5. C allocation matches the tested Inkling memory contract.
++6. Layerwise BF16 outputs match a trusted Python reference.
++7. Final fixed-prompt logits meet a documented tolerance.
++8. Only after parity, WASTE quantization is enabled and revalidated.
++9. `manifest.json` is written last.
++
++## 7. Tests
++
++The suite covers:
++
++- explicit architecture detection and fail-closed Kimi dispatch;
++- provider-raw and normalized name inventories;
++- nested tokenizer discovery and media token-ID resolution;
++- index-only versus local-payload readiness;
++- missing tensor, shape, dtype, and payload-byte rejection;
++- parameterized layer schedules, including the unverified candidate fixture;
++- bounded expert reads and all fused transforms;
++- routed-expert record alignment, CRC, resume, and failure cleanup;
++- bounded trunk identity copies;
++- one-pass dense/shared deinterleaving;
++- trunk target identity, shape, CRC, source binding, and resume;
++- C/PyTorch router, relative-bias, log-scaling, and convolution parity;
++- C configuration validation, local/global layer derivation, overflow-safe K/V
++  and convolution state accounting, and decode workspace accounting.
+ 
+ Run:
+ 
+ ```sh
+-python3 -m py_compile tools/*.py tests/test_*inkling*.py
++python3 -m py_compile \
++  tools/inkling_*.py tools/convert_inkling.py \
++  tests/test_*inkling*.py
+ 
+ PYTHONPATH=tools:tests python3 -m unittest discover \
+   -s tests -p 'test_*inkling*.py' -v
++
++cc -std=c11 -Wall -Wextra -Werror -Isrc \
++  tests/test_inkling.c src/arch.c src/inkling.c src/inkling_config.c \
++  -lm -o /tmp/test_inkling
++/tmp/test_inkling
+ ```
+ 
+-Expected at this review boundary: **29 Python tests, all passing**, plus the
+-standalone `test_inkling` C target. The C code compiles with
+-`-std=c11 -Wall -Wextra -Werror`.
+-
+-## 7. Risks and fallback paths
+-
+-- **Header shape differs from the official code-derived shape:** stop. Update the
+-  mapping from the actual official header and explain the release difference;
+-  never transpose until a mismatch “goes away.”
+-- **BF16 download is incomplete:** permit index-only planning, but require all
+-  base-text shards for conversion.
+-- **Context memory exceeds the user's budget:** make load-time context capacity
+-  explicit. Never claim unconditional one-million-token operation.
+-- **Top-6 read amplification:** benchmark only after parity. First reuse chunked
+-  prefill and expert deduplication; then evaluate read-ahead/cache tuning.
+-- **Shared-expert cost:** keep both experts resident and separate until exact
+-  parity; fuse only after differential tests.
+-- **Template incompatibility:** preserve raw mode and report it. Never synthesize
+-  a template.
+-- **Multimodal dependencies:** port preprocessing to dependency-free C from
+-  official equations and fixtures; defer rather than add a runtime framework.
+-- **License:** new WASTE code is Apache-2.0. Source comments must identify any
+-  equations ported from the official Apache-2.0 Transformers implementation.
++## 8. Next controlled boundary
++
++Patch 6 should add a loader for the canonical trunk stage and an
++architecture-private tensor registry, then implement one-token local/global
++attention with K/V and convolution state. The public planner guard should be
++removed only when the loader, allocator, and forward path share the same tested
++configuration and memory contract. The WASTE manifest must remain unpublished
++until layerwise and final-logit parity pass.
+diff --git a/src/inkling_config.c b/src/inkling_config.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..4e0f999037aa008f42c9786da589897e4cc27f14
+--- /dev/null
++++ b/src/inkling_config.c
+@@ -0,0 +1,185 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++#include "inkling_config.h"
++
++#include <limits.h>
++#include <stddef.h>
++#include <string.h>
++
++static int mul_u64(uint64_t a, uint64_t b, uint64_t *out)
++{
++    if (a && b > UINT64_MAX / a) return -1;
++    *out = a * b;
++    return 0;
++}
++
++static int add_u64(uint64_t *dst, uint64_t value)
++{
++    if (value > UINT64_MAX - *dst) return -1;
++    *dst += value;
++    return 0;
++}
++
++static int bytes4(uint64_t count, uint64_t *out)
++{
++    return mul_u64(count, 4, out);
++}
++
++static int positive(int v) { return v > 0; }
++
++int waste_inkling_config_build(waste_inkling_config *out,
++                               const waste_inkling_config_args *a)
++{
++    int seen[WASTE_INKLING_MAX_LAYERS];
++    if (!out || !a) return -1;
++    if (a->n_layers < 1 || a->n_layers > WASTE_INKLING_MAX_LAYERS ||
++        !positive(a->hidden) || !positive(a->vocab) ||
++        !positive(a->unpadded_vocab) || a->unpadded_vocab > a->vocab ||
++        !positive(a->max_context) ||
++        !positive(a->global_heads) || !positive(a->global_kv_heads) ||
++        !positive(a->global_head_dim) ||
++        !positive(a->local_heads) || !positive(a->local_kv_heads) ||
++        !positive(a->local_head_dim) || !positive(a->sliding_window) ||
++        !positive(a->d_rel) || !positive(a->rel_extent) ||
++        a->conv_kernel < 1 || a->conv_kernel > 64 ||
++        a->dense_layers < 0 || a->dense_layers > a->n_layers ||
++        !positive(a->dense_intermediate) || !positive(a->moe_intermediate) ||
++        !positive(a->n_routed_experts) || !positive(a->top_k) ||
++        a->top_k > a->n_routed_experts || !positive(a->n_shared_experts) ||
++        !(a->rms_eps > 0.0f) || !(a->route_scale > 0.0f) ||
++        !(a->logits_width_multiplier > 0.0f) ||
++        a->log_scaling_n_floor < 0 || a->log_scaling_alpha < 0.0f ||
++        a->global_heads % a->global_kv_heads != 0 ||
++        a->local_heads % a->local_kv_heads != 0 ||
++        a->n_local_layers < 0 || a->n_local_layers > a->n_layers ||
++        (a->n_local_layers && !a->local_layer_ids))
++        return -1;
++
++    memset(out, 0, sizeof *out);
++    memset(seen, 0, sizeof seen);
++    for (int i = 0; i < a->n_local_layers; i++) {
++        const int layer = a->local_layer_ids[i];
++        if (layer < 0 || layer >= a->n_layers || seen[layer]) return -1;
++        seen[layer] = 1;
++    }
++
++    out->n_layers = a->n_layers;
++    out->hidden = a->hidden;
++    out->vocab = a->vocab;
++    out->unpadded_vocab = a->unpadded_vocab;
++    out->max_context = a->max_context;
++    out->global_heads = a->global_heads;
++    out->global_kv_heads = a->global_kv_heads;
++    out->global_head_dim = a->global_head_dim;
++    out->local_heads = a->local_heads;
++    out->local_kv_heads = a->local_kv_heads;
++    out->local_head_dim = a->local_head_dim;
++    out->sliding_window = a->sliding_window;
++    out->d_rel = a->d_rel;
++    out->rel_extent = a->rel_extent;
++    out->conv_kernel = a->conv_kernel;
++    out->dense_layers = a->dense_layers;
++    out->dense_intermediate = a->dense_intermediate;
++    out->moe_intermediate = a->moe_intermediate;
++    out->n_routed_experts = a->n_routed_experts;
++    out->top_k = a->top_k;
++    out->n_shared_experts = a->n_shared_experts;
++    out->rms_eps = a->rms_eps;
++    out->route_scale = a->route_scale;
++    out->logits_width_multiplier = a->logits_width_multiplier;
++    out->log_scaling_n_floor = a->log_scaling_n_floor;
++    out->log_scaling_alpha = a->log_scaling_alpha;
++
++    for (int i = 0; i < a->n_layers; i++) {
++        waste_inkling_layer_cfg *l = &out->layer[i];
++        l->is_local = seen[i];
++        l->num_heads = seen[i] ? a->local_heads : a->global_heads;
++        l->num_kv_heads = seen[i] ? a->local_kv_heads : a->global_kv_heads;
++        l->head_dim = seen[i] ? a->local_head_dim : a->global_head_dim;
++        l->relative_extent = seen[i] ? a->sliding_window : a->rel_extent;
++    }
++    return 0;
++}
++
++int waste_inkling_plan_decode_memory(const waste_inkling_config *cfg,
++                                     uint32_t ctx_tokens,
++                                     waste_inkling_memory *out)
++{
++    uint64_t max_attention = 0;
++    uint64_t n, b;
++    if (!cfg || !out || ctx_tokens == 0 ||
++        ctx_tokens > (uint32_t)cfg->max_context ||
++        cfg->n_layers < 1 || cfg->n_layers > WASTE_INKLING_MAX_LAYERS)
++        return -1;
++    memset(out, 0, sizeof *out);
++
++    for (int i = 0; i < cfg->n_layers; i++) {
++        const waste_inkling_layer_cfg *l = &cfg->layer[i];
++        const uint64_t tokens = l->is_local && ctx_tokens > (uint32_t)cfg->sliding_window
++                              ? (uint64_t)cfg->sliding_window : (uint64_t)ctx_tokens;
++        if (!positive(l->num_heads) || !positive(l->num_kv_heads) ||
++            !positive(l->head_dim) || !positive(l->relative_extent)) return -1;
++
++        /* K and V are retained in fp32 at [tokens][kv_heads][head_dim]. */
++        if (mul_u64(tokens, (uint64_t)2 * (uint64_t)l->num_kv_heads, &n) ||
++            mul_u64(n, (uint64_t)l->head_dim, &n) || bytes4(n, &b) ||
++            add_u64(&out->kv_bytes, b)) return -1;
++
++        /* Four conv rings: K, V, attention branch and MLP branch. */
++        n = (uint64_t)2 * (uint64_t)l->num_kv_heads * (uint64_t)l->head_dim
++          + (uint64_t)2 * (uint64_t)cfg->hidden;
++        if (mul_u64(n, (uint64_t)cfg->conv_kernel, &n) || bytes4(n, &b) ||
++            add_u64(&out->conv_bytes, b)) return -1;
++
++        if (mul_u64(tokens, (uint64_t)l->num_heads, &n) || n > max_attention)
++            max_attention = n;
++    }
++    out->state_bytes = out->kv_bytes;
++    if (add_u64(&out->state_bytes, out->conv_bytes)) return -1;
++
++    /* Exact fields of the planned one-token decoder workspace contract. */
++    if (bytes4((uint64_t)8 * (uint64_t)cfg->hidden, &out->token_vector_bytes)) return -1;
++    {
++        uint64_t max_projection = 0;
++        for (int i = 0; i < cfg->n_layers; i++) {
++            const waste_inkling_layer_cfg *l = &cfg->layer[i];
++            n = (uint64_t)l->num_heads * (uint64_t)l->head_dim
++              + (uint64_t)2 * (uint64_t)l->num_kv_heads * (uint64_t)l->head_dim
++              + (uint64_t)l->num_heads * (uint64_t)cfg->d_rel;
++            if (n > max_projection) max_projection = n;
++        }
++        if (bytes4(max_projection, &out->projection_bytes)) return -1;
++    }
++    if (bytes4(max_attention, &out->attention_score_bytes)) return -1;
++
++    n = (uint64_t)2 * (uint64_t)cfg->n_routed_experts
++      + (uint64_t)cfg->n_shared_experts
++      + (uint64_t)2 * (uint64_t)cfg->top_k;
++    if (bytes4(n, &out->router_bytes) ||
++        add_u64(&out->router_bytes, (uint64_t)cfg->top_k * sizeof(int))) return -1;
++
++    n = (uint64_t)3 * (uint64_t)cfg->hidden * (uint64_t)cfg->moe_intermediate
++      + (uint64_t)2 * (uint64_t)cfg->moe_intermediate
++      + (uint64_t)cfg->hidden;
++    if (bytes4(n, &out->expert_workspace_bytes)) return -1;
++
++    n = (uint64_t)2 * (uint64_t)cfg->dense_intermediate + (uint64_t)cfg->hidden;
++    if (bytes4(n, &out->dense_workspace_bytes)) return -1;
++    n = (uint64_t)2 * (uint64_t)cfg->moe_intermediate + (uint64_t)cfg->hidden;
++    if (bytes4(n, &out->shared_workspace_bytes)) return -1;
++    if (bytes4((uint64_t)cfg->unpadded_vocab, &out->logits_bytes)) return -1;
++
++    out->decode_scratch_bytes = 0;
++#define ADD_FIELD(name) do { if (add_u64(&out->decode_scratch_bytes, out->name)) return -1; } while (0)
++    ADD_FIELD(token_vector_bytes);
++    ADD_FIELD(projection_bytes);
++    ADD_FIELD(attention_score_bytes);
++    ADD_FIELD(router_bytes);
++    ADD_FIELD(expert_workspace_bytes);
++    ADD_FIELD(dense_workspace_bytes);
++    ADD_FIELD(shared_workspace_bytes);
++    ADD_FIELD(logits_bytes);
++#undef ADD_FIELD
++    return 0;
++}
+diff --git a/src/inkling_config.h b/src/inkling_config.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b7ec7f7688062c05a33041f463f6512457fa5554
+--- /dev/null
++++ b/src/inkling_config.h
+@@ -0,0 +1,125 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++#ifndef WASTE_INKLING_CONFIG_H
++#define WASTE_INKLING_CONFIG_H
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define WASTE_INKLING_MAX_LAYERS 128
++
++typedef struct {
++    int is_local;
++    int num_heads;
++    int num_kv_heads;
++    int head_dim;
++    int relative_extent;
++} waste_inkling_layer_cfg;
++
++typedef struct {
++    int n_layers;
++    int hidden;
++    int vocab;
++    int unpadded_vocab;
++    int max_context;
++
++    int global_heads;
++    int global_kv_heads;
++    int global_head_dim;
++    int local_heads;
++    int local_kv_heads;
++    int local_head_dim;
++    int sliding_window;
++    int d_rel;
++    int rel_extent;
++    int conv_kernel;
++
++    int dense_layers;
++    int dense_intermediate;
++    int moe_intermediate;
++    int n_routed_experts;
++    int top_k;
++    int n_shared_experts;
++
++    float rms_eps;
++    float route_scale;
++    float logits_width_multiplier;
++    int log_scaling_n_floor;
++    float log_scaling_alpha;
++
++    waste_inkling_layer_cfg layer[WASTE_INKLING_MAX_LAYERS];
++} waste_inkling_config;
++
++typedef struct {
++    int n_layers;
++    int hidden;
++    int vocab;
++    int unpadded_vocab;
++    int max_context;
++
++    int global_heads;
++    int global_kv_heads;
++    int global_head_dim;
++    int local_heads;
++    int local_kv_heads;
++    int local_head_dim;
++    int sliding_window;
++    int d_rel;
++    int rel_extent;
++    int conv_kernel;
++
++    int dense_layers;
++    int dense_intermediate;
++    int moe_intermediate;
++    int n_routed_experts;
++    int top_k;
++    int n_shared_experts;
++
++    float rms_eps;
++    float route_scale;
++    float logits_width_multiplier;
++    int log_scaling_n_floor;
++    float log_scaling_alpha;
++
++    const int *local_layer_ids;
++    int n_local_layers;
++} waste_inkling_config_args;
++
++typedef struct {
++    uint64_t kv_bytes;
++    uint64_t conv_bytes;
++    uint64_t state_bytes;
++
++    uint64_t token_vector_bytes;
++    uint64_t projection_bytes;
++    uint64_t attention_score_bytes;
++    uint64_t router_bytes;
++    uint64_t expert_workspace_bytes;
++    uint64_t dense_workspace_bytes;
++    uint64_t shared_workspace_bytes;
++    uint64_t logits_bytes;
++    uint64_t decode_scratch_bytes;
++} waste_inkling_memory;
++
++/* Validate a normalized Inkling text config and derive every layer's exact
++ * local/global attention geometry. Returns 0, or -1 for invalid values. */
++int waste_inkling_config_build(waste_inkling_config *out,
++                               const waste_inkling_config_args *args);
++
++/* Memory contract for a future one-token Inkling decode implementation.
++ * State includes per-layer K/V caches and all four fp32 short-convolution
++ * rings. Scratch is broken out so the eventual allocator can be checked field
++ * by field instead of relying on a flat estimate. Returns 0, or -1 on invalid
++ * input/overflow. */
++int waste_inkling_plan_decode_memory(const waste_inkling_config *cfg,
++                                     uint32_t ctx_tokens,
++                                     waste_inkling_memory *out);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/tests/test_convert_inkling.py b/tests/test_convert_inkling.py
+index b73a9528b9cadc5d242ffe5937a81f12d5b8a8b4..3e14680b164e2995a509fdc868f020e91617fd56 100644
+--- a/tests/test_convert_inkling.py
++++ b/tests/test_convert_inkling.py
+@@ -84,6 +84,26 @@ class InklingStageCliTest(unittest.TestCase):
+         self.assertTrue((out / "stage.json").exists())
+         self.assertFalse((out / "manifest.json").exists())
+ 
++    def test_stage_trunk_writes_internal_artifacts_only(self):
++        from test_inkling_trunk import make_full_checkpoint
++
++        td, root, _ = make_full_checkpoint()
++        self.addCleanup(td.cleanup)
++        out_td = tempfile.TemporaryDirectory()
++        self.addCleanup(out_td.cleanup)
++        out = Path(out_td.name)
++        rc = convert_inkling.main(
++            [
++                "--src", str(root), "--out", str(out), "--stage-trunk",
++                "--chunk-mib", "1",
++            ]
++        )
++        self.assertEqual(rc, 0)
++        self.assertTrue((out / "trunk-stage.json").exists())
++        self.assertTrue((out / "trunk-stage").is_dir())
++        self.assertFalse((out / "trunk.bin").exists())
++        self.assertFalse((out / "manifest.json").exists())
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/tests/test_inkling.c b/tests/test_inkling.c
+index 6094d1a220e93b9cb89690ae8084ac3a2269a463..be5c6d8d0fee649804036d57b786d51befe18d6b 100644
+--- a/tests/test_inkling.c
++++ b/tests/test_inkling.c
+@@ -7,6 +7,7 @@
+ 
+ #include "../src/arch.h"
+ #include "../src/inkling.h"
++#include "../src/inkling_config.h"
+ 
+ static int closef(float a, float b)
+ {
+@@ -32,6 +33,62 @@ int main(void)
+         fail += !closef(rw[0] + rw[1] + sw[0], 1.0f);
+     }
+ 
++    {
++        const int local[] = { 0, 1 };
++        waste_inkling_config_args a;
++        waste_inkling_config c;
++        waste_inkling_memory m;
++        memset(&a, 0, sizeof a);
++        a.n_layers = 3; a.hidden = 16; a.vocab = 64;
++        a.unpadded_vocab = 60; a.max_context = 1024;
++        a.global_heads = 4; a.global_kv_heads = 2; a.global_head_dim = 4;
++        a.local_heads = 4; a.local_kv_heads = 2; a.local_head_dim = 4;
++        a.sliding_window = 8; a.d_rel = 2; a.rel_extent = 8;
++        a.conv_kernel = 4; a.dense_layers = 1; a.dense_intermediate = 32;
++        a.moe_intermediate = 8; a.n_routed_experts = 4; a.top_k = 2;
++        a.n_shared_experts = 2; a.rms_eps = 1e-6f; a.route_scale = 8.0f;
++        a.logits_width_multiplier = 2.0f; a.log_scaling_n_floor = 128000;
++        a.log_scaling_alpha = 0.1f; a.local_layer_ids = local; a.n_local_layers = 2;
++        fail += waste_inkling_config_build(&c, &a) != 0;
++        fail += !c.layer[0].is_local || !c.layer[1].is_local || c.layer[2].is_local;
++        fail += c.layer[2].relative_extent != 8;
++        fail += waste_inkling_plan_decode_memory(&c, 16, &m) != 0;
++        fail += m.kv_bytes != 2048 || m.conv_bytes != 2304 || m.state_bytes != 4352;
++        fail += m.decode_scratch_bytes != 3344;
++        {
++            const int bad_local[] = { 0, 0 };
++            a.local_layer_ids = bad_local;
++            fail += waste_inkling_config_build(&c, &a) == 0;
++        }
++    }
++
++    {
++        /* Released Inkling config profile: verifies the generic builder is
++         * not accidentally specialized to the unverified Small candidate. */
++        int local[66], nlocal = 0;
++        waste_inkling_config_args a;
++        waste_inkling_config c;
++        waste_inkling_memory m;
++        for (int i = 0; i < 66; i++) if ((i + 1) % 6) local[nlocal++] = i;
++        memset(&a, 0, sizeof a);
++        a.n_layers = 66; a.hidden = 6144; a.vocab = 201024;
++        a.unpadded_vocab = 200058; a.max_context = 1048576;
++        a.global_heads = 64; a.global_kv_heads = 8; a.global_head_dim = 128;
++        a.local_heads = 64; a.local_kv_heads = 16; a.local_head_dim = 128;
++        a.sliding_window = 512; a.d_rel = 16; a.rel_extent = 1024;
++        a.conv_kernel = 4; a.dense_layers = 2; a.dense_intermediate = 24576;
++        a.moe_intermediate = 3072; a.n_routed_experts = 256; a.top_k = 6;
++        a.n_shared_experts = 2; a.rms_eps = 1e-6f; a.route_scale = 8.0f;
++        a.logits_width_multiplier = 24.0f; a.log_scaling_n_floor = 128000;
++        a.log_scaling_alpha = 0.1f; a.local_layer_ids = local;
++        a.n_local_layers = nlocal;
++        fail += waste_inkling_config_build(&c, &a) != 0;
++        fail += c.layer[5].is_local || !c.layer[4].is_local;
++        fail += c.layer[4].num_kv_heads != 16 || c.layer[5].num_kv_heads != 8;
++        fail += waste_inkling_plan_decode_memory(&c, 4096, &m) != 0;
++        fail += m.state_bytes == 0 || m.decode_scratch_bytes == 0;
++    }
++
+     if (fail) {
+         fprintf(stderr, "INKLING FAIL %d\n", fail);
+         return 1;
+diff --git a/tests/test_inkling_config_c.py b/tests/test_inkling_config_c.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..de92094f4e14cdafaacd8f60a512d57278bc7d33
+--- /dev/null
++++ b/tests/test_inkling_config_c.py
+@@ -0,0 +1,259 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 SQLite Cloud, Inc.
++
++import ctypes
++import random
++import shutil
++import subprocess
++import tempfile
++import unittest
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[1]
++MAX_LAYERS = 128
++
++
++class LayerCfg(ctypes.Structure):
++    _fields_ = [
++        ("is_local", ctypes.c_int),
++        ("num_heads", ctypes.c_int),
++        ("num_kv_heads", ctypes.c_int),
++        ("head_dim", ctypes.c_int),
++        ("relative_extent", ctypes.c_int),
++    ]
++
++
++class Config(ctypes.Structure):
++    _fields_ = [
++        ("n_layers", ctypes.c_int),
++        ("hidden", ctypes.c_int),
++        ("vocab", ctypes.c_int),
++        ("unpadded_vocab", ctypes.c_int),
++        ("max_context", ctypes.c_int),
++        ("global_heads", ctypes.c_int),
++        ("global_kv_heads", ctypes.c_int),
++        ("global_head_dim", ctypes.c_int),
++        ("local_heads", ctypes.c_int),
++        ("local_kv_heads", ctypes.c_int),
++        ("local_head_dim", ctypes.c_int),
++        ("sliding_window", ctypes.c_int),
++        ("d_rel", ctypes.c_int),
++        ("rel_extent", ctypes.c_int),
++        ("conv_kernel", ctypes.c_int),
++        ("dense_layers", ctypes.c_int),
++        ("dense_intermediate", ctypes.c_int),
++        ("moe_intermediate", ctypes.c_int),
++        ("n_routed_experts", ctypes.c_int),
++        ("top_k", ctypes.c_int),
++        ("n_shared_experts", ctypes.c_int),
++        ("rms_eps", ctypes.c_float),
++        ("route_scale", ctypes.c_float),
++        ("logits_width_multiplier", ctypes.c_float),
++        ("log_scaling_n_floor", ctypes.c_int),
++        ("log_scaling_alpha", ctypes.c_float),
++        ("layer", LayerCfg * MAX_LAYERS),
++    ]
++
++
++class Args(ctypes.Structure):
++    _fields_ = Config._fields_[:-1] + [
++        ("local_layer_ids", ctypes.POINTER(ctypes.c_int)),
++        ("n_local_layers", ctypes.c_int),
++    ]
++
++
++class Memory(ctypes.Structure):
++    _fields_ = [
++        ("kv_bytes", ctypes.c_uint64),
++        ("conv_bytes", ctypes.c_uint64),
++        ("state_bytes", ctypes.c_uint64),
++        ("token_vector_bytes", ctypes.c_uint64),
++        ("projection_bytes", ctypes.c_uint64),
++        ("attention_score_bytes", ctypes.c_uint64),
++        ("router_bytes", ctypes.c_uint64),
++        ("expert_workspace_bytes", ctypes.c_uint64),
++        ("dense_workspace_bytes", ctypes.c_uint64),
++        ("shared_workspace_bytes", ctypes.c_uint64),
++        ("logits_bytes", ctypes.c_uint64),
++        ("decode_scratch_bytes", ctypes.c_uint64),
++    ]
++
++
++def reference(a, local, ctx):
++    kv = conv = 0
++    max_attention = 0
++    max_projection = 0
++    for layer in range(a.n_layers):
++        is_local = layer in local
++        heads = a.local_heads if is_local else a.global_heads
++        kv_heads = a.local_kv_heads if is_local else a.global_kv_heads
++        dim = a.local_head_dim if is_local else a.global_head_dim
++        tokens = min(ctx, a.sliding_window) if is_local else ctx
++        kv += tokens * 2 * kv_heads * dim * 4
++        conv += (2 * kv_heads * dim + 2 * a.hidden) * a.conv_kernel * 4
++        max_attention = max(max_attention, tokens * heads)
++        max_projection = max(
++            max_projection,
++            heads * dim + 2 * kv_heads * dim + heads * a.d_rel,
++        )
++    fields = {
++        "kv_bytes": kv,
++        "conv_bytes": conv,
++        "state_bytes": kv + conv,
++        "token_vector_bytes": 8 * a.hidden * 4,
++        "projection_bytes": max_projection * 4,
++        "attention_score_bytes": max_attention * 4,
++        "router_bytes": (
++            (2 * a.n_routed_experts + a.n_shared_experts + 2 * a.top_k) * 4
++            + a.top_k * ctypes.sizeof(ctypes.c_int)
++        ),
++        "expert_workspace_bytes": (
++            3 * a.hidden * a.moe_intermediate + 2 * a.moe_intermediate + a.hidden
++        )
++        * 4,
++        "dense_workspace_bytes": (2 * a.dense_intermediate + a.hidden) * 4,
++        "shared_workspace_bytes": (2 * a.moe_intermediate + a.hidden) * 4,
++        "logits_bytes": a.unpadded_vocab * 4,
++    }
++    fields["decode_scratch_bytes"] = sum(
++        fields[name]
++        for name in (
++            "token_vector_bytes",
++            "projection_bytes",
++            "attention_score_bytes",
++            "router_bytes",
++            "expert_workspace_bytes",
++            "dense_workspace_bytes",
++            "shared_workspace_bytes",
++            "logits_bytes",
++        )
++    )
++    return fields
++
++
++class InklingConfigCDifferentialTest(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cc = shutil.which("cc")
++        if not cc:
++            raise unittest.SkipTest("C compiler unavailable")
++        cls.td = tempfile.TemporaryDirectory()
++        cls.lib_path = Path(cls.td.name) / "libinkling_config.so"
++        subprocess.run(
++            [
++                cc,
++                "-std=c11",
++                "-Wall",
++                "-Wextra",
++                "-Werror",
++                "-shared",
++                "-fPIC",
++                f"-I{REPO / 'src'}",
++                str(REPO / "src" / "inkling_config.c"),
++                "-o",
++                str(cls.lib_path),
++            ],
++            check=True,
++            capture_output=True,
++        )
++        cls.lib = ctypes.CDLL(str(cls.lib_path))
++        cls.lib.waste_inkling_config_build.argtypes = [ctypes.POINTER(Config), ctypes.POINTER(Args)]
++        cls.lib.waste_inkling_config_build.restype = ctypes.c_int
++        cls.lib.waste_inkling_plan_decode_memory.argtypes = [
++            ctypes.POINTER(Config),
++            ctypes.c_uint32,
++            ctypes.POINTER(Memory),
++        ]
++        cls.lib.waste_inkling_plan_decode_memory.restype = ctypes.c_int
++
++    @classmethod
++    def tearDownClass(cls):
++        cls.td.cleanup()
++
++    @staticmethod
++    def make_args(rng, local_ids):
++        a = Args()
++        a.n_layers = rng.randint(2, 12)
++        a.hidden = rng.choice([16, 32, 64, 128])
++        a.vocab = rng.randint(64, 512)
++        a.unpadded_vocab = rng.randint(32, a.vocab)
++        a.max_context = rng.choice([128, 256, 512, 1024])
++        a.global_kv_heads = rng.choice([1, 2, 4])
++        a.global_heads = a.global_kv_heads * rng.choice([1, 2, 4])
++        a.global_head_dim = rng.choice([4, 8, 16])
++        a.local_kv_heads = rng.choice([1, 2, 4])
++        a.local_heads = a.local_kv_heads * rng.choice([1, 2, 4])
++        a.local_head_dim = rng.choice([4, 8, 16])
++        a.sliding_window = rng.choice([8, 16, 32, 64])
++        a.d_rel = rng.choice([2, 4, 8])
++        a.rel_extent = rng.choice([32, 64, 128])
++        a.conv_kernel = rng.choice([2, 3, 4, 5])
++        a.dense_layers = rng.randrange(a.n_layers + 1)
++        a.dense_intermediate = a.hidden * rng.choice([2, 4])
++        a.moe_intermediate = a.hidden * rng.choice([1, 2])
++        a.n_routed_experts = rng.choice([4, 8, 16])
++        a.top_k = rng.randint(1, min(4, a.n_routed_experts))
++        a.n_shared_experts = rng.choice([1, 2])
++        a.rms_eps = 1e-6
++        a.route_scale = 8.0
++        a.logits_width_multiplier = 2.0
++        a.log_scaling_n_floor = 128
++        a.log_scaling_alpha = 0.1
++        selected = sorted(rng.sample(range(a.n_layers), rng.randrange(a.n_layers + 1)))
++        arr = (ctypes.c_int * len(selected))(*selected) if selected else None
++        a.local_layer_ids = arr
++        a.n_local_layers = len(selected)
++        local_ids[:] = selected
++        return a, arr
++
++    def test_randomized_config_and_memory_match_python_reference(self):
++        rng = random.Random(0x1A2B3C)
++        for _ in range(30):
++            local = []
++            a, keepalive = self.make_args(rng, local)
++            cfg = Config()
++            self.assertEqual(self.lib.waste_inkling_config_build(ctypes.byref(cfg), ctypes.byref(a)), 0)
++            for layer in range(a.n_layers):
++                got = cfg.layer[layer]
++                self.assertEqual(bool(got.is_local), layer in local)
++                self.assertEqual(
++                    got.num_kv_heads,
++                    a.local_kv_heads if layer in local else a.global_kv_heads,
++                )
++            ctx = rng.randint(1, a.max_context)
++            mem = Memory()
++            self.assertEqual(
++                self.lib.waste_inkling_plan_decode_memory(ctypes.byref(cfg), ctx, ctypes.byref(mem)),
++                0,
++            )
++            want = reference(a, set(local), ctx)
++            for name, value in want.items():
++                self.assertEqual(getattr(mem, name), value, name)
++            self.assertIsNotNone(keepalive if local else a)
++
++    def test_duplicate_local_layer_and_context_overflow_fail_closed(self):
++        rng = random.Random(7)
++        local = []
++        a, _ = self.make_args(rng, local)
++        duplicate = (ctypes.c_int * 2)(0, 0)
++        a.local_layer_ids = duplicate
++        a.n_local_layers = 2
++        cfg = Config()
++        self.assertNotEqual(self.lib.waste_inkling_config_build(ctypes.byref(cfg), ctypes.byref(a)), 0)
++
++        local = []
++        a, keepalive = self.make_args(rng, local)
++        self.assertEqual(self.lib.waste_inkling_config_build(ctypes.byref(cfg), ctypes.byref(a)), 0)
++        mem = Memory()
++        self.assertNotEqual(
++            self.lib.waste_inkling_plan_decode_memory(
++                ctypes.byref(cfg), a.max_context + 1, ctypes.byref(mem)
++            ),
++            0,
++        )
++        self.assertIsNotNone(keepalive if local else a)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_inkling_plan.py b/tests/test_inkling_plan.py
+index c55e9818d93b573189bdccca988e773bd254941c..78835019ab88faf5aa13b6912dd5c91e9f7f6198 100644
+--- a/tests/test_inkling_plan.py
++++ b/tests/test_inkling_plan.py
+@@ -22,7 +22,11 @@ from test_inspect_inkling import (
+ )
+ 
+ 
+-def small_config():
++def unverified_small_candidate_config():
++    # Synthetic candidate only. Thinking Machines had not released the Small
++    # checkpoint/config as of 2026-08-01, so none of these values are accepted
++    # as official model facts. The fixture exists to ensure the planner is
++    # parameterized across a second geometry.
+     cfg = inkling_config(layers=42)
+     text = cfg["text_config"]
+     text.update(
+@@ -116,8 +120,8 @@ class InklingPlanTest(unittest.TestCase):
+         with self.assertRaisesRegex(PlanError, "not present locally"):
+             build_plan(root, require_payloads=True)
+ 
+-    def test_official_small_dimensions_and_layer_schedule(self):
+-        cfg = small_config()
++    def test_unverified_candidate_profile_is_parameterized_not_hardcoded(self):
++        cfg = unverified_small_candidate_config()
+         td, root = make_checkpoint(cfg)
+         self.addCleanup(td.cleanup)
+         plan = build_plan(root, require_payloads=True)
+diff --git a/tests/test_inkling_trunk.py b/tests/test_inkling_trunk.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..5de0bd809cf3b9e341c3b16de43cba97b2b25b31
+--- /dev/null
++++ b/tests/test_inkling_trunk.py
+@@ -0,0 +1,172 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 SQLite Cloud, Inc.
++
++import json
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++
++import torch
++
++REPO = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(REPO / "tools"))
++sys.path.insert(0, str(REPO / "tests"))
++
++from inkling_plan import build_plan
++from inkling_trunk import HEADER, TrunkStageError, stage_trunk, verify_tensor
++from inkling_weights import SafeTensorReader
++from test_inkling_weights import source_from_gate_up, write_safetensors
++from test_inspect_inkling import (
++    inkling_config,
++    official_tokenizer_config,
++    processor_config,
++    raw_tensors,
++)
++
++
++def _values(shape, dtype, seed):
++    n = 1
++    for dim in shape:
++        n *= dim
++    value = (torch.arange(n, dtype=torch.float32) + seed).reshape(shape)
++    return value.to(dtype)
++
++
++def make_full_checkpoint():
++    td = tempfile.TemporaryDirectory()
++    root = Path(td.name)
++    cfg = inkling_config(layers=3)
++    (root / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
++    (root / "tiktoken").mkdir()
++    (root / "tiktoken" / "tokenizer.model").write_bytes(b"tokenizer")
++    (root / "chat_template.jinja").write_text("{{ messages }}", encoding="utf-8")
++    (root / "tokenizer_config.json").write_text(
++        json.dumps(official_tokenizer_config()), encoding="utf-8"
++    )
++    (root / "processor_config.json").write_text(
++        json.dumps(processor_config()), encoding="utf-8"
++    )
++
++    specs = raw_tensors(cfg)
++    tensors = {}
++    dtype_map = {"BF16": torch.bfloat16, "F16": torch.float16, "F32": torch.float32}
++    seed = 0
++    for name, (dtype_name, shape) in specs.items():
++        tensors[name] = _values(shape, dtype_map[dtype_name], seed)
++        seed += 17
++
++    text = cfg["text_config"]
++    h = text["hidden_size"]
++    dense = text["dense_intermediate_size"]
++    inter = text["intermediate_size"]
++    shared = text["n_shared_experts"]
++    expected = {}
++
++    gate = _values([dense, h], torch.bfloat16, 1000)
++    up = _values([dense, h], torch.bfloat16, 2000)
++    tensors["model.llm.layers.0.mlp.w13_dn.weight"] = source_from_gate_up(gate, up, 0)
++    expected["inkling.layer.0.mlp.gate"] = gate
++    expected["inkling.layer.0.mlp.up"] = up
++
++    for layer in (1, 2):
++        gate = _values([shared, inter, h], torch.bfloat16, 3000 + layer * 100)
++        up = _values([shared, inter, h], torch.bfloat16, 4000 + layer * 100)
++        tensors[f"model.llm.layers.{layer}.mlp.shared_experts.shared_w13_weight"] = source_from_gate_up(
++            gate, up, 1
++        )
++        expected[f"inkling.layer.{layer}.shared.gate"] = gate
++        expected[f"inkling.layer.{layer}.shared.up"] = up
++
++    shard = "model-00001-of-00001.safetensors"
++    write_safetensors(root / shard, tensors)
++    (root / "model.safetensors.index.json").write_text(
++        json.dumps(
++            {
++                "metadata": {
++                    "total_size": sum(t.numel() * t.element_size() for t in tensors.values())
++                },
++                "weight_map": {name: shard for name in tensors},
++            }
++        ),
++        encoding="utf-8",
++    )
++    return td, root, expected
++
++
++def read_stage_tensor(out, meta):
++    path = out / "trunk-stage" / meta["file"]
++    raw = path.read_bytes()
++    payload = raw[HEADER.size : HEADER.size + meta["payload_bytes"]]
++    dtype = {"BF16": torch.bfloat16, "F16": torch.float16, "F32": torch.float32}[meta["dtype"]]
++    return torch.frombuffer(bytearray(payload), dtype=dtype).reshape(meta["shape"])
++
++
++class InklingTrunkStageTest(unittest.TestCase):
++    def test_complete_stage_is_bounded_and_splits_fused_tensors(self):
++        td, root, expected = make_full_checkpoint()
++        self.addCleanup(td.cleanup)
++        out_td = tempfile.TemporaryDirectory()
++        self.addCleanup(out_td.cleanup)
++        out = Path(out_td.name)
++
++        plan = build_plan(root, require_payloads=True)
++        reader = SafeTensorReader(root)
++        expected_source_bytes = sum(
++            reader.location(name).nbytes
++            for name in {item["source"] for item in plan["trunk"]}
++        )
++        stage = stage_trunk(root, out, chunk_bytes=64)
++        self.assertFalse((out / "manifest.json").exists())
++        self.assertFalse((out / "trunk.bin").exists())
++        self.assertTrue((out / "trunk-stage.json").exists())
++        self.assertEqual(stage["totals"]["tensors"], 62)
++        self.assertEqual(stage["totals"]["source_bytes_read"], expected_source_bytes)
++        self.assertTrue(all(not item["reused"] for item in stage["tensors"]))
++
++        by_target = {item["target"]: item for item in stage["tensors"]}
++        for target, want in expected.items():
++            got = read_stage_tensor(out, by_target[target])
++            self.assertTrue(torch.equal(got, want), target)
++
++    def test_matching_sidecars_resume_without_source_payload_reads(self):
++        td, root, _ = make_full_checkpoint()
++        self.addCleanup(td.cleanup)
++        out_td = tempfile.TemporaryDirectory()
++        self.addCleanup(out_td.cleanup)
++        out = Path(out_td.name)
++        stage_trunk(root, out, chunk_bytes=128)
++        second = stage_trunk(root, out, chunk_bytes=128)
++        self.assertTrue(all(item["reused"] for item in second["tensors"]))
++        self.assertEqual(second["totals"]["source_bytes_read"], 0)
++
++    def test_crc_verification_detects_corruption(self):
++        td, root, _ = make_full_checkpoint()
++        self.addCleanup(td.cleanup)
++        out_td = tempfile.TemporaryDirectory()
++        self.addCleanup(out_td.cleanup)
++        out = Path(out_td.name)
++        stage = stage_trunk(root, out)
++        meta = stage["tensors"][0]
++        path = out / "trunk-stage" / meta["file"]
++        with path.open("r+b") as f:
++            f.seek(HEADER.size + 3)
++            old = f.read(1)
++            f.seek(HEADER.size + 3)
++            f.write(bytes([old[0] ^ 1]))
++        with self.assertRaisesRegex(TrunkStageError, "CRC mismatch"):
++            verify_tensor(path, meta)
++
++    def test_raw_copy_iterator_honors_chunk_bound(self):
++        td, root, _ = make_full_checkpoint()
++        self.addCleanup(td.cleanup)
++        reader = SafeTensorReader(root)
++        chunks = list(reader.iter_bytes("model.llm.embed.weight", chunk_bytes=31))
++        self.assertTrue(chunks)
++        self.assertLessEqual(max(map(len, chunks)), 31)
++        self.assertEqual(sum(map(len, chunks)), reader.location("model.llm.embed.weight").nbytes)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tools/convert_inkling.py b/tools/convert_inkling.py
+index 9ea58b884d7e0753abafafa3981b25c145c02228..7669868c259ac5f51f5d4945966c88e3e186147c 100644
+--- a/tools/convert_inkling.py
++++ b/tools/convert_inkling.py
+@@ -8,7 +8,11 @@ The command has two safe modes:
+ * ``--plan-only`` validates metadata and tensor shapes, then writes only
+   ``conversion-plan.json``.
+ * ``--stage-experts`` writes converter-internal aligned BF16 routed-expert
+-  banks and ``stage.json``.  It still does not publish a WASTE manifest.
++  banks and ``stage.json``.
++* ``--stage-trunk`` writes one resumable canonical artifact per resident text
++  tensor and ``trunk-stage.json`` using bounded source reads.
++
++Neither staging mode publishes a WASTE manifest.
+ 
+ Normal container conversion remains disabled until trunk staging, integrated
+ Inkling loader/forward dispatch, and differential parity are complete.
+@@ -23,6 +27,7 @@ from pathlib import Path
+ from inspect_inkling import InspectError
+ from inkling_plan import PlanError, build_plan, write_json_atomic
+ from inkling_stage import StageError, stage_expert_banks
++from inkling_trunk import TrunkStageError, stage_trunk
+ 
+ 
+ def _csv_ints(value: str) -> list[int]:
+@@ -34,7 +39,7 @@ def _csv_ints(value: str) -> list[int]:
+ 
+ def main(argv: list[str] | None = None) -> int:
+     ap = argparse.ArgumentParser()
+-    ap.add_argument("--src", required=True, type=Path, help="official Inkling checkpoint directory")
++    ap.add_argument("--src", required=True, type=Path, help="Inkling checkpoint directory")
+     ap.add_argument("--out", required=True, type=Path, help="staging/future WASTE output directory")
+     mode = ap.add_mutually_exclusive_group()
+     mode.add_argument(
+@@ -47,6 +52,11 @@ def main(argv: list[str] | None = None) -> int:
+         action="store_true",
+         help="write aligned BF16 routed-expert staging banks; never writes manifest.json",
+     )
++    mode.add_argument(
++        "--stage-trunk",
++        action="store_true",
++        help="write resumable resident-trunk staging artifacts; never writes trunk.bin or manifest.json",
++    )
+     ap.add_argument(
+         "--allow-index-only",
+         action="store_true",
+@@ -54,14 +64,26 @@ def main(argv: list[str] | None = None) -> int:
+     )
+     ap.add_argument("--layers", type=_csv_ints, help="sparse layers to stage, comma-separated")
+     ap.add_argument("--experts", type=int, help="debug limit per bank; marks the stage incomplete")
+-    ap.add_argument("--no-verify", action="store_true", help="skip the post-write CRC pass over staged banks")
+-    ap.add_argument("--no-resume", action="store_true", help="rewrite requested staging banks even when sidecars match")
++    ap.add_argument("--no-verify", action="store_true", help="skip post-write CRC verification")
++    ap.add_argument("--no-resume", action="store_true", help="rewrite requested staging artifacts even when sidecars match")
++    ap.add_argument(
++        "--chunk-mib",
++        type=int,
++        default=8,
++        help="maximum raw-copy chunk size for --stage-trunk (default: 8 MiB)",
++    )
+     args = ap.parse_args(argv)
+ 
+     if args.allow_index_only and not args.plan_only:
+         ap.error("--allow-index-only is valid only with --plan-only")
+-    if (args.layers is not None or args.experts is not None or args.no_verify or args.no_resume) and not args.stage_experts:
+-        ap.error("--layers, --experts, --no-verify, and --no-resume require --stage-experts")
++    if (args.layers is not None or args.experts is not None) and not args.stage_experts:
++        ap.error("--layers and --experts require --stage-experts")
++    if (args.no_verify or args.no_resume) and not (args.stage_experts or args.stage_trunk):
++        ap.error("--no-verify and --no-resume require a staging mode")
++    if args.chunk_mib != 8 and not args.stage_trunk:
++        ap.error("--chunk-mib requires --stage-trunk")
++    if args.chunk_mib <= 0:
++        ap.error("--chunk-mib must be positive")
+ 
+     if args.plan_only:
+         try:
+@@ -92,9 +114,28 @@ def main(argv: list[str] | None = None) -> int:
+         print("manifest.json was not written; this is not a runnable WASTE container")
+         return 0
+ 
++    if args.stage_trunk:
++        try:
++            stage = stage_trunk(
++                args.src,
++                args.out,
++                verify=not args.no_verify,
++                resume=not args.no_resume,
++                chunk_bytes=args.chunk_mib << 20,
++            )
++        except TrunkStageError as exc:
++            print(f"convert_inkling: {exc}", file=sys.stderr)
++            return 2
++        print(
++            f"wrote {stage['totals']['tensors']} resident trunk staging artifacts "
++            f"and {args.out / 'trunk-stage.json'}"
++        )
++        print("trunk.bin and manifest.json were not written; this is not a runnable WASTE container")
++        return 0
++
+     print(
+         "convert_inkling: final container conversion is not implemented; refusing to create "
+-        "a partial or misleading WASTE container. Use --plan-only or --stage-experts.",
++        "a partial or misleading WASTE container. Use --plan-only, --stage-experts, or --stage-trunk.",
+         file=sys.stderr,
+     )
+     return 2
+diff --git a/tools/inkling_trunk.py b/tools/inkling_trunk.py
+new file mode 100755
+index 0000000000000000000000000000000000000000..dfa8f9f06e1235f220d5db48cae787ef753eaa7a
+--- /dev/null
++++ b/tools/inkling_trunk.py
+@@ -0,0 +1,546 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 SQLite Cloud, Inc.
++"""Resumable, bounded staging of Inkling's resident text trunk.
++
++This is a converter-internal format, not a WASTE trunk.  Every canonical tensor
++is stored in its own atomically-published file so large embeddings can be copied
++in bounded chunks and fused gate/up tensors can be deinterleaved without ever
++materializing them.  ``trunk-stage.json`` is published last.  ``manifest.json``
++and ``trunk.bin`` remain absent until the integrated C loader and text forward
++path are complete.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import math
++import os
++import struct
++import zlib
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any, Iterable
++
++from inkling_plan import PlanError, build_plan, write_json_atomic
++from inkling_weights import DTYPES, SafeTensorReader, TensorLocation, WeightError
++
++
++class TrunkStageError(RuntimeError):
++    pass
++
++
++MAGIC = b"IKTN"
++VERSION = 1
++ALIGN = 4096
++DTYPE_CODE = {"BF16": 1, "F16": 2, "F32": 3}
++CODE_DTYPE = {value: key for key, value in DTYPE_CODE.items()}
++# magic, version, dtype, ndim, flags, reserved, shape[4], payload bytes,
++# payload crc32, canonical-name crc32, reserved.
++HEADER = struct.Struct("<4sHBBHH4IQII20s")
++assert HEADER.size == 64
++
++
++@dataclass(frozen=True)
++class TrunkJob:
++    target: str
++    source: str
++    transform: str
++    shape: tuple[int, ...]
++    dtype: str
++
++
++@dataclass(frozen=True)
++class TensorStageHeader:
++    dtype: str
++    shape: tuple[int, ...]
++    payload_bytes: int
++    crc32: int
++    name_crc32: int
++
++
++def _align(value: int, alignment: int = ALIGN) -> int:
++    return (value + alignment - 1) // alignment * alignment
++
++
++def _sha256(path: Path) -> str:
++    h = hashlib.sha256()
++    with path.open("rb") as f:
++        while True:
++            chunk = f.read(1 << 20)
++            if not chunk:
++                break
++            h.update(chunk)
++    return h.hexdigest()
++
++
++def _shape_bytes(shape: Iterable[int], dtype: str) -> int:
++    if dtype not in DTYPES:
++        raise TrunkStageError(f"unsupported trunk dtype: {dtype}")
++    return math.prod(shape) * DTYPES[dtype][1]
++
++
++def _header_bytes(job: TrunkJob, crc32: int) -> bytes:
++    if not 1 <= len(job.shape) <= 4:
++        raise TrunkStageError(f"unsupported rank {len(job.shape)} for {job.target}")
++    if any(dim < 0 or dim > 0xFFFFFFFF for dim in job.shape):
++        raise TrunkStageError(f"invalid shape for {job.target}: {list(job.shape)}")
++    padded_shape = list(job.shape) + [0] * (4 - len(job.shape))
++    payload_bytes = _shape_bytes(job.shape, job.dtype)
++    return HEADER.pack(
++        MAGIC,
++        VERSION,
++        DTYPE_CODE[job.dtype],
++        len(job.shape),
++        0,
++        0,
++        *padded_shape,
++        payload_bytes,
++        crc32,
++        zlib.crc32(job.target.encode("utf-8")) & 0xFFFFFFFF,
++        b"\0" * 20,
++    )
++
++
++def parse_tensor_header(data: bytes) -> TensorStageHeader:
++    if len(data) < HEADER.size:
++        raise TrunkStageError("short Inkling trunk-stage header")
++    (
++        magic,
++        version,
++        dtype_code,
++        ndim,
++        flags,
++        reserved,
++        s0,
++        s1,
++        s2,
++        s3,
++        payload_bytes,
++        crc32,
++        name_crc32,
++        reserved_bytes,
++    ) = HEADER.unpack_from(data)
++    if magic != MAGIC or version != VERSION or flags != 0 or reserved != 0:
++        raise TrunkStageError("invalid Inkling trunk-stage header identity")
++    if reserved_bytes != b"\0" * 20:
++        raise TrunkStageError("nonzero Inkling trunk-stage reserved bytes")
++    dtype = CODE_DTYPE.get(dtype_code)
++    if dtype is None or ndim < 1 or ndim > 4:
++        raise TrunkStageError("invalid Inkling trunk-stage dtype or rank")
++    shape = (s0, s1, s2, s3)[:ndim]
++    if _shape_bytes(shape, dtype) != payload_bytes:
++        raise TrunkStageError("Inkling trunk-stage payload geometry mismatch")
++    return TensorStageHeader(
++        dtype=dtype,
++        shape=shape,
++        payload_bytes=payload_bytes,
++        crc32=crc32,
++        name_crc32=name_crc32,
++    )
++
++
++def _canonical_target(role: str) -> str:
++    return f"inkling.{role}"
++
++
++def build_trunk_jobs(plan: dict[str, Any], reader: SafeTensorReader) -> list[TrunkJob]:
++    if plan.get("source_dialect") != "provider_raw":
++        raise TrunkStageError("trunk staging currently accepts provider-raw Inkling checkpoints only")
++    jobs: list[TrunkJob] = []
++    targets: set[str] = set()
++    for item in plan.get("trunk", []):
++        if not isinstance(item, dict):
++            raise TrunkStageError("malformed trunk entry in conversion plan")
++        role = item.get("role")
++        source = item.get("source")
++        if not isinstance(role, str) or not isinstance(source, str):
++            raise TrunkStageError("trunk plan entry lacks role/source")
++        loc = reader.location(source)
++        if role.endswith(".fused_gate_up"):
++            if len(loc.shape) not in (2, 3):
++                raise TrunkStageError(f"fused gate/up rank is unsupported for {source}: {loc.shape}")
++            split_dim = 0 if len(loc.shape) == 2 else 1
++            if loc.shape[split_dim] % 2:
++                raise TrunkStageError(f"fused gate/up dimension is odd for {source}: {loc.shape}")
++            out_shape = list(loc.shape)
++            out_shape[split_dim] //= 2
++            base = role[: -len("fused_gate_up")]
++            for suffix, transform in (("gate", "deinterleave-even-rows"), ("up", "deinterleave-odd-rows")):
++                target = _canonical_target(base + suffix)
++                jobs.append(TrunkJob(target, source, transform, tuple(out_shape), loc.dtype))
++        else:
++            target = _canonical_target(role)
++            jobs.append(TrunkJob(target, source, "identity", loc.shape, loc.dtype))
++    for job in jobs:
++        if job.target in targets:
++            raise TrunkStageError(f"duplicate canonical trunk target: {job.target}")
++        targets.add(job.target)
++    return sorted(jobs, key=lambda job: job.target)
++
++
++def _artifact_paths(root: Path, ordinal: int) -> tuple[Path, Path]:
++    path = root / f"{ordinal:05d}.tensor.stage"
++    return path, path.with_name(path.name + ".json")
++
++
++def _write_payload_file(path: Path, job: TrunkJob, chunks: Iterable[bytes]) -> dict[str, Any]:
++    tmp = path.with_name(path.name + ".tmp")
++    payload_bytes = _shape_bytes(job.shape, job.dtype)
++    written = 0
++    crc = 0
++    tmp.parent.mkdir(parents=True, exist_ok=True)
++    try:
++        with tmp.open("w+b") as f:
++            f.write(b"\0" * HEADER.size)
++            for chunk in chunks:
++                if not chunk:
++                    continue
++                f.write(chunk)
++                written += len(chunk)
++                crc = zlib.crc32(chunk, crc)
++            if written != payload_bytes:
++                raise TrunkStageError(
++                    f"{job.target} wrote {written} payload bytes; expected {payload_bytes}"
++                )
++            stored_bytes = _align(HEADER.size + payload_bytes)
++            f.write(b"\0" * (stored_bytes - HEADER.size - payload_bytes))
++            f.seek(0)
++            f.write(_header_bytes(job, crc & 0xFFFFFFFF))
++            f.flush()
++            os.fsync(f.fileno())
++        os.replace(tmp, path)
++    except BaseException:
++        try:
++            tmp.unlink()
++        except FileNotFoundError:
++            pass
++        raise
++    return {
++        "target": job.target,
++        "source": job.source,
++        "transform": job.transform,
++        "dtype": job.dtype,
++        "shape": list(job.shape),
++        "header_bytes": HEADER.size,
++        "payload_bytes": payload_bytes,
++        "stored_bytes": path.stat().st_size,
++        "alignment": ALIGN,
++        "crc32": crc & 0xFFFFFFFF,
++    }
++
++
++def _identity_chunks(reader: SafeTensorReader, source: str, chunk_bytes: int) -> Iterable[bytes]:
++    return reader.iter_bytes(source, chunk_bytes=chunk_bytes)
++
++
++def _split_chunks(
++    reader: SafeTensorReader,
++    source: str,
++    *,
++    parity: int,
++    chunk_bytes: int,
++) -> Iterable[bytes]:
++    loc = reader.location(source)
++    if len(loc.shape) not in (2, 3):
++        raise TrunkStageError(f"cannot split fused tensor rank {len(loc.shape)}: {source}")
++    fused_rows = loc.shape[0] if len(loc.shape) == 2 else loc.shape[1]
++    if fused_rows % 2:
++        raise TrunkStageError(f"cannot split odd fused row count {fused_rows}: {source}")
++    row_bytes = loc.shape[-1] * DTYPES[loc.dtype][1]
++    for start, count, data in reader.iter_row_chunks(source, chunk_bytes=chunk_bytes):
++        view = memoryview(data)
++        out = bytearray()
++        for local_row in range(count):
++            flat_row = start + local_row
++            row_within_group = flat_row % fused_rows
++            if row_within_group % 2 == parity:
++                begin = local_row * row_bytes
++                out.extend(view[begin : begin + row_bytes])
++        if out:
++            yield bytes(out)
++
++
++
++def _write_split_pair(
++    reader: SafeTensorReader,
++    source: str,
++    even_path: Path,
++    even_job: TrunkJob,
++    odd_path: Path,
++    odd_job: TrunkJob,
++    *,
++    chunk_bytes: int,
++) -> tuple[dict[str, Any], dict[str, Any]]:
++    if even_job.dtype != odd_job.dtype or even_job.shape != odd_job.shape:
++        raise TrunkStageError(f"split outputs disagree for {source}")
++    loc = reader.location(source)
++    if len(loc.shape) not in (2, 3):
++        raise TrunkStageError(f"cannot split fused tensor rank {len(loc.shape)}: {source}")
++    fused_rows = loc.shape[0] if len(loc.shape) == 2 else loc.shape[1]
++    if fused_rows % 2:
++        raise TrunkStageError(f"cannot split odd fused row count {fused_rows}: {source}")
++    row_bytes = loc.shape[-1] * DTYPES[loc.dtype][1]
++    payload_bytes = _shape_bytes(even_job.shape, even_job.dtype)
++    even_tmp = even_path.with_name(even_path.name + ".tmp")
++    odd_tmp = odd_path.with_name(odd_path.name + ".tmp")
++    even_path.parent.mkdir(parents=True, exist_ok=True)
++    written = [0, 0]
++    crc = [0, 0]
++    try:
++        with even_tmp.open("w+b") as fe, odd_tmp.open("w+b") as fo:
++            files = [fe, fo]
++            for f in files:
++                f.write(b"\0" * HEADER.size)
++            for start, count, data in reader.iter_row_chunks(source, chunk_bytes=chunk_bytes):
++                view = memoryview(data)
++                buffers = [bytearray(), bytearray()]
++                for local_row in range(count):
++                    flat_row = start + local_row
++                    parity = (flat_row % fused_rows) & 1
++                    begin = local_row * row_bytes
++                    buffers[parity].extend(view[begin : begin + row_bytes])
++                for parity, buf in enumerate(buffers):
++                    if not buf:
++                        continue
++                    files[parity].write(buf)
++                    written[parity] += len(buf)
++                    crc[parity] = zlib.crc32(buf, crc[parity])
++            stored_bytes = _align(HEADER.size + payload_bytes)
++            for parity, (f, job) in enumerate(zip(files, (even_job, odd_job))):
++                if written[parity] != payload_bytes:
++                    raise TrunkStageError(
++                        f"{job.target} wrote {written[parity]} payload bytes; expected {payload_bytes}"
++                    )
++                f.write(b"\0" * (stored_bytes - HEADER.size - payload_bytes))
++                f.seek(0)
++                f.write(_header_bytes(job, crc[parity] & 0xFFFFFFFF))
++                f.flush()
++                os.fsync(f.fileno())
++        os.replace(even_tmp, even_path)
++        os.replace(odd_tmp, odd_path)
++    except BaseException:
++        for tmp in (even_tmp, odd_tmp):
++            try:
++                tmp.unlink()
++            except FileNotFoundError:
++                pass
++        raise
++
++    def meta(path: Path, job: TrunkJob, parity: int) -> dict[str, Any]:
++        return {
++            "target": job.target,
++            "source": job.source,
++            "transform": job.transform,
++            "dtype": job.dtype,
++            "shape": list(job.shape),
++            "header_bytes": HEADER.size,
++            "payload_bytes": payload_bytes,
++            "stored_bytes": path.stat().st_size,
++            "alignment": ALIGN,
++            "crc32": crc[parity] & 0xFFFFFFFF,
++        }
++
++    return meta(even_path, even_job, 0), meta(odd_path, odd_job, 1)
++
++def verify_tensor(path: Path, meta: dict[str, Any], *, verify_crc: bool = True) -> None:
++    expected_size = int(meta["stored_bytes"])
++    try:
++        actual_size = path.stat().st_size
++    except OSError as exc:
++        raise TrunkStageError(f"cannot stat {path}: {exc}") from exc
++    if actual_size != expected_size or actual_size % ALIGN:
++        raise TrunkStageError(f"invalid staged tensor size for {path}")
++    with path.open("rb") as f:
++        header_bytes = f.read(HEADER.size)
++        header = parse_tensor_header(header_bytes)
++        if header.dtype != meta["dtype"] or list(header.shape) != list(meta["shape"]):
++            raise TrunkStageError(f"staged tensor header metadata mismatch: {path}")
++        if header.payload_bytes != int(meta["payload_bytes"]) or header.crc32 != int(meta["crc32"]):
++            raise TrunkStageError(f"staged tensor payload metadata mismatch: {path}")
++        expected_name_crc = zlib.crc32(str(meta["target"]).encode("utf-8")) & 0xFFFFFFFF
++        if header.name_crc32 != expected_name_crc:
++            raise TrunkStageError(f"staged tensor target identity mismatch: {path}")
++        if verify_crc:
++            remaining = header.payload_bytes
++            crc = 0
++            while remaining:
++                chunk = f.read(min(8 << 20, remaining))
++                if not chunk:
++                    raise TrunkStageError(f"short staged tensor payload: {path}")
++                remaining -= len(chunk)
++                crc = zlib.crc32(chunk, crc)
++            if crc & 0xFFFFFFFF != header.crc32:
++                raise TrunkStageError(f"staged tensor CRC mismatch: {path}")
++
++
++def _load_json(path: Path) -> dict[str, Any] | None:
++    try:
++        value = json.loads(path.read_text(encoding="utf-8"))
++    except (FileNotFoundError, OSError, json.JSONDecodeError):
++        return None
++    return value if isinstance(value, dict) else None
++
++
++def _resume_matches(
++    meta: dict[str, Any],
++    job: TrunkJob,
++    *,
++    file_name: str,
++    config_sha256: str,
++    index_sha256: str,
++) -> bool:
++    expected = {
++        "schema": "waste.inkling-trunk-tensor.v1",
++        "file": file_name,
++        "target": job.target,
++        "source": job.source,
++        "transform": job.transform,
++        "dtype": job.dtype,
++        "shape": list(job.shape),
++        "source_config_sha256": config_sha256,
++        "source_index_sha256": index_sha256,
++    }
++    return all(meta.get(key) == value for key, value in expected.items())
++
++
++def stage_trunk(
++    src: Path,
++    out: Path,
++    *,
++    verify: bool = True,
++    resume: bool = True,
++    chunk_bytes: int = 8 << 20,
++) -> dict[str, Any]:
++    if chunk_bytes <= 0:
++        raise TrunkStageError("chunk_bytes must be positive")
++    try:
++        plan = build_plan(src, require_payloads=True)
++        reader = SafeTensorReader(src)
++        jobs = build_trunk_jobs(plan, reader)
++    except (PlanError, WeightError) as exc:
++        raise TrunkStageError(str(exc)) from exc
++
++    config_sha256 = _sha256(src / "config.json")
++    index_sha256 = _sha256(src / "model.safetensors.index.json")
++    root = out / "trunk-stage"
++    root.mkdir(parents=True, exist_ok=True)
++
++    by_source: dict[str, list[tuple[int, TrunkJob]]] = {}
++    for ordinal, job in enumerate(jobs):
++        by_source.setdefault(job.source, []).append((ordinal, job))
++
++    published: list[dict[str, Any]] = []
++    completed: dict[str, dict[str, Any]] = {}
++    for source_name, group in by_source.items():
++        reusable = True
++        group_meta: list[tuple[int, TrunkJob, Path, Path, dict[str, Any] | None]] = []
++        for ordinal, job in group:
++            path, sidecar = _artifact_paths(root, ordinal)
++            meta = _load_json(sidecar) if resume else None
++            if meta is None or not _resume_matches(
++                meta,
++                job,
++                file_name=path.name,
++                config_sha256=config_sha256,
++                index_sha256=index_sha256,
++            ):
++                reusable = False
++            else:
++                try:
++                    verify_tensor(path, meta, verify_crc=verify)
++                except (OSError, TrunkStageError):
++                    reusable = False
++            group_meta.append((ordinal, job, path, sidecar, meta))
++
++        if reusable:
++            for ordinal, job, path, sidecar, meta in group_meta:
++                assert meta is not None
++                item = dict(meta)
++                item.update({"ordinal": ordinal, "reused": True, "sidecar": sidecar.name})
++                completed[job.target] = item
++            continue
++
++        transforms = {job.transform for _, job, _, _, _ in group_meta}
++        if transforms == {"identity"} and len(group_meta) == 1:
++            ordinal, job, path, sidecar, _ = group_meta[0]
++            meta = _write_payload_file(
++                path,
++                job,
++                _identity_chunks(reader, source_name, chunk_bytes),
++            )
++            meta.update(
++                {
++                    "schema": "waste.inkling-trunk-tensor.v1",
++                    "file": path.name,
++                    "source_config_sha256": config_sha256,
++                    "source_index_sha256": index_sha256,
++                }
++            )
++            if verify:
++                verify_tensor(path, meta, verify_crc=True)
++            write_json_atomic(sidecar, meta)
++            item = dict(meta)
++            item.update({"ordinal": ordinal, "reused": False, "sidecar": sidecar.name})
++            completed[job.target] = item
++            continue
++
++        if transforms != {"deinterleave-even-rows", "deinterleave-odd-rows"} or len(group_meta) != 2:
++            raise TrunkStageError(f"unsupported trunk transform group for {source_name}: {sorted(transforms)}")
++        ordered = sorted(
++            group_meta,
++            key=lambda item: 0 if item[1].transform == "deinterleave-even-rows" else 1,
++        )
++        even = ordered[0]
++        odd = ordered[1]
++        metas = _write_split_pair(
++            reader, source_name, even[2], even[1], odd[2], odd[1], chunk_bytes=chunk_bytes
++        )
++        for (ordinal, job, path, sidecar, _), meta in zip((even, odd), metas):
++            meta.update(
++                {
++                    "schema": "waste.inkling-trunk-tensor.v1",
++                    "file": path.name,
++                    "source_config_sha256": config_sha256,
++                    "source_index_sha256": index_sha256,
++                }
++            )
++            if verify:
++                verify_tensor(path, meta, verify_crc=True)
++            write_json_atomic(sidecar, meta)
++            item = dict(meta)
++            item.update({"ordinal": ordinal, "reused": False, "sidecar": sidecar.name})
++            completed[job.target] = item
++
++    for job in jobs:
++        published.append(completed[job.target])
++
++    stage = {
++        "schema": "waste.inkling-resident-trunk-stage.v1",
++        "arch": "inkling",
++        "scope": "resident-text-trunk-only",
++        "source": {
++            "path": str(src),
++            "config_sha256": config_sha256,
++            "index_sha256": index_sha256,
++            "dialect": plan["source_dialect"],
++        },
++        "tensors": published,
++        "totals": {
++            "tensors": len(published),
++            "payload_bytes": sum(int(item["payload_bytes"]) for item in published),
++            "stored_bytes": sum(int(item["stored_bytes"]) for item in published),
++            "source_bytes_read": reader.bytes_read,
++        },
++        "status": {
++            "trunk_stage_complete": True,
++            "waste_trunk_written": False,
++            "waste_manifest_written": False,
++            "waste_runtime_supported": False,
++            "reference_parity": False,
++        },
++        "publication_rule": "trunk-stage.json is converter-internal; manifest.json and trunk.bin remain absent",
++    }
++    write_json_atomic(out / "trunk-stage.json", stage)
++    return stage
+diff --git a/tools/inkling_weights.py b/tools/inkling_weights.py
+index 12e365005b9818a9ba985314691107b054b8e19e..d7953e5e48d9b4f7927bfcef438895c926343c14 100644
+--- a/tools/inkling_weights.py
++++ b/tools/inkling_weights.py
+@@ -159,6 +159,60 @@ class SafeTensorReader:
+         # emitted for an immutable bytes buffer.
+         return torch.frombuffer(bytearray(data), dtype=dtype).reshape(shape)
+ 
++    def iter_bytes(self, name: str, *, chunk_bytes: int = 8 << 20) -> Iterator[bytes]:
++        """Yield one tensor's raw contiguous payload without materializing it."""
++        if chunk_bytes <= 0:
++            raise WeightError("chunk_bytes must be positive")
++        loc = self.location(name)
++        path = self.root / loc.shard
++        remaining = loc.nbytes
++        try:
++            with path.open("rb") as f:
++                f.seek(loc.file_offset)
++                while remaining:
++                    data = f.read(min(chunk_bytes, remaining))
++                    if not data:
++                        raise WeightError(
++                            f"short read for {loc.name}: {remaining} payload bytes remain"
++                        )
++                    remaining -= len(data)
++                    self.bytes_read += len(data)
++                    yield data
++        except OSError as exc:
++            raise WeightError(f"cannot stream {loc.name} from {path}: {exc}") from exc
++
++    def iter_row_chunks(
++        self, name: str, *, chunk_bytes: int = 8 << 20
++    ) -> Iterator[tuple[int, int, bytes]]:
++        """Yield contiguous chunks aligned to rows of the tensor's last axis."""
++        loc = self.location(name)
++        if not loc.shape:
++            raise WeightError(f"cannot row-stream scalar tensor {name}")
++        _, item_size = DTYPES[loc.dtype]
++        row_bytes = loc.shape[-1] * item_size
++        if row_bytes <= 0:
++            raise WeightError(f"cannot row-stream zero-width tensor {name}")
++        rows = math.prod(loc.shape[:-1])
++        rows_per_chunk = max(1, chunk_bytes // row_bytes)
++        path = self.root / loc.shard
++        try:
++            with path.open("rb") as f:
++                f.seek(loc.file_offset)
++                start = 0
++                while start < rows:
++                    count = min(rows_per_chunk, rows - start)
++                    need = count * row_bytes
++                    data = f.read(need)
++                    if len(data) != need:
++                        raise WeightError(
++                            f"short row read for {loc.name}: wanted {need}, received {len(data)}"
++                        )
++                    self.bytes_read += need
++                    yield start, count, data
++                    start += count
++        except OSError as exc:
++            raise WeightError(f"cannot row-stream {loc.name} from {path}: {exc}") from exc
++
+     def tensor(self, name: str, *, float32: bool = False) -> torch.Tensor:
+         loc = self.location(name)
+         out = self._decode(self._read(loc, loc.file_offset, loc.nbytes), loc.dtype, loc.shape)

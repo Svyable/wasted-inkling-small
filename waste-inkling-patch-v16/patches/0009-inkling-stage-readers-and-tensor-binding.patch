@@ -1,0 +1,686 @@
+diff --git a/PATCH-HANDOFF.md b/PATCH-HANDOFF.md
+index f03958e..a44014f 100644
+--- a/PATCH-HANDOFF.md
++++ b/PATCH-HANDOFF.md
+@@ -1,56 +1,17 @@
+-# Inkling patch series v8 handoff
++# WASTE Inkling patch series v9
+ 
+-Apply patches 0001 through 0008 in numerical order. Patch 0008 adds an
+-architecture-private complete text-model wrapper. The public WASTE loader
+-remains guarded and no runnable Inkling manifest is emitted.
++Apply patches 0001 through 0009 in order. Patch 9 adds strict canonical tensor
++binding and validated BF16 staging readers. It does not remove the public
++Inkling loader guard and does not publish `manifest.json`.
+ 
+-## Provenance warning
+-
+-Read `KNOWN-ERRATA.md` before review. The 42-layer Small profile in early patch
+-history is an unverified synthetic candidate, not an official released
+-checkpoint. Current code is config-driven and does not claim Small parity.
+-
+-## Patch 8 boundary
+-
+-Patch 8 adds:
+-
+-- `src/inkling_model.h`
+-- `src/inkling_model.c`
+-- `tests/test_inkling_model_c.py`
+-- build linkage for the private model wrapper
+-
+-The wrapper owns no large allocations. Callers supply state and scratch
+-buffers, and may supply embedding, unembedding and routed-expert rows through
+-callbacks. It validates sequential positions, context bounds, output width,
+-layer execution and vocabulary table availability before advancing state.
+-
+-## Validation
+-
+-Run:
+-
+-```sh
+-python -m unittest discover -s tests -p 'test_*.py'
+-cc -std=c11 -Wall -Wextra -Werror -Isrc \
+-  tests/test_inkling.c src/arch.c src/inkling.c \
+-  src/inkling_attention.c src/inkling_config.c \
+-  src/inkling_layer.c src/inkling_model.c -lm -o /tmp/test_inkling
+-/tmp/test_inkling
+-```
+-
+-Expected:
++Validation in this artifact tree:
+ 
+ ```text
+-Ran 52 tests
++python3 -m unittest discover -s tests -p 'test_*.py'
++Ran 55 tests
+ OK
+-INKLING OK
+ ```
+ 
+-## Still deliberately blocked
+-
+-- public `waste_model_load` Inkling execution
+-- final WASTE manifest publication
+-- production trunk registry binding
+-- production BF16/VQ expert-bank binding
+-- tokenizer/server integration
+-- official Small conversion and logits parity
+-- vision and audio support
++The new C sources compile under `-std=c11 -Wall -Wextra -Werror` in the ctypes
++unit target. The complete upstream WASTE suite and official checkpoint payload
++parity were not run in this environment.
+diff --git a/TEST-RESULTS.txt b/TEST-RESULTS.txt
+index 1f68b0b..893aba8 100644
+--- a/TEST-RESULTS.txt
++++ b/TEST-RESULTS.txt
+@@ -1,29 +1,26 @@
+-WASTE Inkling patch series v8 validation
+-Date: 2026-08-01
++WASTE Inkling patch series v9 validation
++========================================
+ 
+ Python:
+-  python -m unittest discover -s tests -p 'test_*.py'
+-  Ran 52 tests
++  python3 -m unittest discover -s tests -p 'test_*.py'
++  Ran 55 tests
+   OK
+ 
+-Strict C:
+-  cc -std=c11 -Wall -Wextra -Werror -Isrc \
+-    tests/test_inkling.c src/arch.c src/inkling.c \
+-    src/inkling_attention.c src/inkling_config.c \
+-    src/inkling_layer.c src/inkling_model.c -lm -o /tmp/test_inkling_v8
+-  /tmp/test_inkling_v8
+-  INKLING OK
++Patch 9 coverage:
++  - canonical registry accepts exact names/shapes
++  - malformed shape is rejected
++  - BF16 trunk-stage row conversion
++  - canonical-name CRC verification
++  - trunk payload CRC corruption rejection
++  - BF16 expert record identity/geometry
++  - expert payload CRC verification
++  - wrong layer/expert request rejection
+ 
+-Patch 8 differential coverage:
+-  - full embedding -> two decoder layers -> final norm -> unembedding logits
+-  - official logits width division and unpadded vocabulary truncation
+-  - resident vocabulary tables
+-  - callback-backed, one-row-at-a-time vocabulary tables
+-  - local and global state allocation in the same model
+-  - state reset reproduces bit-identical first-token logits
+-  - sequential position, context and output-buffer rejection
++C compilation for new target:
++  -std=c11 -Wall -Wextra -Werror
+ 
+-Not run:
+-  - complete native WASTE suite in a clean full checkout
+-  - official Inkling-Small checkpoint conversion or logits parity
+-  - official released full-Inkling payload parity
++Not completed:
++  - full upstream WASTE tests/run.sh
++  - official checkpoint payload conversion
++  - private directory open -> full model logits
++  - public loader integration
+diff --git a/docs/INKLING.md b/docs/INKLING.md
+index b10d386..32015e0 100644
+--- a/docs/INKLING.md
++++ b/docs/INKLING.md
+@@ -338,3 +338,21 @@ embedding/unembedding tables, complete two-layer logits, reset behavior,
+ sequential positions, context bounds, and output-buffer bounds. These tests do
+ not constitute official Inkling-Small parity; official Small checkpoint assets
+ remain unavailable.
++
++## Patch 9: staged tensor binding boundary
++
++Patch 9 adds two private runtime components without changing public loader behavior:
++
++- `inkling_bind.[ch]` maps canonical `inkling.*` tensor names into the verified
++  model/layer weight structures. Every required tensor must occur exactly once
++  with the exact config-derived rank and shape. Routed experts remain callback
++  supplied and are not made resident by the binder.
++- `inkling_stage_reader.[ch]` opens converter-internal trunk tensor artifacts and
++  BF16 expert banks. It validates magic, version, dtype, rank, shape, canonical
++  name CRC, record identity, offsets, payload geometry, and optional CRC32 before
++  exposing an F32 row or expert.
++
++These files deliberately consume staging formats, not `manifest.json` or WEXP.
++They establish the byte-to-runtime boundary while the public loader continues to
++return unsupported for Inkling. A complete private directory opener and synthetic
++open-to-logits parity remain the next milestone.
+diff --git a/src/inkling_bind.c b/src/inkling_bind.c
+new file mode 100644
+index 0000000..478e01b
+--- /dev/null
++++ b/src/inkling_bind.c
+@@ -0,0 +1,88 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include "inkling_bind.h"
++#include <stdio.h>
++#include <string.h>
++
++static const waste_inkling_tensor_view *findv(const waste_inkling_tensor_view *v,
++                                               size_t n, const char *name)
++{
++    const waste_inkling_tensor_view *found = NULL;
++    for (size_t i = 0; i < n; i++) {
++        if (!v[i].name || strcmp(v[i].name, name)) continue;
++        if (found) return NULL; /* duplicate is always invalid */
++        found = &v[i];
++    }
++    return found;
++}
++
++static const float *need(const waste_inkling_tensor_view *v, size_t n,
++                         const char *name, int ndim,
++                         int a, int b, int c)
++{
++    const waste_inkling_tensor_view *t = findv(v, n, name);
++    if (!t || !t->data || t->ndim != ndim) return NULL;
++    const int want[3] = {a, b, c};
++    for (int i = 0; i < ndim; i++) if (t->shape[i] != want[i]) return NULL;
++    return t->data;
++}
++
++int waste_inkling_bind_weights(waste_inkling_bound_weights *out,
++                               const waste_inkling_config *cfg,
++                               const waste_inkling_tensor_view *v,
++                               size_t n)
++{
++    if (!out || !cfg || !v || !n) return -1;
++    memset(out, 0, sizeof *out);
++    out->model.embedding = need(v,n,"inkling.embed",2,cfg->vocab,cfg->hidden,0);
++    out->model.embed_norm = need(v,n,"inkling.embed_norm",1,cfg->hidden,0,0);
++    out->model.final_norm = need(v,n,"inkling.final_norm",1,cfg->hidden,0,0);
++    out->model.unembedding = need(v,n,"inkling.unembed",2,cfg->unpadded_vocab,cfg->hidden,0);
++    out->model.unembedding_rows = cfg->unpadded_vocab;
++    if (!out->model.embedding || !out->model.embed_norm ||
++        !out->model.final_norm || !out->model.unembedding) return -1;
++
++    char name[128];
++    for (int i = 0; i < cfg->n_layers; i++) {
++        waste_inkling_layer_weights *w = &out->layer[i];
++        const waste_inkling_layer_cfg *lc = &cfg->layer[i];
++#define N1(field,role,d0) do { snprintf(name,sizeof name,"inkling.layer.%d.%s",i,role); \
++    w->field=need(v,n,name,1,d0,0,0); if(!w->field)return -1; } while(0)
++#define N2(field,role,d0,d1) do { snprintf(name,sizeof name,"inkling.layer.%d.%s",i,role); \
++    w->field=need(v,n,name,2,d0,d1,0); if(!w->field)return -1; } while(0)
++#define N3(field,role,d0,d1,d2) do { snprintf(name,sizeof name,"inkling.layer.%d.%s",i,role); \
++    w->field=need(v,n,name,3,d0,d1,d2); if(!w->field)return -1; } while(0)
++        N1(input_norm,"input_norm",cfg->hidden);
++        N1(post_attention_norm,"post_attention_norm",cfg->hidden);
++        N2(wq,"q",lc->num_heads*lc->head_dim,cfg->hidden);
++        N2(wk,"k",lc->num_kv_heads*lc->head_dim,cfg->hidden);
++        N2(wv,"v",lc->num_kv_heads*lc->head_dim,cfg->hidden);
++        N2(wr,"r",lc->num_heads*cfg->d_rel,cfg->hidden);
++        N2(wo,"o",cfg->hidden,lc->num_heads*lc->head_dim);
++        N1(q_norm,"q_norm",lc->head_dim);
++        N1(k_norm,"k_norm",lc->head_dim);
++        N2(relative_proj,"rel_proj",cfg->d_rel,lc->relative_extent);
++        N2(k_sconv,"k_sconv",lc->num_kv_heads*lc->head_dim,cfg->conv_kernel);
++        N2(v_sconv,"v_sconv",lc->num_kv_heads*lc->head_dim,cfg->conv_kernel);
++        N2(attn_sconv,"attn_sconv",cfg->hidden,cfg->conv_kernel);
++        N2(mlp_sconv,"mlp_sconv",cfg->hidden,cfg->conv_kernel);
++        w->sparse = i >= cfg->dense_layers;
++        if (!w->sparse) {
++            N2(dense_gate,"mlp.gate",cfg->dense_intermediate,cfg->hidden);
++            N2(dense_up,"mlp.up",cfg->dense_intermediate,cfg->hidden);
++            N2(dense_down,"mlp.down",cfg->hidden,cfg->dense_intermediate);
++            N1(dense_global_scale,"mlp.global_scale",1);
++        } else {
++            N2(router_weight,"router.weight",cfg->n_routed_experts+cfg->n_shared_experts,cfg->hidden);
++            N1(router_bias,"router.correction_bias",cfg->n_routed_experts);
++            N1(router_global_scale,"router.global_scale",1);
++            N3(shared_gate,"shared.gate",cfg->n_shared_experts,cfg->moe_intermediate,cfg->hidden);
++            N3(shared_up,"shared.up",cfg->n_shared_experts,cfg->moe_intermediate,cfg->hidden);
++            N3(shared_down,"shared.down",cfg->n_shared_experts,cfg->hidden,cfg->moe_intermediate);
++        }
++#undef N1
++#undef N2
++#undef N3
++    }
++    out->model.layer = out->layer;
++    return 0;
++}
+diff --git a/src/inkling_bind.h b/src/inkling_bind.h
+new file mode 100644
+index 0000000..38650e4
+--- /dev/null
++++ b/src/inkling_bind.h
+@@ -0,0 +1,33 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#ifndef WASTE_INKLING_BIND_H
++#define WASTE_INKLING_BIND_H
++#include <stddef.h>
++#include "inkling_model.h"
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct {
++    const char *name;
++    const float *data;
++    int shape[4];
++    int ndim;
++} waste_inkling_tensor_view;
++
++typedef struct {
++    waste_inkling_model_weights model;
++    waste_inkling_layer_weights layer[WASTE_INKLING_MAX_LAYERS];
++} waste_inkling_bound_weights;
++
++/* Bind canonical `inkling.*` tensor names to the private runtime structures.
++ * Every required tensor must appear exactly once with its exact shape. Routed
++ * expert matrices are intentionally absent: production supplies them through
++ * the expert callback. */
++int waste_inkling_bind_weights(waste_inkling_bound_weights *out,
++                               const waste_inkling_config *cfg,
++                               const waste_inkling_tensor_view *views,
++                               size_t nviews);
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/src/inkling_stage_reader.c b/src/inkling_stage_reader.c
+new file mode 100644
+index 0000000..46cb6e0
+--- /dev/null
++++ b/src/inkling_stage_reader.c
+@@ -0,0 +1,72 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#define _POSIX_C_SOURCE 200809L
++#include "inkling_stage_reader.h"
++#include <fcntl.h>
++#include <math.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++
++#define IKTN_MAGIC 0x4e544b49u
++#define IKBF_MAGIC 0x46424b49u
++
++static uint32_t crc32u(const unsigned char *p, size_t n)
++{
++    uint32_t c=~0u;
++    for(size_t i=0;i<n;i++){ c^=p[i]; for(int k=0;k<8;k++) c=(c>>1)^((0u-(c&1u))&0xedb88320u); }
++    return ~c;
++}
++static uint32_t rd32(const unsigned char *p){return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
++static uint64_t rd64(const unsigned char *p){return (uint64_t)rd32(p)|((uint64_t)rd32(p+4)<<32);}
++static uint16_t rd16(const unsigned char *p){return (uint16_t)(p[0]|(p[1]<<8));}
++static float bf16(uint16_t x){ union{uint32_t u;float f;}v={(uint32_t)x<<16}; return v.f; }
++static float f16(uint16_t h){
++    unsigned s=h>>15,e=(h>>10)&31,m=h&1023; union{uint32_t u;float f;}v;
++    if(!e){ if(!m) v.u=s<<31; else {e=1;while(!(m&1024)){m<<=1;e--;}m&=1023;v.u=(s<<31)|((e+112)<<23)|(m<<13);} }
++    else if (e == 31) v.u = (s << 31) | 0x7f800000u | (m << 13);
++    else v.u = (s << 31) | ((e + 112) << 23) | (m << 13);
++    return v.f;
++}
++static int preadn(int fd,void *buf,size_t n,uint64_t off){unsigned char*p=buf;while(n){ssize_t r=pread(fd,p,n,(off_t)off);if(r<=0)return -1;p+=r;n-=r;off+=(uint64_t)r;}return 0;}
++
++int waste_inkling_stage_tensor_open(waste_inkling_stage_tensor *t,const char *path,const char *name,const int *shape,int ndim,int verify)
++{
++    if (!t || !path || !name || !shape || ndim < 1 || ndim > 4) return -1;
++    memset(t, 0, sizeof *t);
++    t->fd = -1;
++    int fd=open(path,O_RDONLY); if(fd<0)return -1; unsigned char h[64]; if(preadn(fd,h,64,0)){close(fd);return -1;}
++    if(rd32(h)!=IKTN_MAGIC||rd16(h+4)!=1||h[7]!=(unsigned)ndim){close(fd);return -1;}
++    int dtype=h[6]; size_t elem=dtype==3?4:2; uint64_t elems=1;
++    for(int i=0;i<ndim;i++){uint32_t d=rd32(h+12+4*i);if(d!=(uint32_t)shape[i]||!d){close(fd);return -1;}if(elems>UINT64_MAX/d){close(fd);return -1;}elems*=d;}
++    uint64_t bytes=rd64(h+28); if(bytes!=elems*elem){close(fd);return -1;}
++    uint32_t nc=crc32u((const unsigned char*)name,strlen(name)); if(rd32(h+40)!=nc){close(fd);return -1;}
++    if(verify){unsigned char *p=malloc((size_t)bytes);if(!p||preadn(fd,p,(size_t)bytes,64)||crc32u(p,(size_t)bytes)!=rd32(h+36)){free(p);close(fd);return -1;}free(p);}
++    t->fd=fd;t->payload_off=64;t->payload_bytes=bytes;t->rows=(uint32_t)shape[0];t->cols=ndim==1?1u:(uint32_t)shape[1];t->dtype=dtype;return 0;
++}
++int waste_inkling_stage_tensor_row(void *ctx,int row,int cols,float*out)
++{
++    waste_inkling_stage_tensor*t=ctx;if(!t||t->fd<0||!out||row<0||row>=(int)t->rows||cols!=(int)t->cols)return -1;
++    size_t elem=t->dtype==3?4:2,n=(size_t)cols*elem;unsigned char*p=malloc(n);if(!p)return -1;
++    if(preadn(t->fd,p,n,t->payload_off+(uint64_t)row*n)){free(p);return -1;}
++    if(t->dtype==3)memcpy(out,p,n);else for(int i=0;i<cols;i++){uint16_t x=rd16(p+2*i);out[i]=t->dtype==1?bf16(x):f16(x);}free(p);return 0;
++}
++void waste_inkling_stage_tensor_close(waste_inkling_stage_tensor*t){if(t&&t->fd>=0)close(t->fd);if(t)memset(t,0,sizeof *t);}
++
++int waste_inkling_stage_bank_open(waste_inkling_stage_bank*b,const char*path,int layer,int experts,int hidden,int inter,uint64_t rec,int verify)
++{
++    if (!b || !path || layer < 0 || experts < 1 || hidden < 1 || inter < 1 || rec < 64) return -1;
++    memset(b, 0, sizeof *b);
++    b->fd = open(path, O_RDONLY);
++    if (b->fd < 0) return -1;
++    b->layer=layer;b->experts=experts;b->hidden=hidden;b->intermediate=inter;b->record_bytes=rec;b->verify_crc=verify;
++    size_t g=(size_t)hidden*inter;b->gate=malloc(g*sizeof(float));b->up=malloc(g*sizeof(float));b->down=malloc(g*sizeof(float));if(!b->gate||!b->up||!b->down){waste_inkling_stage_bank_close(b);return -1;}return 0;
++}
++int waste_inkling_stage_expert_get(void*ctx,int layer,int expert,waste_inkling_expert_weights*out)
++{
++    waste_inkling_stage_bank*b=ctx;if(!b||!out||b->fd<0||layer!=b->layer||expert<0||expert>=b->experts)return -1;unsigned char h[64];uint64_t base=(uint64_t)expert*b->record_bytes;
++    if(preadn(b->fd,h,64,base)||rd32(h)!=IKBF_MAGIC||rd16(h+4)!=1||rd16(h+6)!=(uint16_t)layer||rd16(h+8)!=(uint16_t)expert||h[10]!=1||rd32(h+12)!=(uint32_t)b->hidden||rd32(h+16)!=(uint32_t)b->intermediate)return -1;
++    uint64_t go=rd64(h+20),uo=rd64(h+28),doff=rd64(h+36),pb=rd64(h+44);size_t one=(size_t)b->hidden*b->intermediate*2u;if(go!=64||uo!=64+one||doff!=64+2*one||pb!=3*one||64+pb>b->record_bytes)return -1;
++    unsigned char*p=malloc((size_t)pb);if(!p||preadn(b->fd,p,(size_t)pb,base+64)){free(p);return -1;}if(b->verify_crc&&crc32u(p,(size_t)pb)!=rd32(h+52)){free(p);return -1;}
++    size_t n=one/2;for(size_t i=0;i<n;i++){b->gate[i]=bf16(rd16(p+2*i));b->up[i]=bf16(rd16(p+one+2*i));b->down[i]=bf16(rd16(p+2*one+2*i));}free(p);out->gate=b->gate;out->up=b->up;out->down=b->down;return 0;
++}
++void waste_inkling_stage_bank_close(waste_inkling_stage_bank*b){if(!b)return;if(b->fd>=0)close(b->fd);free(b->gate);free(b->up);free(b->down);memset(b,0,sizeof*b);b->fd=-1;}
+diff --git a/src/inkling_stage_reader.h b/src/inkling_stage_reader.h
+new file mode 100644
+index 0000000..a4206e7
+--- /dev/null
++++ b/src/inkling_stage_reader.h
+@@ -0,0 +1,42 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#ifndef WASTE_INKLING_STAGE_READER_H
++#define WASTE_INKLING_STAGE_READER_H
++#include <stddef.h>
++#include <stdint.h>
++#include "inkling_layer.h"
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct {
++    int fd;
++    uint64_t payload_off;
++    uint64_t payload_bytes;
++    uint32_t rows, cols;
++    int dtype; /* 1 BF16, 2 F16, 3 F32 */
++} waste_inkling_stage_tensor;
++
++int waste_inkling_stage_tensor_open(waste_inkling_stage_tensor *t,
++                                    const char *path, const char *canonical_name,
++                                    const int *shape, int ndim, int verify_crc);
++int waste_inkling_stage_tensor_row(void *ctx, int row, int cols, float *out);
++void waste_inkling_stage_tensor_close(waste_inkling_stage_tensor *t);
++
++typedef struct {
++    int fd;
++    int layer, experts, hidden, intermediate;
++    uint64_t record_bytes;
++    int verify_crc;
++    float *gate, *up, *down;
++} waste_inkling_stage_bank;
++int waste_inkling_stage_bank_open(waste_inkling_stage_bank *b, const char *path,
++                                  int layer, int experts, int hidden,
++                                  int intermediate, uint64_t record_bytes,
++                                  int verify_crc);
++int waste_inkling_stage_expert_get(void *ctx, int layer, int expert,
++                                   waste_inkling_expert_weights *out);
++void waste_inkling_stage_bank_close(waste_inkling_stage_bank *b);
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/tests/__pycache__/test_inkling_bind_c.cpython-313.pyc b/tests/__pycache__/test_inkling_bind_c.cpython-313.pyc
+new file mode 100644
+index 0000000000000000000000000000000000000000..3f5232b7331a2ee3c4f3b8118c70d059a1c51add
+GIT binary patch
+literal 22110
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/tests/__pycache__/test_inkling_model_c.cpython-313.pyc b/tests/__pycache__/test_inkling_model_c.cpython-313.pyc
+index 1f267fa2abffad07a1e0d3a646613411a9c174c7..baf5ac263e36357ce514bb875f2fdb03de8f9c11 100644
+GIT binary patch
+delta 28
+icmZ3pnQ_f#My}7iyj%=GpeM1BE0~qha&sK3UkCtn=LanS
+
+delta 28
+icmZ3pnQ_f#My}7iyj%=GuvT;<S1>E1`Q|uQzYqX>DhH<k
+
+diff --git a/tests/test_inkling_bind_c.py b/tests/test_inkling_bind_c.py
+new file mode 100644
+index 0000000..2455ec0
+--- /dev/null
++++ b/tests/test_inkling_bind_c.py
+@@ -0,0 +1,61 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++import ctypes, shutil, subprocess, tempfile, unittest, zlib, struct
++from pathlib import Path
++import torch
++
++REPO=Path(__file__).resolve().parents[1]
++FP=ctypes.POINTER(ctypes.c_float)
++
++class LayerCfg(ctypes.Structure):
++    _fields_=[('is_local',ctypes.c_int),('num_heads',ctypes.c_int),('num_kv_heads',ctypes.c_int),('head_dim',ctypes.c_int),('relative_extent',ctypes.c_int)]
++class Config(ctypes.Structure):
++    _fields_=[('n_layers',ctypes.c_int),('hidden',ctypes.c_int),('vocab',ctypes.c_int),('unpadded_vocab',ctypes.c_int),('max_context',ctypes.c_int),('global_heads',ctypes.c_int),('global_kv_heads',ctypes.c_int),('global_head_dim',ctypes.c_int),('local_heads',ctypes.c_int),('local_kv_heads',ctypes.c_int),('local_head_dim',ctypes.c_int),('sliding_window',ctypes.c_int),('d_rel',ctypes.c_int),('rel_extent',ctypes.c_int),('conv_kernel',ctypes.c_int),('dense_layers',ctypes.c_int),('dense_intermediate',ctypes.c_int),('moe_intermediate',ctypes.c_int),('n_routed_experts',ctypes.c_int),('top_k',ctypes.c_int),('n_shared_experts',ctypes.c_int),('rms_eps',ctypes.c_float),('route_scale',ctypes.c_float),('logits_width_multiplier',ctypes.c_float),('log_scaling_n_floor',ctypes.c_int),('log_scaling_alpha',ctypes.c_float),('layer',LayerCfg*128)]
++class View(ctypes.Structure):
++    _fields_=[('name',ctypes.c_char_p),('data',FP),('shape',ctypes.c_int*4),('ndim',ctypes.c_int)]
++class Expert(ctypes.Structure):
++    _fields_=[('gate',FP),('up',FP),('down',FP)]
++class StageTensor(ctypes.Structure):
++    _fields_=[('fd',ctypes.c_int),('payload_off',ctypes.c_uint64),('payload_bytes',ctypes.c_uint64),('rows',ctypes.c_uint32),('cols',ctypes.c_uint32),('dtype',ctypes.c_int)]
++class StageBank(ctypes.Structure):
++    _fields_=[('fd',ctypes.c_int),('layer',ctypes.c_int),('experts',ctypes.c_int),('hidden',ctypes.c_int),('intermediate',ctypes.c_int),('record_bytes',ctypes.c_uint64),('verify_crc',ctypes.c_int),('gate',FP),('up',FP),('down',FP)]
++
++def arr(t):
++    a=(ctypes.c_float*t.numel())(*t.flatten().tolist()); return a
++
++def bf16_bytes(t):
++    return t.to(torch.bfloat16).view(torch.uint16).numpy().tobytes()
++
++class TestBindAndStage(unittest.TestCase):
++ @classmethod
++ def setUpClass(cls):
++    cc=shutil.which('cc')
++    if not cc: raise unittest.SkipTest('cc unavailable')
++    cls.td=tempfile.TemporaryDirectory(); so=Path(cls.td.name)/'lib.so'
++    subprocess.run([cc,'-std=c11','-Wall','-Wextra','-Werror','-shared','-fPIC',f'-I{REPO/"src"}',str(REPO/'src/inkling_bind.c'),str(REPO/'src/inkling_stage_reader.c'),'-o',str(so)],check=True,capture_output=True)
++    cls.lib=ctypes.CDLL(str(so)); cls.lib.waste_inkling_bind_weights.argtypes=[ctypes.c_void_p,ctypes.POINTER(Config),ctypes.POINTER(View),ctypes.c_size_t];cls.lib.waste_inkling_bind_weights.restype=ctypes.c_int
++    cls.lib.waste_inkling_stage_tensor_open.argtypes=[ctypes.POINTER(StageTensor),ctypes.c_char_p,ctypes.c_char_p,ctypes.POINTER(ctypes.c_int),ctypes.c_int,ctypes.c_int];cls.lib.waste_inkling_stage_tensor_open.restype=ctypes.c_int
++    cls.lib.waste_inkling_stage_tensor_row.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_int,FP];cls.lib.waste_inkling_stage_tensor_row.restype=ctypes.c_int
++    cls.lib.waste_inkling_stage_tensor_close.argtypes=[ctypes.POINTER(StageTensor)]
++    cls.lib.waste_inkling_stage_bank_open.argtypes=[ctypes.POINTER(StageBank),ctypes.c_char_p,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_uint64,ctypes.c_int];cls.lib.waste_inkling_stage_bank_open.restype=ctypes.c_int
++    cls.lib.waste_inkling_stage_expert_get.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_int,ctypes.POINTER(Expert)];cls.lib.waste_inkling_stage_expert_get.restype=ctypes.c_int
++    cls.lib.waste_inkling_stage_bank_close.argtypes=[ctypes.POINTER(StageBank)]
++ @classmethod
++ def tearDownClass(cls): cls.td.cleanup()
++ def cfg(self):
++    c=Config();c.n_layers=1;c.hidden=4;c.vocab=7;c.unpadded_vocab=6;c.max_context=8;c.dense_layers=1;c.dense_intermediate=5;c.moe_intermediate=3;c.n_routed_experts=2;c.top_k=1;c.n_shared_experts=1;c.d_rel=2;c.conv_kernel=3;c.layer[0]=LayerCfg(1,2,1,2,4);return c
++ def make_views(self,c):
++    specs={'inkling.embed':(c.vocab,c.hidden),'inkling.embed_norm':(c.hidden,),'inkling.final_norm':(c.hidden,),'inkling.unembed':(c.unpadded_vocab,c.hidden),
++    'inkling.layer.0.input_norm':(c.hidden,),'inkling.layer.0.post_attention_norm':(c.hidden,),'inkling.layer.0.q':(4,c.hidden),'inkling.layer.0.k':(2,c.hidden),'inkling.layer.0.v':(2,c.hidden),'inkling.layer.0.r':(4,c.hidden),'inkling.layer.0.o':(c.hidden,4),'inkling.layer.0.q_norm':(2,),'inkling.layer.0.k_norm':(2,),'inkling.layer.0.rel_proj':(2,4),'inkling.layer.0.k_sconv':(2,3),'inkling.layer.0.v_sconv':(2,3),'inkling.layer.0.attn_sconv':(4,3),'inkling.layer.0.mlp_sconv':(4,3),'inkling.layer.0.mlp.gate':(5,4),'inkling.layer.0.mlp.up':(5,4),'inkling.layer.0.mlp.down':(4,5),'inkling.layer.0.mlp.global_scale':(1,)}
++    keep=[]; views=[]
++    for name,shape in specs.items():
++      a=arr(torch.randn(*shape));keep.append(a);s=(ctypes.c_int*4)(*(list(shape)+[0]*(4-len(shape))));views.append(View(name.encode(),a,s,len(shape)))
++    return (View*len(views))(*views),keep
++ def test_registry_accepts_exact_and_rejects_shape(self):
++    c=self.cfg();v,k=self.make_views(c);out=(ctypes.c_byte*65536)();self.assertEqual(self.lib.waste_inkling_bind_weights(out,ctypes.byref(c),v,len(v)),0);v[0].shape[1]+=1;self.assertEqual(self.lib.waste_inkling_bind_weights(out,ctypes.byref(c),v,len(v)),-1);self.assertTrue(k)
++ def test_bf16_tensor_row_and_crc(self):
++    name='inkling.embed';x=torch.tensor([[1.25,-2.5],[3.0,4.5]],dtype=torch.float32);p=bf16_bytes(x);shape=(2,2,0,0);hdr=struct.pack('<4sHBBHH4IQII20s',b'IKTN',1,1,2,0,0,*shape,len(p),zlib.crc32(p)&0xffffffff,zlib.crc32(name.encode())&0xffffffff,b'\0'*20)
++    path=Path(self.td.name)/'t.stage';path.write_bytes(hdr+p+b'\0'*(4096-64-len(p)));t=StageTensor();sh=(ctypes.c_int*2)(2,2);self.assertEqual(self.lib.waste_inkling_stage_tensor_open(ctypes.byref(t),str(path).encode(),name.encode(),sh,2,1),0);o=(ctypes.c_float*2)();self.assertEqual(self.lib.waste_inkling_stage_tensor_row(ctypes.byref(t),1,2,o),0);torch.testing.assert_close(torch.tensor(list(o)),x[1],rtol=0,atol=.02);self.lib.waste_inkling_stage_tensor_close(ctypes.byref(t));raw=bytearray(path.read_bytes());raw[65]^=1;path.write_bytes(raw);self.assertEqual(self.lib.waste_inkling_stage_tensor_open(ctypes.byref(t),str(path).encode(),name.encode(),sh,2,1),-1)
++ def test_bf16_expert_record_identity_and_crc(self):
++    h,i=3,2;g=torch.arange(i*h,dtype=torch.float32).reshape(i,h)/4;u=g+1;d=torch.arange(h*i,dtype=torch.float32).reshape(h,i)/7;payload=bf16_bytes(g)+bf16_bytes(u)+bf16_bytes(d);rec=4096;hdr=struct.pack('<IHHHBBIIQQQQI8x',0x46424B49,1,2,0,1,0,h,i,64,64+len(bf16_bytes(g)),64+len(bf16_bytes(g))+len(bf16_bytes(u)),len(payload),zlib.crc32(payload)&0xffffffff);path=Path(self.td.name)/'bank';path.write_bytes(hdr+payload+b'\0'*(rec-64-len(payload)));b=StageBank();self.assertEqual(self.lib.waste_inkling_stage_bank_open(ctypes.byref(b),str(path).encode(),2,1,h,i,rec,1),0);e=Expert();self.assertEqual(self.lib.waste_inkling_stage_expert_get(ctypes.byref(b),2,0,ctypes.byref(e)),0);got=torch.tensor([e.gate[j] for j in range(i*h)]).reshape(i,h);torch.testing.assert_close(got,g,rtol=0,atol=.02);self.assertEqual(self.lib.waste_inkling_stage_expert_get(ctypes.byref(b),3,0,ctypes.byref(e)),-1);self.lib.waste_inkling_stage_bank_close(ctypes.byref(b))
++if __name__=='__main__':unittest.main()

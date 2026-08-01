@@ -1,0 +1,984 @@
+diff --git a/Makefile b/Makefile
+index 4594b9f..5eb806a 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,4 +1,4 @@
+-SRC := src/model.c src/arch.c src/inkling.c src/inkling_config.c src/inkling_attention.c src/kda.c src/backend.c src/ecache.c src/version.c \
++SRC := src/model.c src/arch.c src/inkling.c src/inkling_config.c src/inkling_attention.c src/inkling_layer.c src/kda.c src/backend.c src/ecache.c src/version.c \
+        src/tokenizer.c src/waste.c src/vq.c src/vision.c src/image.c \
+        src/crc32.c
+ 
+@@ -8,7 +8,7 @@ TESTBINS  := $(addsuffix $(EXE),$(TESTNAMES))
+ 
+ test_k3parts$(EXE): tests/test_k3parts.o libwaste.a
+ 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+-test_inkling$(EXE): tests/test_inkling.o src/arch.o src/inkling.o src/inkling_config.o src/inkling_attention.o
++test_inkling$(EXE): tests/test_inkling.o src/arch.o src/inkling.o src/inkling_config.o src/inkling_attention.o src/inkling_layer.o
+ 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+ test_image$(EXE): tests/test_image.o libwaste.a
+ 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+diff --git a/docs/INKLING.md b/docs/INKLING.md
+index 06d21bd..2253161 100644
+--- a/docs/INKLING.md
++++ b/docs/INKLING.md
+@@ -1,9 +1,10 @@
+ # Inkling-family support in WASTE
+ 
+ Status: **source audit, deterministic conversion planning, bounded BF16 expert
+-and trunk staging, architecture-specific C configuration, scalar math, and a
+-standalone one-token local/global attention core are implemented. A runnable
+-WASTE container and integrated Inkling decoder are not yet implemented.**
++and trunk staging, architecture-specific C configuration, scalar math, a
++one-token local/global attention core, and a standalone complete F32 decoder
++layer are implemented. A runnable WASTE container and model-level Inkling
++forward path are not yet implemented.**
+ 
+ ## Provenance correction
+ 
+@@ -188,8 +189,8 @@ implement the same field-by-field contract.
+ | per-layer C configuration | implemented and unit-tested |
+ | Inkling state/scratch memory contract | implemented but not wired to public planner |
+ | runtime tensor loading | not implemented |
+-| one-token local/global GQA core | implemented and differential-tested; projections/convolutions not integrated |
+-| dense/shared/routed integrated MLP | not implemented |
++| one-token local/global GQA core | implemented and integrated into standalone decoder layer |
++| dense/shared/routed integrated MLP | implemented in standalone F32 layer; not wired to model loader |
+ | tokenizer generation path | not implemented |
+ | final-logit parity | not established |
+ | vision/audio | deferred |
+@@ -215,6 +216,29 @@ implement the same field-by-field contract.
+ This core accepts already projected Q/K/V, with K/V short convolution applied.
+ It remains architecture-private and is not called from `model.c`.
+ 
++### Patch 7 — standalone complete F32 decoder layer
++
++- executes input RMSNorm, Q/K/V/relative projections, K/V short convolution,
++  local or global GQA, output projection, attention-branch short convolution,
++  and the outer attention residual in the official order;
++- executes post-attention RMSNorm followed by either the dense gated-SiLU MLP
++  or the sparse routed-plus-shared MLP, then MLP-branch short convolution and
++  the outer MLP residual;
++- uses the tested joint routed/shared normalization and supports routed experts
++  either as resident arrays or through a caller-supplied expert callback;
++- keeps all K/V and four convolution states caller-owned;
++- exposes exact caller-owned scratch sizing and initialization;
++- rejects a dense/sparse weight-kind flag that disagrees with the configured
++  layer schedule;
++- matches an independent PyTorch reference across a local dense layer, a global
++  sparse layer, sliding-window ring wraparound, global log scaling, resident
++  routed experts, and the streaming callback path.
++
++The scalar F32 layer is an architecture-private correctness implementation. It
++is deliberately not wired into `model.c`, and it does not publish or consume a
++WASTE manifest. Optimized kernels may replace its matvec loops only after the
++same differential tests pass.
++
+ ## 6. Correctness and publication gates
+ 
+ A runnable manifest remains blocked until all of the following pass:
+@@ -247,6 +271,8 @@ The suite covers:
+ - C/PyTorch router, relative-bias, log-scaling, and convolution parity;
+ - C/PyTorch local/global one-token GQA parity, including ring wraparound and
+   global log scaling;
++- complete dense-local and sparse-global F32 decoder-layer parity;
++- routed-expert callback parity and dense/sparse schedule rejection;
+ - C configuration validation, local/global layer derivation, overflow-safe K/V
+   and convolution state accounting, and decode workspace accounting.
+ 
+@@ -262,17 +288,19 @@ PYTHONPATH=tools:tests python3 -m unittest discover \
+ 
+ cc -std=c11 -Wall -Wextra -Werror -Isrc \
+   tests/test_inkling.c src/arch.c src/inkling.c src/inkling_config.c \
++  src/inkling_attention.c src/inkling_layer.c \
+   -lm -o /tmp/test_inkling
+ /tmp/test_inkling
+ ```
+ 
+ ## 8. Next controlled boundary
+ 
+-Patch 7 should add an architecture-private canonical tensor registry and wire
+-one decoder layer in this order: input RMSNorm, Q/K/V/R projections, K/V short
+-convolution, the tested attention core, output projection, attention-branch
+-short convolution, residual, post-attention RMSNorm, dense or sparse MLP,
+-MLP-branch short convolution, and residual. The public planner guard should be
+-removed only when the loader, allocator, and integrated layer use the same
+-tested configuration and memory contract. The WASTE manifest must remain
+-unpublished until layerwise and final-logit parity pass.
++Patch 8 should add an architecture-private canonical tensor registry and model
++wrapper around the tested layer: bounded embedding-row access, embedding norm,
++validated per-layer weight views, exact layer-state allocation from the tested
++memory contract, final RMSNorm, unembedding, and logits-width scaling. It must
++first run entirely from converter staging metadata and remain inaccessible to
++`waste_open()`. The public planner/loader guard should be removed only after
++that wrapper validates every tensor, executes all layers, and matches trusted
++layerwise and final logits. The WASTE manifest remains unpublished until those
++gates pass.
+diff --git a/src/inkling_layer.c b/src/inkling_layer.c
+new file mode 100644
+index 0000000..65fb796
+--- /dev/null
++++ b/src/inkling_layer.c
+@@ -0,0 +1,255 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++#include "inkling_layer.h"
++#include "inkling.h"
++
++#include <math.h>
++#include <stddef.h>
++#include <string.h>
++
++static void matvec(float *out, const float *weight, const float *x,
++                   int rows, int cols)
++{
++    for (int r = 0; r < rows; r++) {
++        double sum = 0.0;
++        const float *w = weight + (size_t)r * cols;
++        for (int c = 0; c < cols; c++) sum += (double)w[c] * x[c];
++        out[r] = (float)sum;
++    }
++}
++
++static void rmsnorm(float *out, const float *x, const float *weight,
++                    int n, float eps)
++{
++    double ss = 0.0;
++    for (int i = 0; i < n; i++) ss += (double)x[i] * x[i];
++    const float scale = 1.0f / sqrtf((float)(ss / n) + eps);
++    for (int i = 0; i < n; i++) out[i] = x[i] * scale * weight[i];
++}
++
++static float silu(float x) { return x / (1.0f + expf(-x)); }
++
++static int expert_eval(float *out, float *gate, float *up,
++                       const waste_inkling_expert_weights *w,
++                       const float *x, int hidden, int intermediate)
++{
++    if (!out || !gate || !up || !w || !w->gate || !w->up || !w->down || !x)
++        return -1;
++    matvec(gate, w->gate, x, intermediate, hidden);
++    matvec(up, w->up, x, intermediate, hidden);
++    for (int i = 0; i < intermediate; i++) gate[i] = silu(gate[i]) * up[i];
++    matvec(out, w->down, gate, hidden, intermediate);
++    return 0;
++}
++
++static int get_routed(const waste_inkling_config *cfg,
++                      const waste_inkling_layer_weights *w,
++                      int layer, int expert,
++                      waste_inkling_expert_get_fn get, void *ctx,
++                      waste_inkling_expert_weights *out)
++{
++    if (expert < 0 || expert >= cfg->n_routed_experts || !out) return -1;
++    if (w->routed_gate && w->routed_up && w->routed_down) {
++        const size_t gh = (size_t)cfg->moe_intermediate * cfg->hidden;
++        const size_t dh = (size_t)cfg->hidden * cfg->moe_intermediate;
++        out->gate = w->routed_gate + (size_t)expert * gh;
++        out->up = w->routed_up + (size_t)expert * gh;
++        out->down = w->routed_down + (size_t)expert * dh;
++        return 0;
++    }
++    return get ? get(ctx, layer, expert, out) : -1;
++}
++
++static int weights_common_ok(const waste_inkling_layer_weights *w)
++{
++    return w && w->input_norm && w->post_attention_norm &&
++           w->wq && w->wk && w->wv && w->wr && w->wo &&
++           w->q_norm && w->k_norm && w->relative_proj &&
++           w->k_sconv && w->v_sconv && w->attn_sconv && w->mlp_sconv;
++}
++
++size_t waste_inkling_layer_scratch_floats(const waste_inkling_config *cfg,
++                                           int layer, int capacity)
++{
++    if (!cfg || layer < 0 || layer >= cfg->n_layers || capacity < 1) return 0;
++    const waste_inkling_layer_cfg *l = &cfg->layer[layer];
++    const size_t H = (size_t)cfg->hidden;
++    const size_t Q = (size_t)l->num_heads * l->head_dim;
++    const size_t K = (size_t)l->num_kv_heads * l->head_dim;
++    const size_t R = (size_t)l->num_heads * cfg->d_rel;
++    const size_t I = (size_t)(layer < cfg->dense_layers
++                           ? cfg->dense_intermediate : cfg->moe_intermediate);
++    const size_t router = (size_t)cfg->n_routed_experts + cfg->n_shared_experts;
++    return H + Q + K + K + R + (size_t)l->num_heads * capacity + Q +
++           H + I + I + H + router + cfg->top_k + cfg->n_shared_experts;
++}
++
++size_t waste_inkling_layer_scratch_ints(const waste_inkling_config *cfg)
++{
++    return cfg && cfg->top_k > 0 ? (size_t)cfg->top_k : 0;
++}
++
++int waste_inkling_layer_scratch_init(waste_inkling_layer_scratch *s,
++                                     const waste_inkling_config *cfg,
++                                     int layer, int capacity,
++                                     float *buf, size_t nfloat,
++                                     int *ibuf, size_t nint)
++{
++    if (!s || !cfg || !buf || !ibuf || layer < 0 || layer >= cfg->n_layers)
++        return -1;
++    const size_t need = waste_inkling_layer_scratch_floats(cfg, layer, capacity);
++    const size_t ineed = waste_inkling_layer_scratch_ints(cfg);
++    if (!need || nfloat < need || nint < ineed) return -1;
++    const waste_inkling_layer_cfg *l = &cfg->layer[layer];
++    const size_t H = (size_t)cfg->hidden;
++    const size_t Q = (size_t)l->num_heads * l->head_dim;
++    const size_t K = (size_t)l->num_kv_heads * l->head_dim;
++    const size_t R = (size_t)l->num_heads * cfg->d_rel;
++    const size_t I = (size_t)(layer < cfg->dense_layers
++                           ? cfg->dense_intermediate : cfg->moe_intermediate);
++    const size_t router = (size_t)cfg->n_routed_experts + cfg->n_shared_experts;
++    float *p = buf;
++    memset(s, 0, sizeof *s);
++#define TAKE(name, count) do { s->name = p; p += (count); } while (0)
++    TAKE(norm, H);
++    TAKE(q, Q);
++    TAKE(k, K);
++    TAKE(v, K);
++    TAKE(relative, R);
++    TAKE(scores, (size_t)l->num_heads * capacity);
++    TAKE(attn_out, Q);
++    TAKE(branch, H);
++    TAKE(gate, I);
++    TAKE(up, I);
++    TAKE(ff, H);
++    TAKE(router_logits, router);
++    TAKE(routed_weight, cfg->top_k);
++    TAKE(shared_weight, cfg->n_shared_experts);
++#undef TAKE
++    s->routed_index = ibuf;
++    s->float_count = need;
++    s->int_count = ineed;
++    return (size_t)(p - buf) == need ? 0 : -1;
++}
++
++int waste_inkling_layer_state_init(
++    waste_inkling_layer_state *s,
++    const waste_inkling_config *cfg, int layer, int capacity,
++    float *k_cache, float *v_cache,
++    float *k_conv, float *v_conv, float *attn_conv, float *mlp_conv)
++{
++    if (!s || !cfg || layer < 0 || layer >= cfg->n_layers ||
++        !k_conv || !v_conv || !attn_conv || !mlp_conv)
++        return -1;
++    const waste_inkling_layer_cfg *l = &cfg->layer[layer];
++    memset(s, 0, sizeof *s);
++    if (waste_inkling_attention_init(&s->attention, l->is_local,
++            l->num_heads, l->num_kv_heads, l->head_dim, cfg->d_rel,
++            l->relative_extent, capacity, cfg->rms_eps, k_cache, v_cache))
++        return -1;
++    s->k_conv_state = k_conv;
++    s->v_conv_state = v_conv;
++    s->attn_conv_state = attn_conv;
++    s->mlp_conv_state = mlp_conv;
++    return 0;
++}
++
++int waste_inkling_layer_step(
++    const waste_inkling_config *cfg, int layer,
++    const waste_inkling_layer_weights *w,
++    waste_inkling_layer_state *state,
++    float *x, int position,
++    waste_inkling_layer_scratch *s,
++    waste_inkling_expert_get_fn expert_get, void *expert_ctx)
++{
++    if (!cfg || layer < 0 || layer >= cfg->n_layers || !weights_common_ok(w) ||
++        !state || !x || !s || position < 0) return -1;
++    /* The dense/sparse schedule is architecture, not tensor metadata.  A
++     * mismatched flag otherwise executes a numerically valid but different
++     * network, which is more dangerous than a loud load failure. */
++    const int expected_sparse = layer >= cfg->dense_layers;
++    if ((w->sparse != 0 && w->sparse != 1) || w->sparse != expected_sparse)
++        return -1;
++    const waste_inkling_layer_cfg *l = &cfg->layer[layer];
++    const int hidden = cfg->hidden;
++    const int qdim = l->num_heads * l->head_dim;
++    const int kdim = l->num_kv_heads * l->head_dim;
++    const int rdim = l->num_heads * cfg->d_rel;
++
++    rmsnorm(s->norm, x, w->input_norm, hidden, cfg->rms_eps);
++    matvec(s->q, w->wq, s->norm, qdim, hidden);
++    matvec(s->k, w->wk, s->norm, kdim, hidden);
++    matvec(s->v, w->wv, s->norm, kdim, hidden);
++    matvec(s->relative, w->wr, s->norm, rdim, hidden);
++    if (waste_inkling_sconv_step(s->k, state->k_conv_state, w->k_sconv,
++                                 kdim, cfg->conv_kernel, s->k) ||
++        waste_inkling_sconv_step(s->v, state->v_conv_state, w->v_sconv,
++                                 kdim, cfg->conv_kernel, s->v))
++        return -1;
++    if (waste_inkling_attention_step(&state->attention,
++            s->q, s->k, s->v, w->q_norm, w->k_norm,
++            s->relative, w->relative_proj, position,
++            l->is_local ? 0 : cfg->log_scaling_n_floor,
++            cfg->log_scaling_alpha, s->scores, s->attn_out))
++        return -1;
++    matvec(s->branch, w->wo, s->attn_out, hidden, qdim);
++    if (waste_inkling_sconv_step(s->branch, state->attn_conv_state,
++                                 w->attn_sconv, hidden, cfg->conv_kernel,
++                                 s->branch))
++        return -1;
++    for (int i = 0; i < hidden; i++) x[i] += s->branch[i];
++
++    rmsnorm(s->norm, x, w->post_attention_norm, hidden, cfg->rms_eps);
++    if (!w->sparse) {
++        if (!w->dense_gate || !w->dense_up || !w->dense_down ||
++            !w->dense_global_scale) return -1;
++        const int inter = cfg->dense_intermediate;
++        matvec(s->gate, w->dense_gate, s->norm, inter, hidden);
++        matvec(s->up, w->dense_up, s->norm, inter, hidden);
++        for (int i = 0; i < inter; i++) s->gate[i] = silu(s->gate[i]) * s->up[i];
++        matvec(s->ff, w->dense_down, s->gate, hidden, inter);
++        for (int i = 0; i < hidden; i++) s->ff[i] *= *w->dense_global_scale;
++    } else {
++        if (!w->router_weight || !w->router_bias || !w->router_global_scale ||
++            !w->shared_gate || !w->shared_up || !w->shared_down)
++            return -1;
++        const int total = cfg->n_routed_experts + cfg->n_shared_experts;
++        const int inter = cfg->moe_intermediate;
++        matvec(s->router_logits, w->router_weight, s->norm, total, hidden);
++        if (waste_inkling_route(s->router_logits, w->router_bias,
++                cfg->n_routed_experts, cfg->n_shared_experts, cfg->top_k,
++                cfg->route_scale, *w->router_global_scale,
++                s->routed_index, s->routed_weight, s->shared_weight))
++            return -1;
++        for (int i = 0; i < hidden; i++) s->ff[i] = 0.0f;
++        for (int k = 0; k < cfg->top_k; k++) {
++            waste_inkling_expert_weights ew;
++            if (get_routed(cfg, w, layer, s->routed_index[k],
++                           expert_get, expert_ctx, &ew) ||
++                expert_eval(s->branch, s->gate, s->up, &ew,
++                            s->norm, hidden, inter)) return -1;
++            const float gamma = s->routed_weight[k];
++            for (int i = 0; i < hidden; i++) s->ff[i] += gamma * s->branch[i];
++        }
++        const size_t gh = (size_t)inter * hidden;
++        const size_t dh = (size_t)hidden * inter;
++        for (int e = 0; e < cfg->n_shared_experts; e++) {
++            waste_inkling_expert_weights ew = {
++                w->shared_gate + (size_t)e * gh,
++                w->shared_up + (size_t)e * gh,
++                w->shared_down + (size_t)e * dh,
++            };
++            if (expert_eval(s->branch, s->gate, s->up, &ew,
++                            s->norm, hidden, inter)) return -1;
++            const float gamma = s->shared_weight[e];
++            for (int i = 0; i < hidden; i++) s->ff[i] += gamma * s->branch[i];
++        }
++    }
++    if (waste_inkling_sconv_step(s->ff, state->mlp_conv_state,
++                                 w->mlp_sconv, hidden, cfg->conv_kernel,
++                                 s->ff))
++        return -1;
++    for (int i = 0; i < hidden; i++) x[i] += s->ff[i];
++    return 0;
++}
+diff --git a/src/inkling_layer.h b/src/inkling_layer.h
+new file mode 100644
+index 0000000..8e40949
+--- /dev/null
++++ b/src/inkling_layer.h
+@@ -0,0 +1,125 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++#ifndef WASTE_INKLING_LAYER_H
++#define WASTE_INKLING_LAYER_H
++
++#include <stddef.h>
++
++#include "inkling_attention.h"
++#include "inkling_config.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct {
++    const float *gate; /* [intermediate][hidden] */
++    const float *up;   /* [intermediate][hidden] */
++    const float *down; /* [hidden][intermediate] */
++} waste_inkling_expert_weights;
++
++typedef int (*waste_inkling_expert_get_fn)(void *ctx, int layer,
++                                            int expert,
++                                            waste_inkling_expert_weights *out);
++
++typedef struct {
++    const float *input_norm;          /* [hidden] */
++    const float *post_attention_norm; /* [hidden] */
++    const float *wq;                  /* [heads*head_dim][hidden] */
++    const float *wk;                  /* [kv_heads*head_dim][hidden] */
++    const float *wv;                  /* [kv_heads*head_dim][hidden] */
++    const float *wr;                  /* [heads*d_rel][hidden] */
++    const float *wo;                  /* [hidden][heads*head_dim] */
++    const float *q_norm;              /* [head_dim] */
++    const float *k_norm;              /* [head_dim] */
++    const float *relative_proj;       /* [d_rel][relative_extent] */
++    const float *k_sconv;             /* [kv_heads*head_dim][conv_kernel] */
++    const float *v_sconv;             /* [kv_heads*head_dim][conv_kernel] */
++    const float *attn_sconv;          /* [hidden][conv_kernel] */
++    const float *mlp_sconv;           /* [hidden][conv_kernel] */
++
++    int sparse;
++
++    /* Dense layer. */
++    const float *dense_gate;          /* [dense_intermediate][hidden] */
++    const float *dense_up;            /* [dense_intermediate][hidden] */
++    const float *dense_down;          /* [hidden][dense_intermediate] */
++    const float *dense_global_scale;  /* scalar */
++
++    /* Sparse layer. Router rows include routed experts followed by shared. */
++    const float *router_weight;       /* [routed+shared][hidden] */
++    const float *router_bias;         /* [routed] */
++    const float *router_global_scale; /* scalar */
++    const float *shared_gate;         /* [shared][moe_intermediate][hidden] */
++    const float *shared_up;           /* [shared][moe_intermediate][hidden] */
++    const float *shared_down;         /* [shared][hidden][moe_intermediate] */
++
++    /* Optional resident routed arrays for tests/small fixtures. Production
++     * streaming can leave these NULL and provide expert_get instead. */
++    const float *routed_gate;         /* [routed][moe_intermediate][hidden] */
++    const float *routed_up;
++    const float *routed_down;         /* [routed][hidden][moe_intermediate] */
++} waste_inkling_layer_weights;
++
++typedef struct {
++    waste_inkling_attention_state attention;
++    float *k_conv_state;
++    float *v_conv_state;
++    float *attn_conv_state;
++    float *mlp_conv_state;
++} waste_inkling_layer_state;
++
++typedef struct {
++    float *norm;
++    float *q;
++    float *k;
++    float *v;
++    float *relative;
++    float *scores;
++    float *attn_out;
++    float *branch;
++    float *gate;
++    float *up;
++    float *ff;
++    float *router_logits;
++    float *routed_weight;
++    float *shared_weight;
++    int *routed_index;
++    size_t float_count;
++    size_t int_count;
++} waste_inkling_layer_scratch;
++
++size_t waste_inkling_layer_scratch_floats(const waste_inkling_config *cfg,
++                                           int layer, int attention_capacity);
++size_t waste_inkling_layer_scratch_ints(const waste_inkling_config *cfg);
++int waste_inkling_layer_scratch_init(waste_inkling_layer_scratch *scratch,
++                                     const waste_inkling_config *cfg,
++                                     int layer, int attention_capacity,
++                                     float *float_buffer, size_t float_count,
++                                     int *int_buffer, size_t int_count);
++
++int waste_inkling_layer_state_init(
++    waste_inkling_layer_state *state,
++    const waste_inkling_config *cfg, int layer, int attention_capacity,
++    float *k_cache, float *v_cache,
++    float *k_conv_state, float *v_conv_state,
++    float *attn_conv_state, float *mlp_conv_state);
++
++/* Execute one F32 decoder layer in place. K/V inputs are short-convolved before
++ * the attention core; attention and MLP branch outputs are short-convolved
++ * before the outer residual addition, matching the official Inkling order.
++ * Routed experts may be resident in `weights` or supplied by `expert_get`.
++ * Returns 0 or -1. */
++int waste_inkling_layer_step(
++    const waste_inkling_config *cfg, int layer,
++    const waste_inkling_layer_weights *weights,
++    waste_inkling_layer_state *state,
++    float *x, int position,
++    waste_inkling_layer_scratch *scratch,
++    waste_inkling_expert_get_fn expert_get, void *expert_ctx);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/tests/test_inkling.c b/tests/test_inkling.c
+index c031fe4..62ce235 100644
+--- a/tests/test_inkling.c
++++ b/tests/test_inkling.c
+@@ -9,6 +9,7 @@
+ #include "../src/inkling.h"
+ #include "../src/inkling_config.h"
+ #include "../src/inkling_attention.h"
++#include "../src/inkling_layer.h"
+ 
+ static int closef(float a, float b)
+ {
+@@ -56,6 +57,8 @@ int main(void)
+         fail += waste_inkling_plan_decode_memory(&c, 16, &m) != 0;
+         fail += m.kv_bytes != 2048 || m.conv_bytes != 2304 || m.state_bytes != 4352;
+         fail += m.decode_scratch_bytes != 3344;
++        fail += waste_inkling_layer_scratch_floats(&c, 0, 8) == 0;
++        fail += waste_inkling_layer_scratch_ints(&c) != 2;
+         {
+             const int bad_local[] = { 0, 0 };
+             a.local_layer_ids = bad_local;
+diff --git a/tests/test_inkling_layer_c.py b/tests/test_inkling_layer_c.py
+new file mode 100644
+index 0000000..ae21655
+--- /dev/null
++++ b/tests/test_inkling_layer_c.py
+@@ -0,0 +1,450 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 SQLite Cloud, Inc.
++
++import ctypes
++import math
++import shutil
++import subprocess
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++
++import torch
++import torch.nn.functional as F
++
++REPO = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(REPO / "tests"))
++
++from test_inkling_attention_c import State as AttentionState, rmsnorm, reference_step
++from test_inkling_config_c import Args, Config
++
++FP = ctypes.POINTER(ctypes.c_float)
++
++
++class Weights(ctypes.Structure):
++    _fields_ = [
++        ("input_norm", FP),
++        ("post_attention_norm", FP),
++        ("wq", FP),
++        ("wk", FP),
++        ("wv", FP),
++        ("wr", FP),
++        ("wo", FP),
++        ("q_norm", FP),
++        ("k_norm", FP),
++        ("relative_proj", FP),
++        ("k_sconv", FP),
++        ("v_sconv", FP),
++        ("attn_sconv", FP),
++        ("mlp_sconv", FP),
++        ("sparse", ctypes.c_int),
++        ("dense_gate", FP),
++        ("dense_up", FP),
++        ("dense_down", FP),
++        ("dense_global_scale", FP),
++        ("router_weight", FP),
++        ("router_bias", FP),
++        ("router_global_scale", FP),
++        ("shared_gate", FP),
++        ("shared_up", FP),
++        ("shared_down", FP),
++        ("routed_gate", FP),
++        ("routed_up", FP),
++        ("routed_down", FP),
++    ]
++
++
++class ExpertWeights(ctypes.Structure):
++    _fields_ = [("gate", FP), ("up", FP), ("down", FP)]
++
++
++ExpertCallback = ctypes.CFUNCTYPE(
++    ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
++    ctypes.POINTER(ExpertWeights),
++)
++
++
++class LayerState(ctypes.Structure):
++    _fields_ = [
++        ("attention", AttentionState),
++        ("k_conv_state", FP),
++        ("v_conv_state", FP),
++        ("attn_conv_state", FP),
++        ("mlp_conv_state", FP),
++    ]
++
++
++class Scratch(ctypes.Structure):
++    _fields_ = [
++        (name, FP)
++        for name in (
++            "norm",
++            "q",
++            "k",
++            "v",
++            "relative",
++            "scores",
++            "attn_out",
++            "branch",
++            "gate",
++            "up",
++            "ff",
++            "router_logits",
++            "routed_weight",
++            "shared_weight",
++        )
++    ] + [
++        ("routed_index", ctypes.POINTER(ctypes.c_int)),
++        ("float_count", ctypes.c_size_t),
++        ("int_count", ctypes.c_size_t),
++    ]
++
++
++def array(tensor):
++    values = torch.as_tensor(tensor, dtype=torch.float32).contiguous().view(-1).tolist()
++    return (ctypes.c_float * len(values))(*values)
++
++
++def tensor_from_array(values, shape):
++    return torch.tensor(list(values), dtype=torch.float32).reshape(shape)
++
++
++def sconv_step(x, state, weight):
++    state[:, :-1] = state[:, 1:].clone()
++    state[:, -1] = x
++    return x + (state * weight).sum(dim=-1)
++
++
++def expert(gate_w, up_w, down_w, x):
++    return down_w @ (F.silu(gate_w @ x) * (up_w @ x))
++
++
++class InklingLayerCDifferentialTest(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cc = shutil.which("cc")
++        if not cc:
++            raise unittest.SkipTest("C compiler unavailable")
++        cls.td = tempfile.TemporaryDirectory()
++        lib_path = Path(cls.td.name) / "libinkling_layer.so"
++        subprocess.run(
++            [
++                cc,
++                "-std=c11",
++                "-Wall",
++                "-Wextra",
++                "-Werror",
++                "-shared",
++                "-fPIC",
++                f"-I{REPO / 'src'}",
++                str(REPO / "src" / "inkling_layer.c"),
++                str(REPO / "src" / "inkling_attention.c"),
++                str(REPO / "src" / "inkling_config.c"),
++                str(REPO / "src" / "inkling.c"),
++                "-lm",
++                "-o",
++                str(lib_path),
++            ],
++            check=True,
++            capture_output=True,
++        )
++        cls.lib = ctypes.CDLL(str(lib_path))
++        cls.lib.waste_inkling_config_build.argtypes = [ctypes.POINTER(Config), ctypes.POINTER(Args)]
++        cls.lib.waste_inkling_config_build.restype = ctypes.c_int
++        cls.lib.waste_inkling_layer_scratch_floats.argtypes = [
++            ctypes.POINTER(Config), ctypes.c_int, ctypes.c_int
++        ]
++        cls.lib.waste_inkling_layer_scratch_floats.restype = ctypes.c_size_t
++        cls.lib.waste_inkling_layer_scratch_ints.argtypes = [ctypes.POINTER(Config)]
++        cls.lib.waste_inkling_layer_scratch_ints.restype = ctypes.c_size_t
++        cls.lib.waste_inkling_layer_scratch_init.argtypes = [
++            ctypes.POINTER(Scratch), ctypes.POINTER(Config), ctypes.c_int, ctypes.c_int,
++            FP, ctypes.c_size_t, ctypes.POINTER(ctypes.c_int), ctypes.c_size_t,
++        ]
++        cls.lib.waste_inkling_layer_scratch_init.restype = ctypes.c_int
++        cls.lib.waste_inkling_layer_state_init.argtypes = [
++            ctypes.POINTER(LayerState), ctypes.POINTER(Config), ctypes.c_int, ctypes.c_int,
++            FP, FP, FP, FP, FP, FP,
++        ]
++        cls.lib.waste_inkling_layer_state_init.restype = ctypes.c_int
++        cls.lib.waste_inkling_layer_step.argtypes = [
++            ctypes.POINTER(Config), ctypes.c_int, ctypes.POINTER(Weights),
++            ctypes.POINTER(LayerState), FP, ctypes.c_int, ctypes.POINTER(Scratch),
++            ExpertCallback, ctypes.c_void_p,
++        ]
++        cls.lib.waste_inkling_layer_step.restype = ctypes.c_int
++
++    @classmethod
++    def tearDownClass(cls):
++        cls.td.cleanup()
++
++    def build_config(self):
++        local = (ctypes.c_int * 1)(0)
++        a = Args()
++        a.n_layers = 2
++        a.hidden = 8
++        a.vocab = 32
++        a.unpadded_vocab = 30
++        a.max_context = 16
++        a.global_heads = 2
++        a.global_kv_heads = 1
++        a.global_head_dim = 4
++        a.local_heads = 2
++        a.local_kv_heads = 1
++        a.local_head_dim = 4
++        a.sliding_window = 3
++        a.d_rel = 2
++        a.rel_extent = 5
++        a.conv_kernel = 3
++        a.dense_layers = 1
++        a.dense_intermediate = 12
++        a.moe_intermediate = 6
++        a.n_routed_experts = 3
++        a.top_k = 2
++        a.n_shared_experts = 1
++        a.rms_eps = 1e-6
++        a.route_scale = 2.0
++        a.logits_width_multiplier = 2.0
++        a.log_scaling_n_floor = 2
++        a.log_scaling_alpha = 0.2
++        a.local_layer_ids = local
++        a.n_local_layers = 1
++        cfg = Config()
++        self.assertEqual(self.lib.waste_inkling_config_build(ctypes.byref(cfg), ctypes.byref(a)), 0)
++        return cfg, local
++
++    def make_common(self, layer, cfg):
++        torch.manual_seed(100 + layer)
++        l = cfg.layer[layer]
++        h = cfg.hidden
++        qdim = l.num_heads * l.head_dim
++        kdim = l.num_kv_heads * l.head_dim
++        rdim = l.num_heads * cfg.d_rel
++        extent = l.relative_extent
++        k = cfg.conv_kernel
++        tensors = {
++            "input_norm": torch.rand(h) + 0.5,
++            "post_attention_norm": torch.rand(h) + 0.5,
++            "wq": torch.randn(qdim, h) * 0.15,
++            "wk": torch.randn(kdim, h) * 0.15,
++            "wv": torch.randn(kdim, h) * 0.15,
++            "wr": torch.randn(rdim, h) * 0.15,
++            "wo": torch.randn(h, qdim) * 0.15,
++            "q_norm": torch.rand(l.head_dim) + 0.5,
++            "k_norm": torch.rand(l.head_dim) + 0.5,
++            "relative_proj": torch.randn(cfg.d_rel, extent) * 0.1,
++            "k_sconv": torch.randn(kdim, k) * 0.05,
++            "v_sconv": torch.randn(kdim, k) * 0.05,
++            "attn_sconv": torch.randn(h, k) * 0.05,
++            "mlp_sconv": torch.randn(h, k) * 0.05,
++        }
++        keep = {name: array(value) for name, value in tensors.items()}
++        w = Weights()
++        for name, value in keep.items():
++            setattr(w, name, value)
++        return w, tensors, keep
++
++    def init_runtime(self, cfg, layer, capacity):
++        l = cfg.layer[layer]
++        kdim = l.num_kv_heads * l.head_dim
++        kcache = (ctypes.c_float * (capacity * kdim))()
++        vcache = (ctypes.c_float * (capacity * kdim))()
++        kconv = (ctypes.c_float * (kdim * cfg.conv_kernel))()
++        vconv = (ctypes.c_float * (kdim * cfg.conv_kernel))()
++        aconv = (ctypes.c_float * (cfg.hidden * cfg.conv_kernel))()
++        mconv = (ctypes.c_float * (cfg.hidden * cfg.conv_kernel))()
++        state = LayerState()
++        self.assertEqual(
++            self.lib.waste_inkling_layer_state_init(
++                ctypes.byref(state), ctypes.byref(cfg), layer, capacity,
++                kcache, vcache, kconv, vconv, aconv, mconv,
++            ),
++            0,
++        )
++        nf = self.lib.waste_inkling_layer_scratch_floats(ctypes.byref(cfg), layer, capacity)
++        ni = self.lib.waste_inkling_layer_scratch_ints(ctypes.byref(cfg))
++        fbuf = (ctypes.c_float * nf)()
++        ibuf = (ctypes.c_int * ni)()
++        scratch = Scratch()
++        self.assertEqual(
++            self.lib.waste_inkling_layer_scratch_init(
++                ctypes.byref(scratch), ctypes.byref(cfg), layer, capacity,
++                fbuf, nf, ibuf, ni,
++            ),
++            0,
++        )
++        return state, scratch, (kcache, vcache, kconv, vconv, aconv, mconv, fbuf, ibuf)
++
++    def reference_layer(self, cfg, layer, tensors, extra, x, position, py_state):
++        l = cfg.layer[layer]
++        norm = rmsnorm(x, tensors["input_norm"], cfg.rms_eps)
++        q = (tensors["wq"] @ norm).reshape(l.num_heads, l.head_dim)
++        k = (tensors["wk"] @ norm).reshape(l.num_kv_heads, l.head_dim)
++        v = (tensors["wv"] @ norm).reshape(l.num_kv_heads, l.head_dim)
++        rel = (tensors["wr"] @ norm).reshape(l.num_heads, cfg.d_rel)
++        k = sconv_step(k.reshape(-1), py_state["kconv"], tensors["k_sconv"]).reshape_as(k)
++        v = sconv_step(v.reshape(-1), py_state["vconv"], tensors["v_sconv"]).reshape_as(v)
++        attn = reference_step(
++            q, k, v, tensors["q_norm"], tensors["k_norm"], rel,
++            tensors["relative_proj"], position, bool(l.is_local),
++            py_state["capacity"], py_state["keys"], py_state["values"],
++            0 if l.is_local else cfg.log_scaling_n_floor,
++            cfg.log_scaling_alpha, cfg.rms_eps,
++        ).reshape(-1)
++        branch = tensors["wo"] @ attn
++        branch = sconv_step(branch, py_state["aconv"], tensors["attn_sconv"])
++        x = x + branch
++        norm = rmsnorm(x, tensors["post_attention_norm"], cfg.rms_eps)
++        if layer < cfg.dense_layers:
++            ff = extra["dense_down"] @ (
++                F.silu(extra["dense_gate"] @ norm) * (extra["dense_up"] @ norm)
++            )
++            ff = ff * extra["dense_scale"]
++        else:
++            logits = extra["router_weight"] @ norm
++            choice = logits[: cfg.n_routed_experts].sigmoid() + extra["router_bias"]
++            idx = torch.topk(choice, cfg.top_k, sorted=True).indices
++            selected = torch.cat([logits[idx], logits[cfg.n_routed_experts :]])
++            route = torch.softmax(F.logsigmoid(selected), dim=0)
++            route = route * cfg.route_scale * extra["router_scale"]
++            ff = torch.zeros(cfg.hidden)
++            for slot, expert_idx in enumerate(idx.tolist()):
++                ff += route[slot] * expert(
++                    extra["routed_gate"][expert_idx],
++                    extra["routed_up"][expert_idx],
++                    extra["routed_down"][expert_idx], norm,
++                )
++            for e in range(cfg.n_shared_experts):
++                ff += route[cfg.top_k + e] * expert(
++                    extra["shared_gate"][e], extra["shared_up"][e],
++                    extra["shared_down"][e], norm,
++                )
++        ff = sconv_step(ff, py_state["mconv"], tensors["mlp_sconv"])
++        return x + ff
++
++    def run_layer(self, layer, steps, *, use_callback=False):
++        cfg, keep_local = self.build_config()
++        capacity = cfg.sliding_window if layer == 0 else 6
++        w, tensors, keep = self.make_common(layer, cfg)
++        torch.manual_seed(500 + layer)
++        if layer < cfg.dense_layers:
++            extra = {
++                "dense_gate": torch.randn(cfg.dense_intermediate, cfg.hidden) * 0.12,
++                "dense_up": torch.randn(cfg.dense_intermediate, cfg.hidden) * 0.12,
++                "dense_down": torch.randn(cfg.hidden, cfg.dense_intermediate) * 0.12,
++                "dense_scale": torch.tensor(0.8),
++            }
++            for name in ("dense_gate", "dense_up", "dense_down"):
++                keep[name] = array(extra[name])
++                setattr(w, name, keep[name])
++            keep["dense_scale"] = array(extra["dense_scale"].reshape(1))
++            w.dense_global_scale = keep["dense_scale"]
++            w.sparse = 0
++        else:
++            total = cfg.n_routed_experts + cfg.n_shared_experts
++            extra = {
++                "router_weight": torch.randn(total, cfg.hidden) * 0.12,
++                "router_bias": torch.randn(cfg.n_routed_experts) * 0.03,
++                "router_scale": torch.tensor(0.9),
++                "shared_gate": torch.randn(cfg.n_shared_experts, cfg.moe_intermediate, cfg.hidden) * 0.12,
++                "shared_up": torch.randn(cfg.n_shared_experts, cfg.moe_intermediate, cfg.hidden) * 0.12,
++                "shared_down": torch.randn(cfg.n_shared_experts, cfg.hidden, cfg.moe_intermediate) * 0.12,
++                "routed_gate": torch.randn(cfg.n_routed_experts, cfg.moe_intermediate, cfg.hidden) * 0.12,
++                "routed_up": torch.randn(cfg.n_routed_experts, cfg.moe_intermediate, cfg.hidden) * 0.12,
++                "routed_down": torch.randn(cfg.n_routed_experts, cfg.hidden, cfg.moe_intermediate) * 0.12,
++            }
++            for name, value in extra.items():
++                keep[name] = array(value.reshape(1) if value.ndim == 0 else value)
++                field = "router_global_scale" if name == "router_scale" else name
++                setattr(w, field, keep[name])
++            w.sparse = 1
++        callback = ExpertCallback()
++        if layer >= cfg.dense_layers and use_callback:
++            gate_arr = keep["routed_gate"]
++            up_arr = keep["routed_up"]
++            down_arr = keep["routed_down"]
++            gate_stride = cfg.moe_intermediate * cfg.hidden * ctypes.sizeof(ctypes.c_float)
++            down_stride = cfg.hidden * cfg.moe_intermediate * ctypes.sizeof(ctypes.c_float)
++
++            @ExpertCallback
++            def callback(_ctx, callback_layer, expert_idx, out):
++                if callback_layer != layer or expert_idx < 0 or expert_idx >= cfg.n_routed_experts:
++                    return -1
++                out.contents.gate = ctypes.cast(ctypes.byref(gate_arr, expert_idx * gate_stride), FP)
++                out.contents.up = ctypes.cast(ctypes.byref(up_arr, expert_idx * gate_stride), FP)
++                out.contents.down = ctypes.cast(ctypes.byref(down_arr, expert_idx * down_stride), FP)
++                return 0
++
++            w.routed_gate = None
++            w.routed_up = None
++            w.routed_down = None
++
++        state, scratch, state_keep = self.init_runtime(cfg, layer, capacity)
++        l = cfg.layer[layer]
++        kdim = l.num_kv_heads * l.head_dim
++        py_state = {
++            "capacity": capacity,
++            "keys": [],
++            "values": [],
++            "kconv": torch.zeros(kdim, cfg.conv_kernel),
++            "vconv": torch.zeros(kdim, cfg.conv_kernel),
++            "aconv": torch.zeros(cfg.hidden, cfg.conv_kernel),
++            "mconv": torch.zeros(cfg.hidden, cfg.conv_kernel),
++        }
++        for position in range(steps):
++            x = torch.randn(cfg.hidden)
++            want = self.reference_layer(cfg, layer, tensors, extra, x.clone(), position, py_state)
++            x_c = array(x)
++            rc = self.lib.waste_inkling_layer_step(
++                ctypes.byref(cfg), layer, ctypes.byref(w), ctypes.byref(state),
++                x_c, position, ctypes.byref(scratch), callback, None,
++            )
++            self.assertEqual(rc, 0)
++            got = tensor_from_array(x_c, [cfg.hidden])
++            torch.testing.assert_close(got, want, rtol=2e-4, atol=2e-4)
++        self.assertIsNotNone((keep_local, keep, state_keep))
++
++    def test_dense_local_layer_matches_torch(self):
++        self.run_layer(0, 7)
++
++    def test_sparse_global_layer_matches_torch(self):
++        self.run_layer(1, 6)
++
++    def test_sparse_expert_callback_matches_resident_path_reference(self):
++        self.run_layer(1, 6, use_callback=True)
++
++    def test_layer_kind_mismatch_fails_closed(self):
++        cfg, keep_local = self.build_config()
++        layer = 0
++        w, _tensors, keep = self.make_common(layer, cfg)
++        total = cfg.n_routed_experts + cfg.n_shared_experts
++        torch.manual_seed(999)
++        values = {
++            "router_weight": torch.randn(total, cfg.hidden) * 0.1,
++            "router_bias": torch.zeros(cfg.n_routed_experts),
++            "router_global_scale": torch.ones(1),
++            "shared_gate": torch.randn(cfg.n_shared_experts, cfg.moe_intermediate, cfg.hidden) * 0.1,
++            "shared_up": torch.randn(cfg.n_shared_experts, cfg.moe_intermediate, cfg.hidden) * 0.1,
++            "shared_down": torch.randn(cfg.n_shared_experts, cfg.hidden, cfg.moe_intermediate) * 0.1,
++            "routed_gate": torch.randn(cfg.n_routed_experts, cfg.moe_intermediate, cfg.hidden) * 0.1,
++            "routed_up": torch.randn(cfg.n_routed_experts, cfg.moe_intermediate, cfg.hidden) * 0.1,
++            "routed_down": torch.randn(cfg.n_routed_experts, cfg.hidden, cfg.moe_intermediate) * 0.1,
++        }
++        for name, value in values.items():
++            keep[name] = array(value)
++            setattr(w, name, keep[name])
++        w.sparse = 1  # layer 0 is configured dense
++        state, scratch, state_keep = self.init_runtime(cfg, layer, cfg.sliding_window)
++        x = array(torch.randn(cfg.hidden))
++        rc = self.lib.waste_inkling_layer_step(
++            ctypes.byref(cfg), layer, ctypes.byref(w), ctypes.byref(state),
++            x, 0, ctypes.byref(scratch), ExpertCallback(), None,
++        )
++        self.assertNotEqual(rc, 0)
++        self.assertIsNotNone((keep_local, keep, state_keep))
++
++
++if __name__ == "__main__":
++    unittest.main()

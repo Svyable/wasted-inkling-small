@@ -1,5 +1,7 @@
 # WASTE Inkling-Small Patch Bundle
 
+**Frontier model. Laptop-shaped RAM budget. An SSD about to earn its keep.**
+
 This repository contains the **Patch 16 handoff bundle** for experimental
 Inkling-Small support in WASTE. It combines an ordered patch series, an applied
 source snapshot, conversion and parity tools, tests, and technical notes for the
@@ -11,6 +13,12 @@ released `thinkingmachines/Inkling-Small` checkpoint.
 > tests, but public loader integration, tokenizer/chat execution, and official
 > 532 GB checkpoint parity remain completion gates.
 
+The finish line is intentionally boring in the best possible way: Inkling-Small
+should become a normal WASTE container that works through `waste plan`,
+`waste run`, `waste chat`, and the existing OpenAI-compatible server. No special
+Inkling-only executable, mystery memory budget, or "works on my 532 GB model"
+energy.
+
 ## Start here
 
 The project lives in [`waste-inkling-patch-v16/`](waste-inkling-patch-v16/).
@@ -18,6 +26,7 @@ The project lives in [`waste-inkling-patch-v16/`](waste-inkling-patch-v16/).
 | Document | Purpose |
 | --- | --- |
 | [Inkling implementation notes](waste-inkling-patch-v16/docs/INKLING.md) | Architecture, formats, converter pipeline, correctness evidence, and remaining gates |
+| [Upstream alignment](waste-inkling-patch-v16/docs/UPSTREAM-ALIGNMENT.md) | Comparison with `sqliteai/waste` v0.6.2 and the production integration gates |
 | [Patch 16 handoff](waste-inkling-patch-v16/PATCH16-HANDOFF.md) | Activation-tracing APIs and the Python-vs-C comparison workflow |
 | [Known errata](waste-inkling-patch-v16/KNOWN-ERRATA.md) | Superseded provenance claims and mandatory patch guidance |
 | [Patch 16 test results](waste-inkling-patch-v16/TEST-RESULTS-P16.txt) | Recorded Python and strict C validation results |
@@ -58,7 +67,35 @@ Still gated:
 - native Windows validation and measured conversion/runtime performance.
 
 The bundle records **99 passing Python tests** and strict C11 compilation for the
-traced runtime sources. Those results do not constitute official-weight parity.
+traced runtime sources. This upstream-alignment round adds four model-free unit
+tests for the baseline checker. None of those results constitutes official-weight
+parity.
+
+## Upstream foundation
+
+This bundle is now compared against
+[`sqliteai/waste` at `c7cb640`](https://github.com/sqliteai/waste/commit/c7cb64022963871506908317a661338f1794f70e),
+which identifies itself as WASTE 0.6.2 with public API version 1 and container
+format version 0.
+
+The overlap is promising: both sides use 4 KiB-aligned WEXP expert records,
+WCBK codebooks, Q8/Q4 trunk formats, bounded reads, resumable conversion, and
+oracle-based validation. The important gap is architectural: this bundle still
+publishes a private `runtime-stage.bin` and executes a parallel private runtime,
+while upstream serves normal `.waste` containers through `waste_open`, the hard
+RAM planner, LFRU expert cache, tokenizer, CLI, and server.
+
+Check a local upstream checkout before rebasing or adding integration patches:
+
+```sh
+cd waste-inkling-patch-v16
+python tools/check_waste_baseline.py /path/to/sqliteai-waste
+```
+
+The checker fails when the public API, container format, alignment contract, key
+symbols, or expected production seams are missing. A newer upstream version is
+reported as a warning so it triggers a human comparison instead of quietly
+becoming "probably fine."
 
 ## Requirements
 
@@ -148,6 +185,12 @@ If you are integrating this work into its target WASTE source tree, apply all
 patches from 0001 through 0016 in numeric order. Patch 10 contains the provenance
 correction for the released Inkling-Small package and must not be skipped. Review
 the handoff notes and checksums before applying the series.
+
+For new production work, prefer a refreshed patch stack based on the pinned
+upstream commit over extending the parallel private loader. The private runtime
+remains valuable as an independent parity oracle; it should not become a second
+public engine that has to rediscover WASTE's cache, budget, platform, and serving
+lessons the expensive way.
 
 ## License and attribution
 

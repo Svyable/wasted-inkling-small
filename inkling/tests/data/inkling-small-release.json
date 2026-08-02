@@ -1,0 +1,10 @@
+{
+  "model_id": "thinkingmachines/Inkling-Small",
+  "license": "apache-2.0",
+  "release_upload_commit": "21152b5",
+  "checkpoint_total_size": 531912898740,
+  "checkpoint_shards": 32,
+  "model_card_total_parameters_b": 276,
+  "model_card_active_parameters_b": 12,
+  "source": "official Hugging Face release, verified 2026-08-01"
+}

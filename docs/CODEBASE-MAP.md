@@ -14,19 +14,35 @@ Sizes and relationships were measured on the applied v18 tree
 
 # Part I — The map
 
-## 0. Where the code lives right now
+## 0. Where the code lives
 
-The source of truth is **the patch**, not any directory in this repository:
+**R1 is done.** The source of truth is now a tree of files, and the patch is a
+build product:
 
 ```
-waste-inkling-patch-v18/patches/0018-…patch   ← authoritative (15,824 lines)
-waste-inkling-patch-v17/patches/0017-…patch   ← WASTE 0.6.2 provenance
-waste-inkling-patch-v16/src, tools, tests     ← readable SNAPSHOT, not authoritative
-waste-inkling-patch-v16/docs, KNOWN-ERRATA.md ← only copy of the design notes
+inkling/src, tools, tests, docs           ← AUTHORITATIVE. Edit these.
+integration/waste/overlay/*.diff          ← the five upstream edits, 193 lines
+integration/waste/{baseline.env,generate.sh,verify.sh}
+dist/waste-inkling-6931570/               ← GENERATED. Never edit.
+
+waste-inkling-patch-v18/                  ← frozen provenance (WASTE 0.6.3)
+waste-inkling-patch-v17/                  ← frozen provenance (WASTE 0.6.2)
+waste-inkling-patch-v16/                  ← frozen provenance + historical notes
 ```
 
-Applying v18 to upstream `6931570` produces the real tree. The map below
-describes that tree. Paths are given as they appear *after* the patch applies.
+`integration/waste/generate.sh` clones the pinned upstream, copies `inkling/`
+over it, applies the overlay fragments, and commits; `verify.sh` refuses to
+continue unless the resulting tree hash matches `EXPECTED_APPLIED_TREE`.
+
+The extraction was proved by reproducing the reviewed v18 tree
+(`ce6c5272e801c651cc6b71f869a1b0cd7167dab5`) byte-for-byte *before* any source
+changed. The generator pins the commit date and suppresses the Git-version
+signature, so repeated runs match; the gate that matters is the applied tree
+hash, which no toolchain difference can move.
+
+The map below describes the generated tree. Paths are given as they appear
+there — `src/inkling_layer.c` in the applied tree is `inkling/src/inkling_layer.c`
+in this repository.
 
 ## 1. Layering
 
@@ -230,6 +246,7 @@ resident bytes and canonical F32 resident bytes separately.
 | `inkling_vq.py` | 927 | official BF16 experts → final `WEXP`/`WCBK` directly, optional `libwastevq` for the encode |
 | `inkling_runtime_stage.py` | 748 | verify everything, publish `runtime-stage.bin` atomically |
 | `inkling_parity.py` | 416 | bounded fixture extraction + CRC-protected activation archives + comparison |
+| `inkling_fixture.py` | 268 | **dependency-free** fixture reader: CRC verification, axis-0 expert slices, BF16/F16/F32 → F32 decode, module-relative state-dict keys, fail-closed coverage checks |
 | `inkling_trace.py` | 147 | C side of the trace protocol |
 | `inkling_reference.py` | 163 | official Transformers side of the trace protocol |
 | `convert_inkling.py` | 306 | the CLI that drives all of the above |
@@ -265,87 +282,100 @@ That last line is a gap, not a complaint — see the refactor's CI tier below.
 
 # Part II — The refactor
 
-## 5. What is actually wrong
+## 5. What was wrong, and what is left
 
-Nothing in the C. Four things in the packaging:
+Nothing in the C. Four things in the packaging — two now fixed:
 
-1. **The source of truth is a diff.** To change one line of
-   `inkling_stage_reader.c` you must edit inside a 15,824-line patch file, or
-   regenerate it, and the readable copy under `waste-inkling-patch-v16/src`
-   silently does not participate. Contributors cannot open a pull request
-   against a patch hunk.
-2. **Provenance is duplicated, not derived.** v17 and v18 differ by an
-   upstream rebase, but each carries a full copy of every Inkling source. The
-   repository is ~32,000 lines of near-identical patch text.
-3. **Only 4 of 20 Python test files run anywhere.** The 99-test evidence is a
-   historical claim with no job behind it.
+1. ~~**The source of truth is a diff.**~~ **Fixed (R1).** `inkling/` is the
+   source of truth; the patch is generated from it and the tree hash is the
+   proof.
+2. **Provenance is duplicated, not derived.** v16-v18 each carry a full copy of
+   every Inkling source. They are kept as frozen provenance, so the duplication
+   is now bounded rather than growing: the next upstream rebase adds a
+   `baseline.env` edit, not another 16,000-line patch.
+3. ~~**Only 4 of 20 Python test files run anywhere.**~~ **Fixed (R4, partly).**
+   A `differential` CI job installs torch and runs the complete suite. The 99
+   tests were confirmed to pass on 2026-08-02 — the first time this repository
+   ran rather than quoted them — and are now 140 with the fixture reader.
 4. **The public seam is described in prose in five documents** and implemented
-   in 38 lines. The prose is where it drifts.
+   in 38 lines. The prose is where it drifts. Still true; R5 is where it stops
+   mattering.
 
-## 6. Target layout
+## 6. Layout as built
 
 ```
 inkling/                     ← THE source of truth; plain C, plain Python
   src/            arch.[ch], inkling*.[ch]        (11 TUs, 3,782 lines)
-  tools/          the 14 Python tools
-  tests/          test_inkling.c + the 20 Python test files
-  docs/           INKLING.md, ERRATA.md, FORMATS.md (IKTN/IKBF/Q8G/Q4G specs)
+  tools/          the 15 Python tools
+  tests/          test_inkling.c + 21 Python test files + tests/data
+  docs/           INKLING.md
 
 integration/waste/
-  baseline.env    UPSTREAM_REPOSITORY / COMMIT / TREE / VERSION / API / FORMAT
-  overlay/        the ONLY upstream edits, as anchored fragments:
-                    Makefile.fragment      sources + test_inkling
-                    model.c.guard          the loader guard, with its anchor
-                    waste.c.guard          the plan guard, with its anchor
-                    run.sh.fragment        the two Inkling checks
-                    convert.py.guard       refuse Inkling before the Kimi path
-  apply.sh        clone → checkout pinned commit → copy inkling/ → apply overlay
-  generate.sh     apply.sh → git commit → git format-patch → checksum → BASELINE
-  verify.sh       generate.sh → compare tree hash → make check → asan → fuzz
+  baseline.env    upstream pin, expected tree, generated-commit identity/date
+  overlay/        the ONLY upstream edits, five diffs totalling 193 lines:
+                    Makefile.diff          sources + test_inkling
+                    src_model.c.diff       the loader guard
+                    src_waste.c.diff       the plan guard
+                    tests_run.sh.diff      the two Inkling checks
+                    tools_convert.py.diff  refuse Inkling before the Kimi path
+  tree-extras/    files the bundle places at the upstream root
+  generate.sh     clone → checkout pin → copy inkling/ → overlay → commit → patch
+  verify.sh       generate.sh → tree hash → -Werror compile → make check
 
 dist/
-  waste-inkling-<upstream-short>/    GENERATED, committed for consumers:
+  waste-inkling-6931570/    GENERATED, committed for consumers:
     patches/0001-…patch, BASELINE, SHA256SUMS, TEST-RESULTS.txt, README.md
 
 docs/             STATE-OF-THE-PORT.md, CODEBASE-MAP.md, ROADMAP-V19.md
 ```
 
-The insight that makes this cheap: measured on v18, the port modifies **5
+The insight that made this cheap: measured on v18, the port modifies **5
 upstream files by +84/−7 lines** and adds **62 new files**. The 62 are a
-directory copy. The 84 lines are five anchored fragments. A patch that large
-does not need to be authored by hand — it needs to be *generated*, and then
-its tree hash pinned, which is exactly what CI already checks.
+directory copy. The 84 lines are five diffs. A patch that large does not need
+to be authored by hand — it needs to be generated and its tree hash pinned,
+which is exactly what CI already checked.
+
+Two implementation notes worth keeping, because both cost a debugging cycle:
+
+- `git add -A` **silently drops** `tests/data/*.json`, because upstream's
+  `.gitignore` lists `data/`. `git am` never consulted `.gitignore`, so the
+  generator must use `--force` or the generated tree quietly loses two files.
+- `format-patch` embeds **the commit date and the local Git version**. The
+  date is pinned by `PATCH_DATE`; the version is suppressed with
+  `--no-signature`. Both were found the hard way — the second by CI, on a
+  runner with Git 2.54.0 against a committer on 2.43.0, failing a byte
+  comparison with nothing actually stale.
+- Which is the deeper lesson: **compare trees, not patches.** A patch file is a
+  rendering, and renderings have toolchain in them. The applied tree hash is
+  content-addressed, is what consumers depend on, and is what the CI staleness
+  gate now checks by running `git am` on the committed bundle.
 
 ## 7. Migration, in order, each step green before the next
 
-**R1 — Extract without changing bytes.**
-Apply v18 to the pinned upstream, copy the 62 new files into `inkling/`,
-capture the 5 diffs as overlay fragments, write `generate.sh`. Success
-criterion: the generated patch produces tree
-`ce6c5272e801c651cc6b71f869a1b0cd7167dab5`, byte-identical to today's. No
-source edits allowed in this step — if the tree hash moves, the extraction is
-wrong.
+**R1 — Extract without changing bytes. ✅ done.**
+The generated patch reproduced tree
+`ce6c5272e801c651cc6b71f869a1b0cd7167dab5` byte-for-byte from `inkling/` plus
+the overlay, with no source edits, before anything else was allowed to change.
 
-**R2 — Make the bundle generated.**
-Move `waste-inkling-patch-v18/` to `dist/waste-inkling-6931570/`, produced by
-`generate.sh`. Keep v16 and v17 exactly where they are, as frozen provenance,
-and say so in one line in each README. Deleting them costs the audit trail and
-buys nothing.
+**R2 — Make the bundle generated. ✅ done.**
+`dist/waste-inkling-6931570/` is produced by `generate.sh` and checked by CI
+against a fresh regeneration, so a stale `dist/` cannot ship unreviewed code.
+`waste-inkling-patch-v16` through `-v18` stay exactly where they are as frozen
+provenance; deleting them would cost the audit trail and buy nothing.
 
-**R3 — Rebasing becomes a one-line change.**
-The next upstream release is `baseline.env` plus whatever anchors moved.
-Retire `PATCH18-HANDOFF.md`-style conflict narration in favor of the overlay
-fragments, which *are* the conflict resolution, in executable form.
+**R3 — Rebasing becomes a one-line change.** ⬜
+The next upstream release is a `baseline.env` edit plus whichever overlay
+fragment stopped applying. `generate.sh` names the failing fragment and exits;
+that message replaces `PATCH18-HANDOFF.md`-style conflict narration, because
+the fragments *are* the conflict resolution, in executable form.
 
-**R4 — Tier the CI.**
-- *fast* (every PR): generate → tree hash → `make check` → strict `-Werror`
-  compile → the 17 dependency-light Python tests. This is today's job, minus
-  the clone-and-hope.
-- *deep* (nightly / label): `make asan`, `make fuzz-asan`, and — the missing
-  tier — the torch-dependent differential suite, so the 99 tests stop being
-  folklore.
+**R4 — Tier the CI. ✅ mostly done.**
+- *fast* (every PR): generate → tree hash → `-Werror` compile → `make check` →
+  regenerated-bundle comparison → the dependency-light Python tests.
+- *deep* (same workflow, separate jobs): `make asan`, `make fuzz-asan`, and the
+  torch differential suite — so the 99 tests stopped being folklore.
 - *weights* (manual, self-hosted): the parity gates from
-  [ROADMAP-V19.md](ROADMAP-V19.md).
+  [ROADMAP-V19.md](ROADMAP-V19.md). Still to build.
 
 **R5 — Promote the seam last.**
 Only after G1–G4 in the roadmap: `arch.c` grows a dispatch,

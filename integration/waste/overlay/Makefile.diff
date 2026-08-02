@@ -1,0 +1,37 @@
+diff --git a/Makefile b/Makefile
+index a70fe0c..3ee9ee6 100644
+--- a/Makefile
++++ b/Makefile
+@@ -89,9 +89,12 @@ CFLAGS  += -DVQ_SUPER=$(VQ_SUPER)
+ # and then corrupts memory at run time.
+ CFLAGS  += -MMD -MP
+ 
+-SRC := src/model.c src/kda.c src/backend.c src/ecache.c src/version.c \
+-       src/tokenizer.c src/waste.c src/vq.c src/vision.c src/image.c \
+-       src/crc32.c src/memory.c
++SRC := src/model.c src/arch.c src/inkling.c src/inkling_config.c \
++       src/inkling_attention.c src/inkling_layer.c src/inkling_model.c \
++       src/inkling_bind.c src/inkling_stage_reader.c src/inkling_wexp.c \
++       src/inkling_qtensor.c src/inkling_private.c src/kda.c src/backend.c \
++       src/ecache.c src/version.c src/tokenizer.c src/waste.c src/vq.c \
++       src/vision.c src/image.c src/crc32.c src/memory.c
+ # Match what backend.c tests for. Linux/aarch64 reports "aarch64", which
+ # does not contain "arm" — the old findstring left kda_neon.c out of the
+ # build while backend.c still emitted the call to it, so the link failed
+@@ -216,12 +219,14 @@ waste$(EXE): cli/main.o libwaste.a
+ # One list, used by both `test` and `clean`. A stale test binary is one of
+ # the two failures tests/run.sh was written to catch, so a binary that
+ # `test` builds and `clean` forgets defeats the check meant to notice it.
+-TESTNAMES := test_kda test_container test_forward test_tokenizer test_k3parts \
+-             test_state test_vision test_image test_memory sweep
++TESTNAMES := test_inkling test_kda test_container test_forward test_tokenizer \
++             test_k3parts test_state test_vision test_image test_memory sweep
+ TESTBINS  := $(addsuffix $(EXE),$(TESTNAMES))
+ 
+ test: $(TESTBINS)
+ 
++test_inkling$(EXE): tests/test_inkling.o libwaste.a
++	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+ test_kda$(EXE): tests/test_kda.o libwaste.a
+ 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+ # Every link rule passes LDLIBS, including the one target that does not

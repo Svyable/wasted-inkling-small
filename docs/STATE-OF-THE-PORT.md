@@ -41,10 +41,14 @@ The port is **healthy, current, and deliberately inert**.
 Reproduced without adjustment, which means the v18 bundle's recorded evidence
 is real and the CI workflow is not the only thing holding it up.
 
-Not re-run here (inherited from `TEST-RESULTS-P18.txt`, previously green in
-CI): `make asan` (28/0/14), `make fuzz-asan FUZZ_RUNS=200` (200 cases, 0
-crashes), the 11-unit `-Werror` strict compile, and the 99 private-runtime
-Python tests recorded by v16.
+**Update, same day:** everything that was inherited has since been re-run in
+this environment against the generated tree. `make asan` 28/0/14, `make
+fuzz-asan FUZZ_RUNS=200` (200 cases, 137 rejected, 63 loaded, 0 crashed, 0
+hung), the 11-unit `-Werror` compile, and — for the first time in this
+repository — the complete Inkling Python suite: **140 tests, 0 failures**. The
+v16 bundle's 99-test claim is confirmed (81 + 18, all passing); the remaining
+41 are the new fixture-reader tests. See
+`dist/waste-inkling-6931570/TEST-RESULTS.txt`.
 
 ## 3. What exists, by weight
 
@@ -105,9 +109,19 @@ ceilings, hash-bound to `config.json` and the safetensors index. Nothing
 consumes that fixture on the reference side.
 
 So the first enhancement is not more runtime code. It is a fixture-backed
-reference mode, so BF16 layerwise parity becomes a laptop-scale experiment
+reference path, so BF16 layerwise parity becomes a laptop-scale experiment
 instead of a datacenter reservation. This is the single highest-leverage item
 in the repository and it is a few hundred lines of Python.
+
+**Status:** `tools/inkling_fixture.py` now closes the consumer half — loading,
+CRC verification, axis-0 expert slices, torch-free BF16/F16/F32 decode, and
+module-relative state-dict keys, with 41 dependency-light tests. What remains
+is the official-side module construction, which needs `transformers` with
+Inkling support present and must be written on a machine that has it. See
+[ROADMAP-V19.md](ROADMAP-V19.md) G0, including a correction: the layer-scoped
+*partial whole-model index* originally sketched there cannot work, because
+layer *N* depends on layers *0..N-1*. Layer-level parity is the right shape and
+needs no C change.
 
 ### 5.2 There is no C-side path from the released checkpoint (expensive, deferred)
 
@@ -139,23 +153,24 @@ and should stay downstream of parity.
   model quality. The documents say so, but a reader skimming "29 passed" can
   miss it. Any future README should keep the synthetic/official distinction
   above the fold.
-- **The v16 bundle is load-bearing.** It holds the only copy of the design
-  docs, errata, and 99-test evidence, but the sources in it are a *snapshot*,
-  not the source of truth — the patch is. Editing `waste-inkling-patch-v16/src`
-  changes nothing that CI validates. This is the main structural defect that
-  the refactor in [CODEBASE-MAP.md](CODEBASE-MAP.md) exists to remove.
-- **Patch-shaped review.** A 15,824-line patch file is not reviewable by the
-  open-source community, and "amaze the community" requires review to be
-  possible. Same fix.
+- ~~**The v16 bundle is load-bearing.**~~ **Resolved.** `inkling/` is now the
+  source of truth and CI regenerates the patch from it; the v16-v18 bundles are
+  frozen provenance. See [CODEBASE-MAP.md](CODEBASE-MAP.md) R1/R2.
+- ~~**Patch-shaped review.**~~ **Resolved.** A contributor edits
+  `inkling/src/*.c` and sends a diff of that file.
+  *(Both are struck through rather than deleted. The original wording — a
+  15,824-line patch is not reviewable, and review has to be possible before any
+  community can engage with the work — is the reason the refactor happened.)*
 - **Windows is entirely unclaimed.** The reader has `ReadFile`/`OVERLAPPED`
   paths that have never been compiled by MinGW in CI, let alone run.
 
 ## 7. Verdict
 
-The foundation is sound and current; the ceremony around it is heavier than
-the code it protects. The next enhancement is not a new subsystem — it is
-closing the parity loop on real weights, and restructuring the repository so
-the community can read the C instead of a diff.
+The foundation is sound and current; the ceremony around it was heavier than
+the code it protected. That is now fixed: the C is readable as C, the patch is
+a build product, and the differential suite runs instead of being quoted. The
+next enhancement is not a new subsystem — it is closing the parity loop on real
+weights.
 
 - Path to open-weight execution: [ROADMAP-V19.md](ROADMAP-V19.md)
 - Structure and refactor: [CODEBASE-MAP.md](CODEBASE-MAP.md)

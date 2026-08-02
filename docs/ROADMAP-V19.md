@@ -39,39 +39,64 @@ layers, explicitly selected axis-0 routed-expert slices, per-tensor and total
 byte ceilings, `fixture.json` published last and bound to SHA-256 hashes of
 `config.json` and the safetensors index — and nothing consumes it.
 
-**Do.** Add a fixture-backed reference mode: construct the official
-`InklingDecoderLayer` modules for the fixture's layers only, load the fixture
-tensors into them, and drive the same hooks that `register_reference_hooks()`
-already installs. Same archive names, same CRC records, same comparator.
+### Correction to this gate's first design
+
+The original sketch called for a **layer-scoped partial `runtime-stage.bin`**,
+with a header flag letting `inkling_private.c` accept a subset of layers for
+tracing. That does not survive contact with the code: layer *N*'s activations
+depend on layers *0..N-1*, so a whole-model index holding three of 42 layers
+cannot execute anything, flag or no flag. There is nothing to trace.
+
+Layer-level parity is the correct shape, and it needs **no index change and no
+C change at all**. Feed the *same* input hidden state to layer *N* on both
+sides and compare outputs — which is exactly what `tests/test_inkling_layer_c.py`
+already does against PyTorch, only with synthetic weights instead of official
+ones. The fixture supplies the weights; the harness supplies the input.
+
+### Status
+
+- ✅ **`tools/inkling_fixture.py`** — the consumer that was missing. Loads and
+  CRC-verifies a fixture, addresses expert slices by axis-0 index, decodes
+  BF16/F16/F32 to F32 without torch, maps a layer's entries to
+  module-relative state-dict keys, and refuses — by name — any layer or expert
+  the fixture does not cover. 41 tests, dependency-light, in CI. The BF16 and
+  F16 widening is checked bit-for-bit against torch where torch is available.
+- ⬜ **Official-side module construction.** Instantiate the official decoder
+  layer for one fixture layer, load `layer_state_dict_entries()` into it, and
+  drive the existing `register_reference_hooks()`. This is the one piece that
+  needs `transformers` with Inkling support present, so it must be written and
+  first run on a machine that has it — writing it blind would produce exactly
+  the plausible-but-unverified code this port exists to avoid.
+- ⬜ **C-side layer harness.** Bind fixture weights through
+  `waste_inkling_bind_weights()` and run `waste_inkling_layer_forward_trace()`
+  over the same input, writing the same archive names.
 
 ```sh
 # once, on a machine with the checkpoint mounted (streaming read, ~8 GiB written)
 python tools/inkling_parity.py --src /models/Inkling-Small \
-  --out /parity/fixture-L0-L2 --layers 0,1,2 \
-  --experts "2:4,17,39,88,143,221" --max-total-gib 8
+  --out /parity/fixture-L0-L2-L5 --layers 0,2,5 \
+  --experts "2:4,17,39,88,143,221;5:1,8,22,64,150,201" --max-total-gib 8
 
-# thereafter, on a laptop
-python tools/inkling_reference.py --fixture /parity/fixture-L0-L2 \
-  --tokens 1,2,3,4,5,6,7,8 --layers 0,1,2 --out /parity/python
-python tools/inkling_trace.py --stage /stage --tokens 1,2,3,4,5,6,7,8 \
-  --layers 0,1,2 --out /parity/waste
+# check what you got, on any machine, with no dependencies
+python tools/inkling_fixture.py --fixture /parity/fixture-L0-L2-L5 --verify
+
+# then, on a laptop
+python tools/inkling_reference.py --fixture /parity/fixture-L0-L2-L5 \
+  --layers 0,2,5 --input /parity/inputs.bin --out /parity/python
+python tools/inkling_trace.py --fixture /parity/fixture-L0-L2-L5 \
+  --layers 0,2,5 --input /parity/inputs.bin --out /parity/waste
 python tools/inkling_parity.py --compare-reference /parity/python \
   --compare-candidate /parity/waste --atol 1e-5 --rtol 1e-5 \
   --report /parity/report.json
 ```
 
-**Also needed at G0**, because the C side has the mirror-image problem: a
-fixture-scoped `runtime-stage.bin`. Staging three layers and six experts per
-layer should not require the full trunk. Add `--layers` scoping to
-`publish_runtime_vq_stage()` and a header flag marking the index *partial*, so
-`inkling_private.c` accepts a subset for tracing and refuses it for inference.
+**Done when.** Both archives for layers 0, 2, and 5 are produced on a machine
+with < 64 GB RAM and a comparison report exists, whatever it says.
 
-**Done when.** Both archives for layers 0-2 are produced on a machine with
-< 64 GB RAM and a comparison report exists, whatever it says.
-
-**Cost.** A few hundred lines of Python, no C changes. This is the highest
--leverage item in the repository: every gate below is blocked on it, and none
-of them is blocked on anything else.
+**Cost.** The remaining two pieces are a few hundred lines of Python between
+them, and still no C changes. This is the highest-leverage item in the
+repository: every gate below is blocked on it, and none of them is blocked on
+anything else.
 
 ---
 
@@ -256,7 +281,7 @@ and is the best parallel track for a second contributor.
 
 | Gate | Status | Evidence |
 | --- | --- | --- |
-| G0 fixture parity | not started | — |
+| G0 fixture parity | **in progress** — reader landed, both harness sides remain | `tools/inkling_fixture.py`, 41 tests in CI |
 | G1 BF16 parity | not started | — |
 | G2 quantized tolerance | not started | — |
 | G3 conversion measurement | not started | — |

@@ -1,0 +1,46 @@
+diff --git a/tests/run.sh b/tests/run.sh
+index a644b0a..c1d8c73 100755
+--- a/tests/run.sh
++++ b/tests/run.sh
+@@ -53,6 +53,12 @@ else
+     exit 1
+ fi
+ 
++if ./test_inkling 2>/dev/null | grep -q "^INKLING OK"; then
++    ok "Inkling architecture seam and scalar runtime primitives"
++else
++    no "Inkling architecture seam and scalar runtime primitives"
++fi
++
+ # ---------------------------------------------------------------- unit ----
+ head_ "kernels vs the reference implementations"
+ 
+@@ -770,6 +776,28 @@ PYFV
+         no "format_version not enforced (rc=$rc rc2=$rc2)"
+     fi
+ 
++    # Inkling dimensions overlap enough with Kimi's to yield plausible but
++    # invalid plans. The rebased seam must win before Kimi memory planning,
++    # public opening, or direct internal model loading.
++    IA=$(mktemp -d)
++    python3 - "$MODEL/manifest.json" "$IA/manifest.json" <<'PYIA'
++import json, sys
++m = json.load(open(sys.argv[1])); m["arch"] = "Inkling-Small"
++json.dump(m, open(sys.argv[2], "w"))
++PYIA
++    plan_out=$(./waste plan "$IA" 2>&1); plan_rc=$?
++    info_out=$(./waste info "$IA" 2>&1); info_rc=$?
++    load_out=$(./test_forward "$IA" 3 "$TMP/inkling.bin" 0 2>&1); load_rc=$?
++    rm -rf "$IA"
++    if [ "$plan_rc" -ne 0 ] && [ "$info_rc" -ne 0 ] && [ "$load_rc" -ne 0 ] &&
++       printf '%s' "$plan_out" | grep -q "unsupported" &&
++       printf '%s' "$info_out" | grep -q "unsupported" &&
++       printf '%s' "$load_out" | grep -q "no integrated public Inkling"; then
++        ok "Inkling is recognized before Kimi planning or loading"
++    else
++        no "Inkling architecture seam (plan=$plan_rc info=$info_rc load=$load_rc)"
++    fi
++
+     if [ -n "${WASTE_SANITIZED:-}" ]; then
+         sk "peak RSS inside the budget" "sanitizer shadow memory makes RSS meaningless"
+     elif [ "$SYNTHETIC" = 1 ]; then

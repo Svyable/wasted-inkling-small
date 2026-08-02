@@ -1,0 +1,32 @@
+diff --git a/tools/convert.py b/tools/convert.py
+index e156a81..74ddd16 100644
+--- a/tools/convert.py
++++ b/tools/convert.py
+@@ -72,6 +72,7 @@ def atomic_text(path, value):
+ 
+ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+ from mxfp4 import ST                                            # noqa: E402
++from inkling_source import config_identifies_inkling            # noqa: E402
+ 
+ # --- native VQ encoder (optional; ~15x the torch path) --------------------
+ _VQ = None
+@@ -472,8 +473,18 @@ def main():
+     os.environ.setdefault("OMP_NUM_THREADS", str(per))
+     os.environ.setdefault("MKL_NUM_THREADS", str(per))
+ 
++    source_cfg = json.load(open(os.path.join(args.src, "config.json")))
++    if config_identifies_inkling(source_cfg):
++        print(
++            "convert: Inkling checkpoint detected; refusing the Kimi conversion "
++            "path because nested text_config is not an architecture identifier.",
++            file=sys.stderr,
++        )
++        print("run tools/inspect_inkling.py --src " + args.src, file=sys.stderr)
++        return 2
++
+     os.makedirs(args.out, exist_ok=True)
+-    cfg = json.load(open(os.path.join(args.src, "config.json")))
++    cfg = source_cfg
+     prefix = ""
+     if "text_config" in cfg:                     # K3 nests the text model
+         cfg = {**cfg["text_config"], "_outer": {k: v for k, v in cfg.items()

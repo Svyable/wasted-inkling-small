@@ -1,0 +1,87 @@
+Generated bundle validation
+===========================
+
+Date: 2026-08-02
+Host: Linux x86_64, 16 GB usable RAM
+Compiler: GCC / cc
+Python: 3.11.15, torch 2.13.0, numpy 2.4.6
+Upstream: sqliteai/waste@69315701f634648f7a790915a0a525ed8aabf218
+WASTE: 0.6.3; API 1; format 0
+
+Every result below was produced in this environment on the date above. None of
+it is quoted from an earlier bundle. The official 532 GB checkpoint was not
+present, so nothing here is official-weight parity.
+
+GENERATION
+----------
+PASS  integration/waste/generate.sh reproduces the reviewed v18 tree
+      Result: ce6c5272e801c651cc6b71f869a1b0cd7167dab5, byte-identical to the
+      tree produced by `git am` of waste-inkling-patch-v18. Established before
+      any source change, as the correctness check on the extraction itself.
+
+PASS  integration/waste/generate.sh is deterministic on a fixed toolchain
+      Two independent runs over identical sources produced identical patch
+      bytes.
+
+      Qualified after CI disproved the unqualified claim: `git format-patch`
+      ends the file with the LOCAL Git version, so a runner on Git 2.54.0
+      produced different bytes from this host's 2.43.0 with nothing stale.
+      The generator now passes --no-signature, and the CI gate compares the
+      APPLIED TREE HASH rather than patch bytes — content-addressed, immune to
+      toolchain drift, and identical to what a consumer relies on.
+
+PASS  committed bundle applies to the reviewed tree
+      git am of dist/waste-inkling-6931570/patches/*.patch onto the pinned
+      upstream yields e372f1ef2b92c4bcc94f5c2474d6597d068f5c84.
+      Patch sha256: a15a2aa355fda43fb0e1ebfd1a94a0843ec74f5dfaf85f7a219a4d2414140b07
+
+PASS  integration/waste/verify.sh
+      Generated tree: e372f1ef2b92c4bcc94f5c2474d6597d068f5c84
+      (v18 tree plus tools/inkling_fixture.py and tests/test_inkling_fixture.py)
+
+VALIDATION
+----------
+PASS  PATH=/usr/bin:/bin make check
+      Result: 29 passed, 0 failed, 13 skipped
+      Includes:
+        - cgroup-v2 limits vs the automatic budget ceiling
+        - Inkling architecture seam and scalar runtime primitives
+        - Inkling rejection before Kimi planning or loading
+        - upstream serve suite: 168 checks passed
+
+PASS  PATH=/usr/bin:/bin make asan
+      Result: 28 passed, 0 failed, 14 skipped
+      AddressSanitizer and UndefinedBehaviorSanitizer were clean.
+
+PASS  PATH=/usr/bin:/bin make fuzz-asan FUZZ_RUNS=200
+      Result: 200 cases; 137 rejected; 63 loaded; 0 crashed; 0 hung
+
+PASS  strict compile of src/arch.c and all src/inkling*.c
+      Flags: -std=gnu11 -Wall -Wextra -Werror -Isrc
+      Result: 11 translation units compiled
+
+PASS  complete Inkling Python suite
+      python3 -m unittest discover -s tests -p "test_ink*.py" -t .
+      Result: 122 tests, OK
+      python3 -m unittest tests.test_inspect_inkling tests.test_convert_inkling
+      Result: 18 tests, OK
+      Total: 140 tests passing.
+
+      This is the first time this repository has RUN the Inkling Python suite
+      rather than quoting it. The v16 bundle recorded 99 tests; that number is
+      now confirmed (81 + 18 before this change, all passing), and the 41 new
+      fixture-reader tests bring the total to 140.
+
+PASS  dependency-light selection, no torch installed
+      tests/test_inspect_inkling.py, tests/test_inkling_plan.py,
+      tests/test_inkling_release.py, tests/test_inkling_config_c.py,
+      tests/test_inkling_fixture.py
+
+PASS  python3 -m compileall -q tools tests
+
+WHAT IS STILL NOT CLAIMED
+-------------------------
+Official-weight activation parity has not run: the checkpoint was not present.
+Tokenizer, chat template, serving, multimodal execution, native Windows, and
+production performance all remain gates. The public loader still returns
+WASTE_E_UNSUPPORTED for any Inkling container, by design.

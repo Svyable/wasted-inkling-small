@@ -1,0 +1,139 @@
+name: Validate WASTE Inkling
+
+on:
+  pull_request:
+    paths:
+      - "inkling/**"
+      - "integration/**"
+      - "dist/**"
+      - ".github/workflows/validate-waste-inkling.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "inkling/**"
+      - "integration/**"
+      - "dist/**"
+      - ".github/workflows/validate-waste-inkling.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generate-and-regress:
+    name: Generate, prove the tree, regress
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # verify.sh is the whole gate: it regenerates the patch from inkling/
+      # plus the overlay fragments, refuses to continue unless the tree hash
+      # equals the reviewed one, compiles every Inkling unit with -Werror, and
+      # runs the upstream suite.
+      - name: Generate, verify the tree, compile strict, run make check
+        shell: bash
+        run: integration/waste/verify.sh "${RUNNER_TEMP}/waste"
+
+      # The committed bundle must produce the reviewed tree. The gate is the
+      # applied tree hash, not the patch bytes: `format-patch` output varies
+      # with the local Git version, so a byte comparison fails on a runner
+      # whose Git differs from the committer's without anything being stale.
+      # This check is also exactly what a consumer does.
+      - name: Committed bundle applies to the reviewed tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . integration/waste/baseline.env
+          (cd dist/waste-inkling-6931570 && sha256sum -c SHA256SUMS)
+          work="${RUNNER_TEMP}/waste-bundle"
+          git clone --quiet "$UPSTREAM_REPOSITORY" "$work"
+          git -C "$work" -c advice.detachedHead=false checkout --quiet --detach "$UPSTREAM_COMMIT"
+          git -C "$work" \
+            -c user.name="bundle check" -c user.email="ci@waste.invalid" \
+            am "${GITHUB_WORKSPACE}"/dist/waste-inkling-6931570/patches/*.patch
+          applied=$(git -C "$work" rev-parse 'HEAD^{tree}')
+          if [ "$applied" != "$EXPECTED_APPLIED_TREE" ]; then
+            echo "dist/ is stale: applies to $applied, sources produce $EXPECTED_APPLIED_TREE" >&2
+            echo "regenerate with integration/waste/generate.sh" >&2
+            exit 1
+          fi
+          echo "committed bundle applies to $applied"
+
+      - name: Dependency-light Python validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/waste"
+          python3 -m compileall -q "$work/tools" "$work/tests"
+          cd "$work"
+          python3 tests/test_inspect_inkling.py
+          python3 tests/test_inkling_plan.py
+          python3 tests/test_inkling_release.py
+          python3 tests/test_inkling_config_c.py
+          python3 tests/test_inkling_fixture.py
+
+  differential:
+    name: Torch differential suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Generate the tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          WASTE_VERIFY_SKIP_CHECK=1 integration/waste/verify.sh "${RUNNER_TEMP}/waste"
+
+      # The 99 private-runtime tests were recorded once and then quoted for
+      # several bundles without being re-run. This job is why they are evidence
+      # again: C-versus-PyTorch parity for the router, relative bias, short
+      # convolution, attention, the complete layer, and the staged runtime.
+      - name: Install torch and numpy
+        shell: bash
+        run: python3 -m pip install --quiet --break-system-packages torch numpy
+
+      - name: Run the complete Inkling Python suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/waste"
+          python3 -m unittest discover -s tests -p "test_ink*.py" -t .
+          python3 -m unittest tests.test_inspect_inkling tests.test_convert_inkling
+
+  sanitizers:
+    name: Sanitizers and container fuzzing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Generate the tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          WASTE_VERIFY_SKIP_CHECK=1 integration/waste/verify.sh "${RUNNER_TEMP}/waste"
+
+      - name: Run ASan and UBSan
+        shell: bash
+        run: PATH=/usr/bin:/bin make -C "${RUNNER_TEMP}/waste" asan
+
+      - name: Fuzz malformed containers under sanitizers
+        shell: bash
+        run: PATH=/usr/bin:/bin make -C "${RUNNER_TEMP}/waste" fuzz-asan FUZZ_RUNS=200

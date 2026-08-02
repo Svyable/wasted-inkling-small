@@ -4,9 +4,13 @@
 be impressed by adjectives.**
 
 This repository develops Inkling-Small support for
-[`sqliteai/waste`](https://github.com/sqliteai/waste). The current integration
-artifact is [`waste-inkling-patch-v18/`](waste-inkling-patch-v18/), a single
-replay-tested patch for WASTE 0.6.3.
+[`sqliteai/waste`](https://github.com/sqliteai/waste).
+
+**Read the code in [`inkling/`](inkling/).** It is the source of truth: eleven
+C translation units, fifteen Python tools, and the tests. The integration patch
+in [`dist/waste-inkling-6931570/`](dist/waste-inkling-6931570/) is generated
+from it by `integration/waste/generate.sh` and verified against a pinned tree
+hash — apply that, but never edit it.
 
 > [!IMPORTANT]
 > Public Inkling inference is still disabled. The private conversion/runtime
@@ -29,18 +33,21 @@ bundle:
 
 | Check | Result |
 | --- | --- |
-| Upstream drift | none — `sqliteai/waste` HEAD is `6931570`, the exact v18 baseline |
-| Patch integrity | `sha256sum -c SHA256SUMS` OK |
-| Replay onto `6931570` | clean `git am`, tree `ce6c527…` matches the pin |
+| Upstream drift | none — `sqliteai/waste` HEAD is `6931570`, the exact baseline |
+| Patch generation | reproduces the reviewed v18 tree `ce6c527…` byte-for-byte; the committed bundle applies to the pinned tree |
 | `make check` | 29 passed, 0 failed, 13 skipped (server suite: 168 checks) |
+| ASan + UBSan | 28 passed, 0 failed, 14 skipped |
+| Fuzzing | 200 cases, 0 crashed, 0 hung |
+| Strict compile | 11 translation units, `-Werror` |
+| Python suite | **140 tests, 0 failures** — run, not quoted |
 | Inkling seam | recognized before Kimi planning or loading |
 
 The port is current, green, and deliberately inert: 62 new files plus **84
 inserted lines across 5 upstream files**. Its blast radius on the public engine
 is zero because no public code path calls it yet.
 
-Full audit, including what was *not* re-run:
-**[docs/STATE-OF-THE-PORT.md](docs/STATE-OF-THE-PORT.md)**.
+Full audit: **[docs/STATE-OF-THE-PORT.md](docs/STATE-OF-THE-PORT.md)**.
+Evidence: [`dist/waste-inkling-6931570/TEST-RESULTS.txt`](dist/waste-inkling-6931570/TEST-RESULTS.txt).
 
 ## Next enhancement — make parity runnable on one machine
 
@@ -48,12 +55,16 @@ The released weights are the blocker, and not for the reason you would expect.
 The two-sided trace harness is built, but its official side calls
 `AutoModelForCausalLM.from_pretrained()`, which materializes all 495 GiB before
 emitting a single activation — while `inkling_parity.py` already extracts
-bounded, hash-bound fixtures that nothing consumes.
+bounded, hash-bound fixtures that nothing consumed.
 
-So the next enhancement is a **fixture-backed reference mode** plus a
-layer-scoped partial runtime stage, which turns BF16 layerwise parity from a
-datacenter reservation into a laptop experiment. A few hundred lines of Python
-that unblock every remaining gate.
+`inkling/tools/inkling_fixture.py` is now that consumer: dependency-free
+loading and CRC verification, axis-0 expert slices, BF16/F16/F32 → F32 decode
+checked bit-for-bit against torch, module-relative state-dict keys, and
+fail-closed coverage checks that name the missing layer or expert. 41 tests, no
+torch, in CI.
+
+What remains for the gate is the official-side module construction, which needs
+`transformers` with Inkling support present.
 
 Gates, commands, budgets, and the running record:
 **[docs/ROADMAP-V19.md](docs/ROADMAP-V19.md)**.
@@ -63,34 +74,44 @@ Gates, commands, budgets, and the running record:
 | Doc | Purpose |
 | --- | --- |
 | **[docs/CODEBASE-MAP.md](docs/CODEBASE-MAP.md)** | Every translation unit, tool, and test — and the refactor from patch bundles to a reviewable C tree |
+| [docs/WASTE-CONSTRAINTS.md](docs/WASTE-CONSTRAINTS.md) | What upstream WASTE blocks, what it gives us free, and the promotion design that follows |
 | [docs/STATE-OF-THE-PORT.md](docs/STATE-OF-THE-PORT.md) | Verified state, measured sizes, named risks |
 | [docs/ROADMAP-V19.md](docs/ROADMAP-V19.md) | G0-G6 path to running the open weights |
 
-Note the structural caveat the map opens with: **the source of truth is the
-patch**, not the readable snapshot under `waste-inkling-patch-v16/src`. Editing
-that snapshot changes nothing CI validates. Fixing that is what the refactor is
-for.
+## Layout
 
-## Current foundation: v18
+```
+inkling/                     source of truth — C, tools, tests, design notes
+integration/waste/           upstream pin, five overlay diffs, generate + verify
+dist/waste-inkling-6931570/  the generated, checksummed bundle to apply
+docs/                        audit, map, roadmap
+waste-inkling-patch-v16..18/ frozen provenance, kept for the audit trail
+```
 
-v18 targets `sqliteai/waste@69315701f634648f7a790915a0a525ed8aabf218`:
+To change the port: edit `inkling/`, run `integration/waste/verify.sh`, and
+regenerate the bundle. CI regenerates from source, and separately applies the
+committed bundle and checks it lands on the same tree — so `dist/` cannot ship
+code nobody reviewed.
+
+## Current foundation
+
+`sqliteai/waste@69315701f634648f7a790915a0a525ed8aabf218`:
 
 - WASTE 0.6.3
 - public API version 1
 - container format version 0
 - cgroup-aware automatic budgeting through `waste_usable_ram()`
 
-It replaces historical patches 1–17 with one consolidated patch. Do not apply
-v17 first.
-
 | Artifact | Purpose |
 | --- | --- |
-| [v18 README](waste-inkling-patch-v18/README.md) | Current comparison, apply instructions, evidence, and remaining gates |
-| [v18 handoff](waste-inkling-patch-v18/PATCH18-HANDOFF.md) | The two rebase conflicts and their exact resolutions |
-| [v18 validation](waste-inkling-patch-v18/TEST-RESULTS-P18.txt) | Model-free, sanitizer, fuzz, strict C, and Python results |
-| [v18 baseline](waste-inkling-patch-v18/BASELINE) | Machine-readable upstream and tree provenance |
-| [v18 checksum](waste-inkling-patch-v18/SHA256SUMS) | Patch integrity |
-| [v18 CI](.github/workflows/validate-waste-inkling-v18.yml) | Fresh clone, checksum, replay, exact-tree, regression, sanitizer, and fuzz gates |
+| [bundle README](dist/waste-inkling-6931570/README.md) | Apply instructions and what changed |
+| [bundle validation](dist/waste-inkling-6931570/TEST-RESULTS.txt) | Generation, tree, sanitizer, fuzz, strict C, and 140 Python tests |
+| [bundle baseline](dist/waste-inkling-6931570/BASELINE) | Machine-readable upstream and tree provenance |
+| [bundle checksum](dist/waste-inkling-6931570/SHA256SUMS) | Patch integrity for the shipped file |
+| [CI](.github/workflows/validate-waste-inkling.yml) | Generate, tree hash, strict compile, regression, bundle-applies check, torch differential suite, sanitizers, fuzzing |
+
+The historical bundles remain applicable as-is; `waste-inkling-patch-v18`
+replaced patches 1-17 and is superseded by the generated bundle above.
 
 ## What is implemented
 
@@ -109,40 +130,48 @@ The private runtime is an independent parity oracle. It is not a second public
 engine, because rediscovering WASTE's cache, budget, platform, and serving
 lessons would be a very expensive way to become nostalgic.
 
-## Apply v18
+## Apply
 
 ```sh
 git clone https://github.com/sqliteai/waste.git
 cd waste
 git checkout 69315701f634648f7a790915a0a525ed8aabf218
-git am /path/to/waste-inkling-patch-v18/patches/0018-waste-693157-consolidated-inkling-runtime.patch
+git am /path/to/dist/waste-inkling-6931570/patches/0001-Add-the-Inkling-Small-runtime-foundation-to-WASTE.patch
 PATH=/usr/bin:/bin make check
 ```
 
 Verify the patch first:
 
 ```sh
-cd /path/to/waste-inkling-patch-v18
+cd /path/to/dist/waste-inkling-6931570
 sha256sum -c SHA256SUMS
 ```
 
 The expected applied Git tree is
-`ce6c5272e801c651cc6b71f869a1b0cd7167dab5`.
+`e372f1ef2b92c4bcc94f5c2474d6597d068f5c84`.
+
+Or build and check it from source in one command:
+
+```sh
+integration/waste/verify.sh /tmp/waste
+```
 
 ## Current evidence
 
-- WASTE suite: **29 passed, 0 failed, 13 skipped** (re-run 2026-08-02)
-- server suite: **168 checks passed** (re-run 2026-08-02)
-- ASan + UBSan: **28 passed, 0 failed, 14 skipped**
-- sanitizer fuzzing: **200 cases, 0 crashes, 0 hangs**
-- strict C: **11 Inkling/architecture translation units**
-- dependency-light Python: **17 tests passed**
+All measured on 2026-08-02 in one environment, on the generated tree:
 
-The v16 bundle records 99 private-runtime Python tests from before the upstream
-rebases; nothing in this repository currently re-runs them, which
-[the map](docs/CODEBASE-MAP.md) proposes to fix with a deep CI tier. The
-official 532 GB checkpoint was not available in this environment, so none of
-the counts above is presented as official-weight parity.
+- WASTE suite: **29 passed, 0 failed, 13 skipped**
+- server suite: **168 checks passed**
+- ASan + UBSan: **28 passed, 0 failed, 14 skipped**
+- sanitizer fuzzing: **200 cases, 137 rejected, 63 loaded, 0 crashes, 0 hangs**
+- strict C: **11 Inkling/architecture translation units**, `-Werror`
+- Python: **140 tests passed** (122 + 18), torch differential suite included
+- patch generation: reproduces the reviewed v18 tree byte-for-byte; the
+  committed bundle applies to the pinned tree `e372f1e…`
+
+The v16 bundle recorded 99 Python tests and nothing re-ran them. They now run
+in CI, and they pass. The official 532 GB checkpoint was not available in this
+environment, so none of the counts above is official-weight parity.
 
 ## Promotion path
 
@@ -160,7 +189,10 @@ checkpoint” deployment strategy.
 
 ## Provenance
 
-- v18 is the current WASTE 0.6.3 apply target.
+- [`dist/waste-inkling-6931570/`](dist/waste-inkling-6931570/) is the current
+  apply target, generated from `inkling/`.
+- [`waste-inkling-patch-v18/`](waste-inkling-patch-v18/) records the hand-authored
+  WASTE 0.6.3 consolidation the generator was proved against.
 - [`waste-inkling-patch-v17/`](waste-inkling-patch-v17/) records the WASTE 0.6.2
   consolidation.
 - [`waste-inkling-patch-v16/`](waste-inkling-patch-v16/) retains the historical

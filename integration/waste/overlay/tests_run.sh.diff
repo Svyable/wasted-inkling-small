@@ -1,5 +1,5 @@
 diff --git a/tests/run.sh b/tests/run.sh
-index a644b0a..c1d8c73 100755
+index a644b0a..81d85a8 100755
 --- a/tests/run.sh
 +++ b/tests/run.sh
 @@ -53,6 +53,12 @@ else
@@ -15,13 +15,13 @@ index a644b0a..c1d8c73 100755
  # ---------------------------------------------------------------- unit ----
  head_ "kernels vs the reference implementations"
  
-@@ -770,6 +776,28 @@ PYFV
+@@ -770,6 +776,73 @@ PYFV
          no "format_version not enforced (rc=$rc rc2=$rc2)"
      fi
  
 +    # Inkling dimensions overlap enough with Kimi's to yield plausible but
-+    # invalid plans. The rebased seam must win before Kimi memory planning,
-+    # public opening, or direct internal model loading.
++    # invalid plans. A Kimi container merely relabelled `Inkling` must be
++    # refused by all three paths rather than planned as either architecture.
 +    IA=$(mktemp -d)
 +    python3 - "$MODEL/manifest.json" "$IA/manifest.json" <<'PYIA'
 +import json, sys
@@ -32,13 +32,58 @@ index a644b0a..c1d8c73 100755
 +    info_out=$(./waste info "$IA" 2>&1); info_rc=$?
 +    load_out=$(./test_forward "$IA" 3 "$TMP/inkling.bin" 0 2>&1); load_rc=$?
 +    rm -rf "$IA"
++    # The property under test is that no plausible plan comes out: the
++    # Inkling planner rejects a config that is not Inkling rather than
++    # defaulting its way to a number, so `plan` prints no FLOOR line.
 +    if [ "$plan_rc" -ne 0 ] && [ "$info_rc" -ne 0 ] && [ "$load_rc" -ne 0 ] &&
-+       printf '%s' "$plan_out" | grep -q "unsupported" &&
-+       printf '%s' "$info_out" | grep -q "unsupported" &&
++       ! printf '%s' "$plan_out" | grep -q "FLOOR" &&
 +       printf '%s' "$load_out" | grep -q "no integrated public Inkling"; then
-+        ok "Inkling is recognized before Kimi planning or loading"
++        ok "a Kimi container relabelled Inkling is refused by every path"
 +    else
-+        no "Inkling architecture seam (plan=$plan_rc info=$info_rc load=$load_rc)"
++        no "Inkling seam on a mislabelled container (plan=$plan_rc info=$info_rc load=$load_rc)"
++    fi
++
++    # A real Inkling manifest plans, because planning is arithmetic over
++    # declared geometry. It still must not open: a forward path that has
++    # never run the official weights has not earned a token.
++    IB=$(mktemp -d)
++    python3 - "$IB/manifest.json" <<'PYIB'
++import json, sys
++cfg = json.load(open("tests/data/inkling-small-config.json"))["text_config"]
++rec = 9457664
++json.dump({
++    "format_version": 0, "arch": "inkling", "tensor_prefix": "", "config": cfg,
++    "expert_quant": {"stages": 3, "vec_dim": 8, "entries": 256,
++                     "index_block": 16, "bits_per_weight": 3.0},
++    "trunk": [
++        {"name": "inkling.embed", "fmt": 2, "off": 0,
++         "shape": [201024, 4096], "bytes": 838860800},
++        {"name": "inkling.unembed", "fmt": 2, "off": 0,
++         "shape": [200058, 4096], "bytes": 838860800},
++        {"name": "inkling.layers.0.attn.wq", "fmt": 3, "off": 0,
++         "shape": [4096, 4096], "bytes": 8388608},
++    ],
++    "layers": [{"file": "experts-L2.bin", "experts": 256,
++                "bytes": rec * 256, "codebook_base": 0}],
++}, open(sys.argv[1], "w"))
++PYIB
++    iplan_out=$(./waste plan "$IB" 2>&1); iplan_rc=$?
++    iload_out=$(./test_forward "$IB" 3 "$TMP/inkling2.bin" 0 2>&1); iload_rc=$?
++    # A config missing one required field must fail rather than default it.
++    python3 - "$IB/manifest.json" "$IB/partial.json" <<'PYIC'
++import json, sys
++m = json.load(open(sys.argv[1])); m["config"].pop("d_rel")
++json.dump(m, open(sys.argv[2], "w"))
++PYIC
++    mv "$IB/manifest.json" "$IB/full.json" && mv "$IB/partial.json" "$IB/manifest.json"
++    ipart_rc=0; ./waste plan "$IB" >/dev/null 2>&1 || ipart_rc=$?
++    rm -rf "$IB"
++    if [ "$iplan_rc" -eq 0 ] && [ "$ipart_rc" -ne 0 ] && [ "$iload_rc" -ne 0 ] &&
++       printf '%s' "$iplan_out" | grep -q "FLOOR" &&
++       printf '%s' "$iload_out" | grep -q "no integrated public Inkling"; then
++        ok "an Inkling container plans, fails closed on a missing field, and still refuses to load"
++    else
++        no "Inkling planning (plan=$iplan_rc partial=$ipart_rc load=$iload_rc)"
 +    fi
 +
      if [ -n "${WASTE_SANITIZED:-}" ]; then

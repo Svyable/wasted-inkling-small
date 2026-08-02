@@ -41,15 +41,17 @@ PASS  integration/waste/verify.sh
 VALIDATION
 ----------
 PASS  PATH=/usr/bin:/bin make check
-      Result: 29 passed, 0 failed, 13 skipped
+      Result: 30 passed, 0 failed, 13 skipped
       Includes:
         - cgroup-v2 limits vs the automatic budget ceiling
         - Inkling architecture seam and scalar runtime primitives
-        - Inkling rejection before Kimi planning or loading
+        - a Kimi container relabelled Inkling refused by every path
+        - an Inkling container plans, fails closed on a missing config
+          field, and still refuses to load
         - upstream serve suite: 168 checks passed
 
 PASS  PATH=/usr/bin:/bin make asan
-      Result: 28 passed, 0 failed, 14 skipped
+      Result: 29 passed, 0 failed, 14 skipped
       AddressSanitizer and UndefinedBehaviorSanitizer were clean.
 
 PASS  PATH=/usr/bin:/bin make fuzz-asan FUZZ_RUNS=200
@@ -57,7 +59,7 @@ PASS  PATH=/usr/bin:/bin make fuzz-asan FUZZ_RUNS=200
 
 PASS  strict compile of src/arch.c and all src/inkling*.c
       Flags: -std=gnu11 -Wall -Wextra -Werror -Isrc
-      Result: 11 translation units compiled
+      Result: 12 translation units compiled
 
 PASS  complete Inkling Python suite
       python3 -m unittest discover -s tests -p "test_ink*.py" -t .
@@ -89,6 +91,22 @@ PASS  dependency-light selection, no torch installed
       tests/test_inkling_fixture.py
 
 PASS  python3 -m compileall -q tools tests
+
+PUBLIC SURFACE PROMOTED
+-----------------------
+waste_plan_memory() now answers for an Inkling container; waste_open and
+everything downstream still return WASTE_E_UNSUPPORTED.
+
+The promotion is scoped to planning on purpose. A plan is arithmetic over
+declared geometry, so a bug in it produces a wrong byte count that the caller
+sees immediately. A forward pass is a claim about a model whose official
+weights this code has never read.
+
+Cross-checks against the geometry documented in docs/INKLING.md, on a
+synthetic Inkling manifest carrying the released Small config:
+  KV + four convolution rings at 4K ctx   371 MB   (predicted 0.362 GiB)
+  minimum expert cache                    108 MB   (6 x 9,457,664 x 2)
+  resident trunk excludes both row-backed vocabulary tables
 
 WHAT IS STILL NOT CLAIMED
 -------------------------

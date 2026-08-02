@@ -40,7 +40,7 @@ bundle:
 | Fuzzing | 200 cases, 0 crashed, 0 hung |
 | Strict compile | 11 translation units, `-Werror` |
 | Python suite | **152 tests, 0 failures** — run, not quoted |
-| Inkling seam | recognized before Kimi planning or loading |
+| Inkling seam | plans; refuses to load; refuses a mislabelled container |
 
 The port is current, green, and deliberately inert: 62 new files plus **84
 inserted lines across 5 upstream files**. Its blast radius on the public engine
@@ -48,6 +48,27 @@ is zero because no public code path calls it yet.
 
 Full audit: **[docs/STATE-OF-THE-PORT.md](docs/STATE-OF-THE-PORT.md)**.
 Evidence: [`dist/waste-inkling-6931570/TEST-RESULTS.txt`](dist/waste-inkling-6931570/TEST-RESULTS.txt).
+
+## What can launch today, and what cannot
+
+`waste plan` now answers for an Inkling container. That is the first public
+Inkling capability, and the boundary around it is deliberate:
+
+| Capability | Status |
+| --- | --- |
+| `waste_plan_memory()` / `waste plan` | **public** — geometry from a manifest |
+| `waste_open`, `waste run`, `waste chat`, serving | **refused** — `WASTE_E_UNSUPPORTED` |
+
+Planning was promoted and inference was not because they are different kinds of
+claim. A plan is arithmetic over declared dimensions: the worst a bug produces
+is a wrong byte count, which the caller discovers immediately, and the formula
+behind it is tested field by field. A forward pass is a claim about a model
+whose weights this code has never read. Until official-weight parity exists,
+shipping the second would be selling a number nobody has checked.
+
+The planner fails closed. A Kimi container relabelled `inkling`, or an Inkling
+config missing a single field, is refused rather than defaulted into a
+plausible floor — both are checked in the suite.
 
 ## Next enhancement — make parity runnable on one machine
 
@@ -155,7 +176,7 @@ sha256sum -c SHA256SUMS
 ```
 
 The expected applied Git tree is
-`bd7c8750100d393c13cd36062489cc4fce27ad69`.
+`5b1796b1b14ea66c4f4a24ca9f65dd4bc1b6b8be`.
 
 Or build and check it from source in one command:
 

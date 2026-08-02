@@ -24,7 +24,7 @@ cd /path/to/dist/waste-inkling-6931570
 sha256sum -c SHA256SUMS
 ```
 
-The applied Git tree must be `bd7c8750100d393c13cd36062489cc4fce27ad69`.
+The applied Git tree must be `5b1796b1b14ea66c4f4a24ca9f65dd4bc1b6b8be`.
 
 ## Regenerate and verify from source
 
@@ -40,7 +40,7 @@ recording when the build ran or which Git emitted it.
 The authoritative check is nonetheless the **applied tree hash**, not the patch
 bytes. `format-patch` output is a function of the local Git as well as the
 content, so CI verifies that the committed patch *applies to*
-`bd7c8750100d393c13cd36062489cc4fce27ad69` — which is what a consumer actually
+`5b1796b1b14ea66c4f4a24ca9f65dd4bc1b6b8be` — which is what a consumer actually
 depends on, and is immune to toolchain drift.
 
 ## What changed against `waste-inkling-patch-v18`
@@ -54,13 +54,16 @@ depends on, and is immune to toolchain drift.
 - `inkling_plan.py` now exposes its source-name tables, so the harness resolves
   tensor names through the planner instead of a second copy;
 - `tests/test_inkling_fixture.py` and `tests/test_inkling_layer_parity.py` —
-  53 new tests.
+  53 new tests;
+- `src/inkling_public.c` — **the first public Inkling capability**:
+  `waste_plan_memory()` answers for an Inkling container. `waste_open` and
+  everything downstream still return `WASTE_E_UNSUPPORTED`.
 
 ## Evidence
 
 See [`TEST-RESULTS.txt`](./TEST-RESULTS.txt). Summary: 29 passed / 0 failed /
 13 skipped in the WASTE suite, 168 server checks, 11 units compiled with
-`-Werror`, and 152 Python tests passing.
+`-Werror` across 12 translation units, and 152 Python tests passing.
 
 Public Inkling inference remains disabled. This bundle changes how the port is
 built and reviewed, not what the public loader will run.

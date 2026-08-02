@@ -235,8 +235,10 @@ the format extension is documented in `docs/FORMAT.md` alongside K3's.
 
 Turn the two guards into a branch, in this order:
 
-1. `waste_plan_memory()` → `waste_inkling_plan_decode_memory()` (already tested
-   standalone, already field-by-field);
+1. ✅ `waste_plan_memory()` → `waste_inkling_plan_decode_memory()`, via
+   `src/inkling_public.c`. Promoted ahead of the rest deliberately: a plan is
+   geometry, so its failure mode is a wrong byte count rather than a wrong
+   token. Everything below stays refused.
 2. loader → Inkling config build + tensor binding via
    `waste_inkling_bind_weights_ex_backend()`;
 3. expert cache → the Inkling expert callback, reusing WASTE's `ecache` and its
@@ -293,7 +295,7 @@ and is the best parallel track for a second contributor.
 | G3 conversion measurement | not started | — |
 | G4 tokenizer / chat | not started | — |
 | G5 format extension | not started | — |
-| G6 public dispatch | not started | — |
+| G6 public dispatch | **planning promoted**; open/step/serve still refused | `inkling_public.c`, 2 suite checks |
 
 Keep this table honest. It is the only part of the document that will be read
 twice.

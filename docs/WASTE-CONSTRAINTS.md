@@ -103,9 +103,17 @@ straight out of the manifest and size the cache as
 confident, wrong, *plausible* number — which is precisely why the guard at
 `src/waste.c:179` refuses before reading a single dimension.
 
-This one is already solved: `waste_inkling_plan_decode_memory()` is written,
-field-by-field, overflow-checked, and tested dependency-light in CI. It is
-waiting for a caller.
+**Resolved.** `src/inkling_public.c` now gives it a caller:
+`waste_plan_memory()` hands an Inkling manifest to
+`waste_inkling_plan_memory_json()`, which reads the geometry, builds the config
+through the tested builder, and delegates to
+`waste_inkling_plan_decode_memory()`. The Kimi path is untouched, and the
+Inkling path fails closed on any missing or out-of-range field.
+
+The planned figures cross-check against the geometry documented in
+`docs/INKLING.md`: 371 MB of KV plus convolution state at 4K context against a
+predicted 0.362 GiB, and a 108 MB minimum expert cache against six VQ3R
+records of 9,457,664 bytes, double buffered.
 
 ### 1.6 The tokenizer's pre-tokenizer is hand-transliterated and not selectable
 
@@ -217,7 +225,7 @@ traced variants, and `test_inkling_layer_c.py` already drives the C layer
 through ctypes. When the official side lands, parity is one command, not a
 project.
 
-### 4.3 Promote `waste_plan_memory()` — the smallest real promotion
+### 4.3 Promote `waste_plan_memory()` — the smallest real promotion ✅ done
 
 **Why:** it converts a refusal into a working feature with a tested callee and
 no state-machine risk. `waste_plan_memory()` currently returns

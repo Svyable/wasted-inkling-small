@@ -60,6 +60,8 @@ refactor.
                                     │
    ─────────────────────────────────┼──────────────────────── promotion boundary
                                     │
+   promoted         │ inkling_public.c         232 │  manifest → memory plan
+                    ├──────────────────────────────┤
    orchestration    │ inkling_private.c        791 │  staged dir → logits
                     │ inkling_bind.c           135 │  names → structs
                     ├──────────────────────────────┤
@@ -211,6 +213,19 @@ validation oracle.
 Q8G/Q4G artifacts: 96-byte header, row-major payload, FP16 group scales,
 independent CRCs for payload and scales, 4 KiB padding. Supports bounded row
 reads *and* direct quantized matvec without materializing F32.
+
+### `src/inkling_public.c` (232) — the promoted seam
+
+The only Inkling code a public API call reaches. `waste_plan_memory()` hands it
+an Inkling manifest; it reads the architecture out of `config`, builds a
+`waste_inkling_config` through the tested builder, delegates to
+`waste_inkling_plan_decode_memory()`, sums `trunk[]` bytes minus the two
+row-backed vocabulary tables, and derives the minimum expert cache from the
+first bank's record size.
+
+No manifest schema is invented: every field it reads already exists in format
+v0. It fails closed on a missing dimension rather than defaulting, which is
+what makes a relabelled Kimi container an error instead of a plausible floor.
 
 ### `src/inkling_private.c` (791) — the orchestrator
 

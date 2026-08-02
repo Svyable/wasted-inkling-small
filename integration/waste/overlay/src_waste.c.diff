@@ -1,36 +1,44 @@
 diff --git a/src/waste.c b/src/waste.c
-index b1d9bbd..813a7c4 100644
+index b1d9bbd..dfff891 100644
 --- a/src/waste.c
 +++ b/src/waste.c
-@@ -22,6 +22,7 @@
+@@ -22,6 +22,8 @@
  #endif
  #include <time.h>
  
 +#include "arch.h"
++#include "inkling_public.h"
  #include "json.h"
  #include "memory.h"
  #include "model.h"
-@@ -175,6 +176,19 @@ waste_status waste_plan_memory(const char *model_path, uint32_t ctx_tokens,
+@@ -175,6 +177,26 @@ waste_status waste_plan_memory(const char *model_path, uint32_t ctx_tokens,
      js_doc d;
      if (js_parse(&d, src) < 0) { free(src); return WASTE_E_FORMAT; }
  
-+    /* Memory planning below is Kimi-specific. Refuse an Inkling manifest
-+     * before reading any architecture dimensions; a made-up Kimi floor is
-+     * worse than an honest unsupported result. */
++    /* Memory planning below is Kimi-specific. An Inkling manifest is handed
++     * to the Inkling planner before any architecture dimension is read here;
++     * a made-up Kimi floor is worse than an honest error, and the Inkling
++     * side fails closed rather than guessing at a missing field.
++     *
++     * Planning is promoted while waste_open still refuses, and the asymmetry
++     * is the point: a wrong plan is a wrong byte count, a wrong forward pass
++     * is a wrong token. */
 +    {
 +        char arch[64];
 +        js_str(&d, js_get(&d, 0, "arch"), arch, sizeof arch);
 +        if (waste_arch_classify(arch) == WASTE_ARCH_INKLING) {
++            const waste_status st =
++                waste_inkling_plan_memory_json(src, ctx_tokens, out);
 +            js_free(&d);
 +            free(src);
-+            return WASTE_E_UNSUPPORTED;
++            return st;
 +        }
 +    }
 +
      memset(out, 0, sizeof *out);
  
      /* trunk: sum the tensor payloads as they are stored, minus the ones the
-@@ -463,7 +477,8 @@ waste_status waste_open(const char *model_path, const waste_cfg *cfg_in,
+@@ -463,7 +485,8 @@ waste_status waste_open(const char *model_path, const waste_cfg *cfg_in,
               * on K3 that is tens of gigabytes lost to one bad manifest. */
              waste_model_free(&c->m);
              free(c);

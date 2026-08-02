@@ -1,4 +1,4 @@
-From 48c9460c74c9c72e33be141dca9749537568069e Mon Sep 17 00:00:00 2001
+From 87f267376173ef95fe54927d98a2493c2328fabb Mon Sep 17 00:00:00 2001
 From: WASTE Inkling integration <inkling@waste.invalid>
 Date: Sun, 2 Aug 2026 00:00:00 +0000
 Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
@@ -24,6 +24,8 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  src/inkling_model.h                   | 110 +++
  src/inkling_private.c                 | 791 ++++++++++++++++++++++
  src/inkling_private.h                 |  70 ++
+ src/inkling_public.c                  | 251 +++++++
+ src/inkling_public.h                  |  34 +
  src/inkling_qtensor.c                 | 143 ++++
  src/inkling_qtensor.h                 |  39 ++
  src/inkling_stage_reader.c            | 392 +++++++++++
@@ -31,10 +33,10 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  src/inkling_wexp.c                    | 369 ++++++++++
  src/inkling_wexp.h                    |  59 ++
  src/model.c                           |  18 +
- src/waste.c                           |  17 +-
+ src/waste.c                           |  25 +-
  tests/data/inkling-small-config.json  |  69 ++
  tests/data/inkling-small-release.json |  10 +
- tests/run.sh                          |  28 +
+ tests/run.sh                          |  73 ++
  tests/test_convert_inkling.py         | 230 +++++++
  tests/test_inkling.c                  | 118 ++++
  tests/test_inkling_attention_c.py     | 252 +++++++
@@ -75,7 +77,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/inkling_vq.py                   | 927 ++++++++++++++++++++++++++
  tools/inkling_weights.py              | 369 ++++++++++
  tools/inspect_inkling.py              | 799 ++++++++++++++++++++++
- 71 files changed, 17006 insertions(+), 7 deletions(-)
+ 73 files changed, 17344 insertions(+), 7 deletions(-)
  create mode 100644 PATCH18-HANDOFF.md
  create mode 100644 TEST-RESULTS-P18.txt
  create mode 100644 docs/INKLING.md
@@ -95,6 +97,8 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100644 src/inkling_model.h
  create mode 100644 src/inkling_private.c
  create mode 100644 src/inkling_private.h
+ create mode 100644 src/inkling_public.c
+ create mode 100644 src/inkling_public.h
  create mode 100644 src/inkling_qtensor.c
  create mode 100644 src/inkling_qtensor.h
  create mode 100644 src/inkling_stage_reader.c
@@ -144,7 +148,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100755 tools/inspect_inkling.py
 
 diff --git a/Makefile b/Makefile
-index a70fe0c..3ee9ee6 100644
+index a70fe0c..b42b0b9 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -89,9 +89,12 @@ CFLAGS  += -DVQ_SUPER=$(VQ_SUPER)
@@ -157,7 +161,7 @@ index a70fe0c..3ee9ee6 100644
 +SRC := src/model.c src/arch.c src/inkling.c src/inkling_config.c \
 +       src/inkling_attention.c src/inkling_layer.c src/inkling_model.c \
 +       src/inkling_bind.c src/inkling_stage_reader.c src/inkling_wexp.c \
-+       src/inkling_qtensor.c src/inkling_private.c src/kda.c src/backend.c \
++       src/inkling_qtensor.c src/inkling_private.c src/inkling_public.c src/kda.c src/backend.c \
 +       src/ecache.c src/version.c src/tokenizer.c src/waste.c src/vq.c \
 +       src/vision.c src/image.c src/crc32.c src/memory.c
  # Match what backend.c tests for. Linux/aarch64 reports "aarch64", which
@@ -3641,6 +3645,303 @@ index 0000000..1cddb62
 +}
 +#endif
 +#endif
+diff --git a/src/inkling_public.c b/src/inkling_public.c
+new file mode 100644
+index 0000000..05a97c6
+--- /dev/null
++++ b/src/inkling_public.c
+@@ -0,0 +1,251 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++/*
++ * inkling_public.c — manifest to memory plan, and nothing else.
++ *
++ * The public loader refuses Inkling because a forward path that has never
++ * seen the official weights should refuse. Planning is a different kind of
++ * claim: it reads dimensions out of a manifest and does arithmetic that is
++ * tested field by field in waste_inkling_plan_decode_memory(). The worst a
++ * bug here produces is a wrong byte count, which the caller finds out about
++ * immediately, rather than a wrong token, which it does not.
++ *
++ * No new manifest schema is invented. Every field read below already exists
++ * in format v0: `config` for architecture, `trunk[]` for resident bytes,
++ * `layers[]` for the expert record size. That is the point — the private
++ * runtime index was always a rehearsal of the public manifest.
++ *
++ * Everything fails closed. A missing dimension, an out-of-range value, or a
++ * config the builder rejects returns WASTE_E_FORMAT.
++ */
++
++#include "inkling_public.h"
++
++#include <string.h>
++
++#include "inkling_config.h"
++#include "json.h"
++
++/* Read an integer that must be present and positive. */
++static int req_int(const js_doc *d, int obj, const char *key, int *out)
++{
++    const int tok = js_get(d, obj, key);
++    if (tok < 0) return -1;
++    const int64_t v = js_int(d, tok, 0);
++    if (v <= 0 || v > 0x7fffffff) return -1;
++    *out = (int)v;
++    return 0;
++}
++
++/* Read an integer that may be absent, in which case the default stands. */
++static void opt_int(const js_doc *d, int obj, const char *key, int *out)
++{
++    const int tok = js_get(d, obj, key);
++    if (tok >= 0) {
++        const int64_t v = js_int(d, tok, *out);
++        if (v >= 0 && v <= 0x7fffffff) *out = (int)v;
++    }
++}
++
++static int req_num(const js_doc *d, int obj, const char *key, float *out)
++{
++    const int tok = js_get(d, obj, key);
++    if (tok < 0) return -1;
++    const double v = js_num(d, tok, 0.0);
++    if (!(v > 0.0) || v > 1e30) return -1;
++    *out = (float)v;
++    return 0;
++}
++
++static int add64(uint64_t *dst, uint64_t v)
++{
++    if (v > UINT64_MAX - *dst) return -1;
++    *dst += v;
++    return 0;
++}
++
++static int mul64(uint64_t a, uint64_t b, uint64_t *out)
++{
++    if (a && b > UINT64_MAX / a) return -1;
++    *out = a * b;
++    return 0;
++}
++
++/* The vocabulary tables stay on disk and are read one row per token, so they
++ * are not part of the resident floor. Inkling keeps *both* of them row-backed
++ * — the embedding and the independent unembedding — which is one table more
++ * than the Kimi path leaves out. */
++static int row_backed(const char *name)
++{
++    const size_t n = strlen(name);
++    static const char *tails[] = { ".embed", ".unembed",
++                                   "embed_tokens.weight", "unembed.weight" };
++    for (size_t i = 0; i < sizeof tails / sizeof tails[0]; i++) {
++        const size_t t = strlen(tails[i]);
++        if (n >= t && memcmp(name + n - t, tails[i], t) == 0) return 1;
++    }
++    return 0;
++}
++
++static waste_status plan_config(const js_doc *d, int cfg,
++                                waste_inkling_config *out)
++{
++    waste_inkling_config_args a;
++    int local_ids[WASTE_INKLING_MAX_LAYERS];
++    int n_local = 0;
++
++    memset(&a, 0, sizeof a);
++    if (req_int(d, cfg, "num_hidden_layers", &a.n_layers) ||
++        req_int(d, cfg, "hidden_size", &a.hidden) ||
++        req_int(d, cfg, "vocab_size", &a.vocab) ||
++        req_int(d, cfg, "model_max_length", &a.max_context) ||
++        req_int(d, cfg, "num_attention_heads", &a.global_heads) ||
++        req_int(d, cfg, "num_key_value_heads", &a.global_kv_heads) ||
++        req_int(d, cfg, "head_dim", &a.global_head_dim) ||
++        req_int(d, cfg, "sliding_window_size", &a.sliding_window) ||
++        req_int(d, cfg, "d_rel", &a.d_rel) ||
++        req_int(d, cfg, "rel_extent", &a.rel_extent) ||
++        req_int(d, cfg, "sconv_kernel_size", &a.conv_kernel) ||
++        req_int(d, cfg, "dense_intermediate_size", &a.dense_intermediate) ||
++        req_int(d, cfg, "intermediate_size", &a.moe_intermediate) ||
++        req_int(d, cfg, "n_routed_experts", &a.n_routed_experts) ||
++        req_int(d, cfg, "num_experts_per_tok", &a.top_k) ||
++        req_int(d, cfg, "n_shared_experts", &a.n_shared_experts) ||
++        req_num(d, cfg, "rms_norm_eps", &a.rms_eps) ||
++        req_num(d, cfg, "route_scale", &a.route_scale) ||
++        req_num(d, cfg, "logits_mup_width_multiplier", &a.logits_width_multiplier))
++        return WASTE_E_FORMAT;
++
++    /* The sliding-window tower may restate the head geometry; when it does
++     * not, it shares the global values. Absent is not the same as zero, so
++     * these are seeded before the optional read. */
++    a.local_heads = a.global_heads;
++    a.local_kv_heads = a.global_kv_heads;
++    a.local_head_dim = a.global_head_dim;
++    opt_int(d, cfg, "swa_num_attention_heads", &a.local_heads);
++    opt_int(d, cfg, "swa_num_key_value_heads", &a.local_kv_heads);
++    opt_int(d, cfg, "swa_head_dim", &a.local_head_dim);
++
++    a.unpadded_vocab = a.vocab;
++    opt_int(d, cfg, "unpadded_vocab_size", &a.unpadded_vocab);
++    opt_int(d, cfg, "dense_mlp_idx", &a.dense_layers);
++    opt_int(d, cfg, "log_scaling_n_floor", &a.log_scaling_n_floor);
++    {
++        const int tok = js_get(d, cfg, "log_scaling_alpha");
++        if (tok >= 0) {
++            const double v = js_num(d, tok, 0.0);
++            if (v < 0.0 || v > 1e30) return WASTE_E_FORMAT;
++            a.log_scaling_alpha = (float)v;
++        }
++    }
++
++    {
++        const int arr = js_get(d, cfg, "local_layer_ids");
++        const int n = js_size(d, arr);
++        if (n > WASTE_INKLING_MAX_LAYERS) return WASTE_E_FORMAT;
++        for (int i = 0; i < n; i++) {
++            const int64_t v = js_int(d, js_at(d, arr, i), -1);
++            if (v < 0 || v >= a.n_layers) return WASTE_E_FORMAT;
++            local_ids[n_local++] = (int)v;
++        }
++    }
++    a.local_layer_ids = local_ids;
++    a.n_local_layers = n_local;
++
++    /* The builder is the validator: divisibility, bounds, duplicate local
++     * ids, top_k against the routed count. Nothing here second-guesses it. */
++    if (waste_inkling_config_build(out, &a)) return WASTE_E_FORMAT;
++    return WASTE_OK;
++}
++
++waste_status waste_inkling_plan_memory_json(const char *manifest_json,
++                                            uint32_t ctx_tokens,
++                                            waste_memplan *out)
++{
++    js_doc d;
++    waste_inkling_config cfg;
++    waste_inkling_memory mem;
++    waste_status st;
++
++    if (!manifest_json || !out || ctx_tokens == 0) return WASTE_E_ARG;
++    if (js_parse(&d, manifest_json) < 0) return WASTE_E_FORMAT;
++
++    {
++        /* The converter flattens the release's text config into `config`,
++         * with the multimodal wrapper kept under `_outer`, exactly as K3
++         * does. A nested text_config is accepted for a raw release config. */
++        int cfg_tok = js_get(&d, 0, "config");
++        const int nested = js_get(&d, cfg_tok, "text_config");
++        if (nested >= 0) cfg_tok = nested;
++        if (cfg_tok < 0) { js_free(&d); return WASTE_E_FORMAT; }
++        st = plan_config(&d, cfg_tok, &cfg);
++        if (st != WASTE_OK) { js_free(&d); return st; }
++    }
++
++    if (ctx_tokens > (uint32_t)cfg.max_context) { js_free(&d); return WASTE_E_ARG; }
++    if (waste_inkling_plan_decode_memory(&cfg, ctx_tokens, &mem)) {
++        js_free(&d);
++        return WASTE_E_FORMAT;
++    }
++
++    memset(out, 0, sizeof *out);
++    out->state_bytes = mem.state_bytes;
++    out->scratch_bytes = mem.decode_scratch_bytes;
++
++    {   /* Resident trunk: every stored tensor except the two the engine
++         * reads one row at a time. */
++        const int trunk = js_get(&d, 0, "trunk");
++        const int n = js_size(&d, trunk);
++        for (int i = 0; i < n; i++) {
++            const int e = js_at(&d, trunk, i);
++            char name[160];
++            js_str(&d, js_get(&d, e, "name"), name, sizeof name);
++            if (row_backed(name)) continue;
++            const int64_t bytes = js_int(&d, js_get(&d, e, "bytes"), 0);
++            if (bytes < 0 || add64(&out->trunk_bytes, (uint64_t)bytes)) {
++                js_free(&d);
++                return WASTE_E_FORMAT;
++            }
++        }
++    }
++
++    {   /* One layer's top-k routed experts, double buffered — the same
++         * definition of "smallest cache that can run a layer" the Kimi path
++         * uses, read from the first bank's record size. */
++        const int layers = js_get(&d, 0, "layers");
++        uint64_t rec = 0;
++        if (js_size(&d, layers) > 0) {
++            const int first = js_at(&d, layers, 0);
++            const int64_t bytes = js_int(&d, js_get(&d, first, "bytes"), 0);
++            const int64_t count = js_int(&d, js_get(&d, first, "experts"), 0);
++            if (bytes < 0 || count < 0) { js_free(&d); return WASTE_E_FORMAT; }
++            rec = count ? (uint64_t)bytes / (uint64_t)count : 0;
++        }
++        if (mul64(rec, (uint64_t)cfg.top_k * 2u, &out->min_expert_cache)) {
++            js_free(&d);
++            return WASTE_E_FORMAT;
++        }
++        out->floor_bytes = 0;
++        if (add64(&out->floor_bytes, out->trunk_bytes) ||
++            add64(&out->floor_bytes, out->state_bytes) ||
++            add64(&out->floor_bytes, out->scratch_bytes) ||
++            add64(&out->floor_bytes, out->min_expert_cache)) {
++            js_free(&d);
++            return WASTE_E_FORMAT;
++        }
++        /* A cache below one token's working set keeps nothing alive to the
++         * next token, so "recommended" starts at three layers' worth — the
++         * same shape as the Kimi recommendation, with Inkling's top-k. */
++        uint64_t extra;
++        out->recommended_bytes = out->floor_bytes;
++        if (mul64(rec, (uint64_t)cfg.top_k * (uint64_t)cfg.n_layers * 3u, &extra) ||
++            add64(&out->recommended_bytes, extra)) {
++            js_free(&d);
++            return WASTE_E_FORMAT;
++        }
++    }
++
++    js_free(&d);
++    return WASTE_OK;
++}
+diff --git a/src/inkling_public.h b/src/inkling_public.h
+new file mode 100644
+index 0000000..701a21a
+--- /dev/null
++++ b/src/inkling_public.h
+@@ -0,0 +1,34 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++#ifndef WASTE_INKLING_PUBLIC_H
++#define WASTE_INKLING_PUBLIC_H
++
++#include <stdint.h>
++
++#include "waste.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Memory planning for an Inkling container.
++ *
++ * This is the only public capability Inkling has earned, and the boundary is
++ * deliberate: planning answers a geometry question, so the worst it can get
++ * wrong is a byte count. Inference is a claim about a model that has not been
++ * run against its official weights, so `waste_open` still refuses.
++ *
++ * `manifest_json` is the raw text of manifest.json; the caller has already
++ * read it and checked format_version and arch. Returns WASTE_OK, or
++ * WASTE_E_FORMAT for a manifest this build cannot plan from — never a
++ * plausible number derived from a missing field.
++ */
++waste_status waste_inkling_plan_memory_json(const char *manifest_json,
++                                            uint32_t ctx_tokens,
++                                            waste_memplan *out);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
 diff --git a/src/inkling_qtensor.c b/src/inkling_qtensor.c
 new file mode 100644
 index 0000000..7c8c762
@@ -4775,38 +5076,46 @@ index 8d4992a..4cad9cc 100644
          int cfg = js_get(&d, 0, "config");
          /* The converter flattens K3's nested text_config into `config` and
 diff --git a/src/waste.c b/src/waste.c
-index b1d9bbd..813a7c4 100644
+index b1d9bbd..dfff891 100644
 --- a/src/waste.c
 +++ b/src/waste.c
-@@ -22,6 +22,7 @@
+@@ -22,6 +22,8 @@
  #endif
  #include <time.h>
  
 +#include "arch.h"
++#include "inkling_public.h"
  #include "json.h"
  #include "memory.h"
  #include "model.h"
-@@ -175,6 +176,19 @@ waste_status waste_plan_memory(const char *model_path, uint32_t ctx_tokens,
+@@ -175,6 +177,26 @@ waste_status waste_plan_memory(const char *model_path, uint32_t ctx_tokens,
      js_doc d;
      if (js_parse(&d, src) < 0) { free(src); return WASTE_E_FORMAT; }
  
-+    /* Memory planning below is Kimi-specific. Refuse an Inkling manifest
-+     * before reading any architecture dimensions; a made-up Kimi floor is
-+     * worse than an honest unsupported result. */
++    /* Memory planning below is Kimi-specific. An Inkling manifest is handed
++     * to the Inkling planner before any architecture dimension is read here;
++     * a made-up Kimi floor is worse than an honest error, and the Inkling
++     * side fails closed rather than guessing at a missing field.
++     *
++     * Planning is promoted while waste_open still refuses, and the asymmetry
++     * is the point: a wrong plan is a wrong byte count, a wrong forward pass
++     * is a wrong token. */
 +    {
 +        char arch[64];
 +        js_str(&d, js_get(&d, 0, "arch"), arch, sizeof arch);
 +        if (waste_arch_classify(arch) == WASTE_ARCH_INKLING) {
++            const waste_status st =
++                waste_inkling_plan_memory_json(src, ctx_tokens, out);
 +            js_free(&d);
 +            free(src);
-+            return WASTE_E_UNSUPPORTED;
++            return st;
 +        }
 +    }
 +
      memset(out, 0, sizeof *out);
  
      /* trunk: sum the tensor payloads as they are stored, minus the ones the
-@@ -463,7 +477,8 @@ waste_status waste_open(const char *model_path, const waste_cfg *cfg_in,
+@@ -463,7 +485,8 @@ waste_status waste_open(const char *model_path, const waste_cfg *cfg_in,
               * on K3 that is tens of gigabytes lost to one bad manifest. */
              waste_model_free(&c->m);
              free(c);
@@ -4908,7 +5217,7 @@ index 0000000..062dd86
 +  "source": "official Hugging Face release, verified 2026-08-01"
 +}
 diff --git a/tests/run.sh b/tests/run.sh
-index a644b0a..c1d8c73 100755
+index a644b0a..81d85a8 100755
 --- a/tests/run.sh
 +++ b/tests/run.sh
 @@ -53,6 +53,12 @@ else
@@ -4924,13 +5233,13 @@ index a644b0a..c1d8c73 100755
  # ---------------------------------------------------------------- unit ----
  head_ "kernels vs the reference implementations"
  
-@@ -770,6 +776,28 @@ PYFV
+@@ -770,6 +776,73 @@ PYFV
          no "format_version not enforced (rc=$rc rc2=$rc2)"
      fi
  
 +    # Inkling dimensions overlap enough with Kimi's to yield plausible but
-+    # invalid plans. The rebased seam must win before Kimi memory planning,
-+    # public opening, or direct internal model loading.
++    # invalid plans. A Kimi container merely relabelled `Inkling` must be
++    # refused by all three paths rather than planned as either architecture.
 +    IA=$(mktemp -d)
 +    python3 - "$MODEL/manifest.json" "$IA/manifest.json" <<'PYIA'
 +import json, sys
@@ -4941,13 +5250,58 @@ index a644b0a..c1d8c73 100755
 +    info_out=$(./waste info "$IA" 2>&1); info_rc=$?
 +    load_out=$(./test_forward "$IA" 3 "$TMP/inkling.bin" 0 2>&1); load_rc=$?
 +    rm -rf "$IA"
++    # The property under test is that no plausible plan comes out: the
++    # Inkling planner rejects a config that is not Inkling rather than
++    # defaulting its way to a number, so `plan` prints no FLOOR line.
 +    if [ "$plan_rc" -ne 0 ] && [ "$info_rc" -ne 0 ] && [ "$load_rc" -ne 0 ] &&
-+       printf '%s' "$plan_out" | grep -q "unsupported" &&
-+       printf '%s' "$info_out" | grep -q "unsupported" &&
++       ! printf '%s' "$plan_out" | grep -q "FLOOR" &&
 +       printf '%s' "$load_out" | grep -q "no integrated public Inkling"; then
-+        ok "Inkling is recognized before Kimi planning or loading"
++        ok "a Kimi container relabelled Inkling is refused by every path"
 +    else
-+        no "Inkling architecture seam (plan=$plan_rc info=$info_rc load=$load_rc)"
++        no "Inkling seam on a mislabelled container (plan=$plan_rc info=$info_rc load=$load_rc)"
++    fi
++
++    # A real Inkling manifest plans, because planning is arithmetic over
++    # declared geometry. It still must not open: a forward path that has
++    # never run the official weights has not earned a token.
++    IB=$(mktemp -d)
++    python3 - "$IB/manifest.json" <<'PYIB'
++import json, sys
++cfg = json.load(open("tests/data/inkling-small-config.json"))["text_config"]
++rec = 9457664
++json.dump({
++    "format_version": 0, "arch": "inkling", "tensor_prefix": "", "config": cfg,
++    "expert_quant": {"stages": 3, "vec_dim": 8, "entries": 256,
++                     "index_block": 16, "bits_per_weight": 3.0},
++    "trunk": [
++        {"name": "inkling.embed", "fmt": 2, "off": 0,
++         "shape": [201024, 4096], "bytes": 838860800},
++        {"name": "inkling.unembed", "fmt": 2, "off": 0,
++         "shape": [200058, 4096], "bytes": 838860800},
++        {"name": "inkling.layers.0.attn.wq", "fmt": 3, "off": 0,
++         "shape": [4096, 4096], "bytes": 8388608},
++    ],
++    "layers": [{"file": "experts-L2.bin", "experts": 256,
++                "bytes": rec * 256, "codebook_base": 0}],
++}, open(sys.argv[1], "w"))
++PYIB
++    iplan_out=$(./waste plan "$IB" 2>&1); iplan_rc=$?
++    iload_out=$(./test_forward "$IB" 3 "$TMP/inkling2.bin" 0 2>&1); iload_rc=$?
++    # A config missing one required field must fail rather than default it.
++    python3 - "$IB/manifest.json" "$IB/partial.json" <<'PYIC'
++import json, sys
++m = json.load(open(sys.argv[1])); m["config"].pop("d_rel")
++json.dump(m, open(sys.argv[2], "w"))
++PYIC
++    mv "$IB/manifest.json" "$IB/full.json" && mv "$IB/partial.json" "$IB/manifest.json"
++    ipart_rc=0; ./waste plan "$IB" >/dev/null 2>&1 || ipart_rc=$?
++    rm -rf "$IB"
++    if [ "$iplan_rc" -eq 0 ] && [ "$ipart_rc" -ne 0 ] && [ "$iload_rc" -ne 0 ] &&
++       printf '%s' "$iplan_out" | grep -q "FLOOR" &&
++       printf '%s' "$iload_out" | grep -q "no integrated public Inkling"; then
++        ok "an Inkling container plans, fails closed on a missing field, and still refuses to load"
++    else
++        no "Inkling planning (plan=$iplan_rc partial=$ipart_rc load=$iload_rc)"
 +    fi
 +
      if [ -n "${WASTE_SANITIZED:-}" ]; then

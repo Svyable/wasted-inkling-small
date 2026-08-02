@@ -32,25 +32,26 @@ PASS  integration/waste/generate.sh is deterministic on a fixed toolchain
 
 PASS  committed bundle applies to the reviewed tree
       git am of dist/waste-inkling-6931570/patches/*.patch onto the pinned
-      upstream yields e372f1ef2b92c4bcc94f5c2474d6597d068f5c84.
-      Patch sha256: a15a2aa355fda43fb0e1ebfd1a94a0843ec74f5dfaf85f7a219a4d2414140b07
+      upstream yields bd7c8750100d393c13cd36062489cc4fce27ad69.
+      Patch sha256: 5fca00257ecab1df6d1fcfa4679ad491b80ea1156c2e269e2e138562e1c2d48b
 
 PASS  integration/waste/verify.sh
-      Generated tree: e372f1ef2b92c4bcc94f5c2474d6597d068f5c84
-      (v18 tree plus tools/inkling_fixture.py and tests/test_inkling_fixture.py)
+      Generated tree: bd7c8750100d393c13cd36062489cc4fce27ad69
 
 VALIDATION
 ----------
 PASS  PATH=/usr/bin:/bin make check
-      Result: 29 passed, 0 failed, 13 skipped
+      Result: 30 passed, 0 failed, 13 skipped
       Includes:
         - cgroup-v2 limits vs the automatic budget ceiling
         - Inkling architecture seam and scalar runtime primitives
-        - Inkling rejection before Kimi planning or loading
+        - a Kimi container relabelled Inkling refused by every path
+        - an Inkling container plans, fails closed on a missing config
+          field, and still refuses to load
         - upstream serve suite: 168 checks passed
 
 PASS  PATH=/usr/bin:/bin make asan
-      Result: 28 passed, 0 failed, 14 skipped
+      Result: 29 passed, 0 failed, 14 skipped
       AddressSanitizer and UndefinedBehaviorSanitizer were clean.
 
 PASS  PATH=/usr/bin:/bin make fuzz-asan FUZZ_RUNS=200
@@ -58,19 +59,31 @@ PASS  PATH=/usr/bin:/bin make fuzz-asan FUZZ_RUNS=200
 
 PASS  strict compile of src/arch.c and all src/inkling*.c
       Flags: -std=gnu11 -Wall -Wextra -Werror -Isrc
-      Result: 11 translation units compiled
+      Result: 12 translation units compiled
 
 PASS  complete Inkling Python suite
       python3 -m unittest discover -s tests -p "test_ink*.py" -t .
-      Result: 122 tests, OK
+      Result: 134 tests, OK, process exit 0
       python3 -m unittest tests.test_inspect_inkling tests.test_convert_inkling
       Result: 18 tests, OK
-      Total: 140 tests passing.
+      Total: 152 tests passing.
 
-      This is the first time this repository has RUN the Inkling Python suite
-      rather than quoting it. The v16 bundle recorded 99 tests; that number is
-      now confirmed (81 + 18 before this change, all passing), and the 41 new
-      fixture-reader tests bring the total to 140.
+      The v16 bundle recorded 99 tests and nothing re-ran them; that number is
+      confirmed, and the fixture reader plus the layer-parity harness bring the
+      total to 152.
+
+      The process exit code is checked deliberately. An earlier revision of
+      inkling_layer_parity.py declared waste_inkling_attention_state with six
+      fields where the header has eleven, so every state_init wrote 88 bytes
+      into a 64-byte buffer. All tests passed and the numbers were correct; the
+      interpreter segfaulted during shutdown garbage collection. A suite that
+      only reads "OK" would have shipped it.
+
+PASS  ctypes struct layout probe
+      tests/test_inkling_layer_parity.py compiles a C probe that prints
+      sizeof() for the attention state, layer state, layer scratch, layer
+      weights, and config, and compares each against ctypes.sizeof.
+      Verified to fail on the six-field declaration above.
 
 PASS  dependency-light selection, no torch installed
       tests/test_inspect_inkling.py, tests/test_inkling_plan.py,
@@ -78,6 +91,22 @@ PASS  dependency-light selection, no torch installed
       tests/test_inkling_fixture.py
 
 PASS  python3 -m compileall -q tools tests
+
+PUBLIC SURFACE PROMOTED
+-----------------------
+waste_plan_memory() now answers for an Inkling container; waste_open and
+everything downstream still return WASTE_E_UNSUPPORTED.
+
+The promotion is scoped to planning on purpose. A plan is arithmetic over
+declared geometry, so a bug in it produces a wrong byte count that the caller
+sees immediately. A forward pass is a claim about a model whose official
+weights this code has never read.
+
+Cross-checks against the geometry documented in docs/INKLING.md, on a
+synthetic Inkling manifest carrying the released Small config:
+  KV + four convolution rings at 4K ctx   371 MB   (predicted 0.362 GiB)
+  minimum expert cache                    108 MB   (6 x 9,457,664 x 2)
+  resident trunk excludes both row-backed vocabulary tables
 
 WHAT IS STILL NOT CLAIMED
 -------------------------

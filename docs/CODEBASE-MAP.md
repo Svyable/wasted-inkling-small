@@ -60,6 +60,8 @@ refactor.
                                     │
    ─────────────────────────────────┼──────────────────────── promotion boundary
                                     │
+   promoted         │ inkling_public.c         232 │  manifest → memory plan
+                    ├──────────────────────────────┤
    orchestration    │ inkling_private.c        791 │  staged dir → logits
                     │ inkling_bind.c           135 │  names → structs
                     ├──────────────────────────────┤
@@ -212,6 +214,19 @@ Q8G/Q4G artifacts: 96-byte header, row-major payload, FP16 group scales,
 independent CRCs for payload and scales, 4 KiB padding. Supports bounded row
 reads *and* direct quantized matvec without materializing F32.
 
+### `src/inkling_public.c` (232) — the promoted seam
+
+The only Inkling code a public API call reaches. `waste_plan_memory()` hands it
+an Inkling manifest; it reads the architecture out of `config`, builds a
+`waste_inkling_config` through the tested builder, delegates to
+`waste_inkling_plan_decode_memory()`, sums `trunk[]` bytes minus the two
+row-backed vocabulary tables, and derives the minimum expert cache from the
+first bank's record size.
+
+No manifest schema is invented: every field it reads already exists in format
+v0. It fails closed on a missing dimension rather than defaulting, which is
+what makes a relabelled Kimi container an error instead of a plausible floor.
+
 ### `src/inkling_private.c` (791) — the orchestrator
 
 Parses `runtime-stage.bin` — the converter-private index, never
@@ -247,6 +262,7 @@ resident bytes and canonical F32 resident bytes separately.
 | `inkling_runtime_stage.py` | 748 | verify everything, publish `runtime-stage.bin` atomically |
 | `inkling_parity.py` | 416 | bounded fixture extraction + CRC-protected activation archives + comparison |
 | `inkling_fixture.py` | 268 | **dependency-free** fixture reader: CRC verification, axis-0 expert slices, BF16/F16/F32 → F32 decode, module-relative state-dict keys, fail-closed coverage checks |
+| `inkling_layer_parity.py` | 470 | binds one layer from a fixture and runs the traced C decoder layer; owns its ctypes ABI declarations, which a compiled probe checks against the headers |
 | `inkling_trace.py` | 147 | C side of the trace protocol |
 | `inkling_reference.py` | 163 | official Transformers side of the trace protocol |
 | `convert_inkling.py` | 306 | the CLI that drives all of the above |

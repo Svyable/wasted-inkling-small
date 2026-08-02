@@ -89,6 +89,118 @@ def _hf_layer_prefix(layer: int) -> str:
     return f"model.language_model.layers.{layer}"
 
 
+DIALECTS = ("provider_raw", "transformers_normalized")
+
+
+def _dialect(dialect: str) -> str:
+    if dialect not in DIALECTS:
+        raise PlanError(f"unsupported checkpoint dialect: {dialect!r}")
+    return dialect
+
+
+def layer_prefix(layer: int, dialect: str) -> str:
+    return (_raw_layer_prefix(layer) if _dialect(dialect) == "provider_raw"
+            else _hf_layer_prefix(layer))
+
+
+def layer_attention_names(layer: int, dialect: str) -> dict[str, str]:
+    """Source tensor names for one layer's norms and attention projections.
+
+    Split out of build_plan so a consumer that already has the tensors — a
+    parity fixture, say — can find them by the same names the planner uses,
+    rather than keeping a second copy of this table that drifts.
+    """
+    p = layer_prefix(layer, dialect)
+    if dialect == "provider_raw":
+        return {
+            "input_norm": f"{p}.attn_norm.weight",
+            "post_attention_norm": f"{p}.mlp_norm.weight",
+            "q": f"{p}.attn.wq_du.weight",
+            "k": f"{p}.attn.wk_dv.weight",
+            "v": f"{p}.attn.wv_dv.weight",
+            "r": f"{p}.attn.wr_du.weight",
+            "o": f"{p}.attn.wo_ud.weight",
+            "q_norm": f"{p}.attn.q_norm.weight",
+            "k_norm": f"{p}.attn.k_norm.weight",
+            "rel_proj": f"{p}.attn.rel_logits_proj.proj",
+            "k_sconv": f"{p}.attn.k_sconv.weight",
+            "v_sconv": f"{p}.attn.v_sconv.weight",
+            "attn_sconv": f"{p}.attn_sconv.weight",
+            "mlp_sconv": f"{p}.mlp_sconv.weight",
+        }
+    return {
+        "input_norm": f"{p}.input_layernorm.weight",
+        "post_attention_norm": f"{p}.post_attention_layernorm.weight",
+        "q": f"{p}.self_attn.q_proj.weight",
+        "k": f"{p}.self_attn.k_proj.weight",
+        "v": f"{p}.self_attn.v_proj.weight",
+        "r": f"{p}.self_attn.r_proj.weight",
+        "o": f"{p}.self_attn.o_proj.weight",
+        "q_norm": f"{p}.self_attn.q_norm.weight",
+        "k_norm": f"{p}.self_attn.k_norm.weight",
+        "rel_proj": f"{p}.self_attn.rel_logits_proj.proj",
+        "k_sconv": f"{p}.self_attn.k_sconv.conv1d.weight",
+        "v_sconv": f"{p}.self_attn.v_sconv.conv1d.weight",
+        "attn_sconv": f"{p}.attn_sconv.conv1d.weight",
+        "mlp_sconv": f"{p}.mlp_sconv.conv1d.weight",
+    }
+
+
+def layer_dense_mlp_names(layer: int, dialect: str) -> dict[str, str]:
+    """Source names for a dense layer's MLP. The provider ships gate and up
+    fused into one row-interleaved tensor; the normalized dialect does not."""
+    p = layer_prefix(layer, dialect)
+    if dialect == "provider_raw":
+        return {
+            "fused_gate_up": f"{p}.mlp.w13_dn.weight",
+            "down": f"{p}.mlp.w2_md.weight",
+            "global_scale": f"{p}.mlp.global_scale",
+        }
+    return {
+        "gate": f"{p}.mlp.gate_proj.weight",
+        "up": f"{p}.mlp.up_proj.weight",
+        "down": f"{p}.mlp.down_proj.weight",
+        "global_scale": f"{p}.mlp.global_scale",
+    }
+
+
+def layer_sparse_mlp_names(layer: int, dialect: str) -> dict[str, dict[str, str]]:
+    """Source names for a sparse layer, grouped as routed / router / shared."""
+    p = layer_prefix(layer, dialect)
+    if dialect == "provider_raw":
+        return {
+            "routed": {
+                "fused_gate_up": f"{p}.mlp.experts.w13_weight",
+                "down": f"{p}.mlp.experts.w2_weight",
+            },
+            "router": {
+                "weight": f"{p}.mlp.gate.weight",
+                "correction_bias": f"{p}.mlp.gate.bias",
+                "global_scale": f"{p}.mlp.gate.global_scale",
+            },
+            "shared": {
+                "fused_gate_up": f"{p}.mlp.shared_experts.shared_w13_weight",
+                "down": f"{p}.mlp.shared_experts.shared_w2_weight",
+            },
+        }
+    return {
+        "routed": {
+            "fused_gate_up": f"{p}.mlp.experts.gate_up_proj",
+            "down": f"{p}.mlp.experts.down_proj",
+        },
+        "router": {
+            "weight": f"{p}.mlp.gate.weight",
+            "correction_bias": f"{p}.mlp.gate.e_score_correction_bias",
+            "global_scale": f"{p}.mlp.gate.global_scale",
+        },
+        "shared": {
+            "gate": f"{p}.mlp.shared_experts.gate_proj",
+            "up": f"{p}.mlp.shared_experts.up_proj",
+            "down": f"{p}.mlp.shared_experts.down_proj",
+        },
+    }
+
+
 def build_plan(src: Path, *, require_payloads: bool = False) -> dict[str, Any]:
     source_report = inspect(src).data
     if not source_report["architecture"]["is_inkling"]:
@@ -182,40 +294,7 @@ def build_plan(src: Path, *, require_payloads: bool = False) -> dict[str, Any]:
         mlp_kind = "dense" if layer < dense_count else "sparse"
         p = _raw_layer_prefix(layer) if dialect == "provider_raw" else _hf_layer_prefix(layer)
 
-        if dialect == "provider_raw":
-            attn = {
-                "input_norm": f"{p}.attn_norm.weight",
-                "post_attention_norm": f"{p}.mlp_norm.weight",
-                "q": f"{p}.attn.wq_du.weight",
-                "k": f"{p}.attn.wk_dv.weight",
-                "v": f"{p}.attn.wv_dv.weight",
-                "r": f"{p}.attn.wr_du.weight",
-                "o": f"{p}.attn.wo_ud.weight",
-                "q_norm": f"{p}.attn.q_norm.weight",
-                "k_norm": f"{p}.attn.k_norm.weight",
-                "rel_proj": f"{p}.attn.rel_logits_proj.proj",
-                "k_sconv": f"{p}.attn.k_sconv.weight",
-                "v_sconv": f"{p}.attn.v_sconv.weight",
-                "attn_sconv": f"{p}.attn_sconv.weight",
-                "mlp_sconv": f"{p}.mlp_sconv.weight",
-            }
-        else:
-            attn = {
-                "input_norm": f"{p}.input_layernorm.weight",
-                "post_attention_norm": f"{p}.post_attention_layernorm.weight",
-                "q": f"{p}.self_attn.q_proj.weight",
-                "k": f"{p}.self_attn.k_proj.weight",
-                "v": f"{p}.self_attn.v_proj.weight",
-                "r": f"{p}.self_attn.r_proj.weight",
-                "o": f"{p}.self_attn.o_proj.weight",
-                "q_norm": f"{p}.self_attn.q_norm.weight",
-                "k_norm": f"{p}.self_attn.k_norm.weight",
-                "rel_proj": f"{p}.self_attn.rel_logits_proj.proj",
-                "k_sconv": f"{p}.self_attn.k_sconv.conv1d.weight",
-                "v_sconv": f"{p}.self_attn.v_sconv.conv1d.weight",
-                "attn_sconv": f"{p}.attn_sconv.conv1d.weight",
-                "mlp_sconv": f"{p}.mlp_sconv.conv1d.weight",
-            }
+        attn = layer_attention_names(layer, dialect)
 
         expected = {
             "input_norm": [hidden],
@@ -256,12 +335,8 @@ def build_plan(src: Path, *, require_payloads: bool = False) -> dict[str, Any]:
         }
 
         if mlp_kind == "dense":
+            mlp = layer_dense_mlp_names(layer, dialect)
             if dialect == "provider_raw":
-                mlp = {
-                    "fused_gate_up": f"{p}.mlp.w13_dn.weight",
-                    "down": f"{p}.mlp.w2_md.weight",
-                    "global_scale": f"{p}.mlp.global_scale",
-                }
                 expected_mlp = {
                     "fused_gate_up": [2 * dense_inter, hidden],
                     "down": [hidden, dense_inter],
@@ -269,12 +344,6 @@ def build_plan(src: Path, *, require_payloads: bool = False) -> dict[str, Any]:
                 }
                 transform = "interleave rows, then split rows into gate/up (official checkpoint mapping)"
             else:
-                mlp = {
-                    "gate": f"{p}.mlp.gate_proj.weight",
-                    "up": f"{p}.mlp.up_proj.weight",
-                    "down": f"{p}.mlp.down_proj.weight",
-                    "global_scale": f"{p}.mlp.global_scale",
-                }
                 expected_mlp = {
                     "gate": [dense_inter, hidden],
                     "up": [dense_inter, hidden],
@@ -287,35 +356,10 @@ def build_plan(src: Path, *, require_payloads: bool = False) -> dict[str, Any]:
                 trunk.append({"role": f"layer.{layer}.mlp.{role}", "source": name, "storage": "resident trunk"})
             descriptor["mlp"].update({"intermediate_size": dense_inter, "source_transform": transform})
         else:
-            if dialect == "provider_raw":
-                routed = {
-                    "fused_gate_up": f"{p}.mlp.experts.w13_weight",
-                    "down": f"{p}.mlp.experts.w2_weight",
-                }
-                router = {
-                    "weight": f"{p}.mlp.gate.weight",
-                    "correction_bias": f"{p}.mlp.gate.bias",
-                    "global_scale": f"{p}.mlp.gate.global_scale",
-                }
-                shared = {
-                    "fused_gate_up": f"{p}.mlp.shared_experts.shared_w13_weight",
-                    "down": f"{p}.mlp.shared_experts.shared_w2_weight",
-                }
-            else:
-                routed = {
-                    "fused_gate_up": f"{p}.mlp.experts.gate_up_proj",
-                    "down": f"{p}.mlp.experts.down_proj",
-                }
-                router = {
-                    "weight": f"{p}.mlp.gate.weight",
-                    "correction_bias": f"{p}.mlp.gate.e_score_correction_bias",
-                    "global_scale": f"{p}.mlp.gate.global_scale",
-                }
-                shared = {
-                    "gate": f"{p}.mlp.shared_experts.gate_proj",
-                    "up": f"{p}.mlp.shared_experts.up_proj",
-                    "down": f"{p}.mlp.shared_experts.down_proj",
-                }
+            sparse_names = layer_sparse_mlp_names(layer, dialect)
+            routed = sparse_names["routed"]
+            router = sparse_names["router"]
+            shared = sparse_names["shared"]
 
             routed_expected = {
                 "fused_gate_up": [n_experts, 2 * routed_inter, hidden],

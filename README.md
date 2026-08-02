@@ -39,8 +39,8 @@ bundle:
 | ASan + UBSan | 28 passed, 0 failed, 14 skipped |
 | Fuzzing | 200 cases, 0 crashed, 0 hung |
 | Strict compile | 11 translation units, `-Werror` |
-| Python suite | **140 tests, 0 failures** — run, not quoted |
-| Inkling seam | recognized before Kimi planning or loading |
+| Python suite | **152 tests, 0 failures** — run, not quoted |
+| Inkling seam | plans; refuses to load; refuses a mislabelled container |
 
 The port is current, green, and deliberately inert: 62 new files plus **84
 inserted lines across 5 upstream files**. Its blast radius on the public engine
@@ -48,6 +48,27 @@ is zero because no public code path calls it yet.
 
 Full audit: **[docs/STATE-OF-THE-PORT.md](docs/STATE-OF-THE-PORT.md)**.
 Evidence: [`dist/waste-inkling-6931570/TEST-RESULTS.txt`](dist/waste-inkling-6931570/TEST-RESULTS.txt).
+
+## What can launch today, and what cannot
+
+`waste plan` now answers for an Inkling container. That is the first public
+Inkling capability, and the boundary around it is deliberate:
+
+| Capability | Status |
+| --- | --- |
+| `waste_plan_memory()` / `waste plan` | **public** — geometry from a manifest |
+| `waste_open`, `waste run`, `waste chat`, serving | **refused** — `WASTE_E_UNSUPPORTED` |
+
+Planning was promoted and inference was not because they are different kinds of
+claim. A plan is arithmetic over declared dimensions: the worst a bug produces
+is a wrong byte count, which the caller discovers immediately, and the formula
+behind it is tested field by field. A forward pass is a claim about a model
+whose weights this code has never read. Until official-weight parity exists,
+shipping the second would be selling a number nobody has checked.
+
+The planner fails closed. A Kimi container relabelled `inkling`, or an Inkling
+config missing a single field, is refused rather than defaulted into a
+plausible floor — both are checked in the suite.
 
 ## Next enhancement — make parity runnable on one machine
 
@@ -62,6 +83,13 @@ loading and CRC verification, axis-0 expert slices, BF16/F16/F32 → F32 decode
 checked bit-for-bit against torch, module-relative state-dict keys, and
 fail-closed coverage checks that name the missing layer or expert. 41 tests, no
 torch, in CI.
+
+`inkling/tools/inkling_layer_parity.py` is the C side: it binds one layer's
+weights from a fixture and runs the traced decoder layer, emitting the same
+archive names the private runtime does. Equivalence against a direct binding is
+bit-identical, and a compiled probe checks every ctypes struct size against the
+C compiler's — after a six-field-instead-of-eleven declaration silently
+overran a buffer while every test passed.
 
 What remains for the gate is the official-side module construction, which needs
 `transformers` with Inkling support present.
@@ -105,7 +133,7 @@ code nobody reviewed.
 | Artifact | Purpose |
 | --- | --- |
 | [bundle README](dist/waste-inkling-6931570/README.md) | Apply instructions and what changed |
-| [bundle validation](dist/waste-inkling-6931570/TEST-RESULTS.txt) | Generation, tree, sanitizer, fuzz, strict C, and 140 Python tests |
+| [bundle validation](dist/waste-inkling-6931570/TEST-RESULTS.txt) | Generation, tree, sanitizer, fuzz, strict C, and 152 Python tests |
 | [bundle baseline](dist/waste-inkling-6931570/BASELINE) | Machine-readable upstream and tree provenance |
 | [bundle checksum](dist/waste-inkling-6931570/SHA256SUMS) | Patch integrity for the shipped file |
 | [CI](.github/workflows/validate-waste-inkling.yml) | Generate, tree hash, strict compile, regression, bundle-applies check, torch differential suite, sanitizers, fuzzing |
@@ -148,7 +176,7 @@ sha256sum -c SHA256SUMS
 ```
 
 The expected applied Git tree is
-`e372f1ef2b92c4bcc94f5c2474d6597d068f5c84`.
+`5b1796b1b14ea66c4f4a24ca9f65dd4bc1b6b8be`.
 
 Or build and check it from source in one command:
 
@@ -165,7 +193,7 @@ All measured on 2026-08-02 in one environment, on the generated tree:
 - ASan + UBSan: **28 passed, 0 failed, 14 skipped**
 - sanitizer fuzzing: **200 cases, 137 rejected, 63 loaded, 0 crashes, 0 hangs**
 - strict C: **11 Inkling/architecture translation units**, `-Werror`
-- Python: **140 tests passed** (122 + 18), torch differential suite included
+- Python: **152 tests passed** (134 + 18), torch differential suite included
 - patch generation: reproduces the reviewed v18 tree byte-for-byte; the
   committed bundle applies to the pinned tree `e372f1e…`
 

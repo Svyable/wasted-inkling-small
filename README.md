@@ -17,6 +17,60 @@ replay-tested patch for WASTE 0.6.3.
 That is intentional. “Unsupported” is a much better production incident than
 “successfully interpreted a 276B model as something else.”
 
+**Synthetic, not official.** Every parity number below comes from small
+BF16-rounded synthetic weights that validate the binding and execution path.
+The official 532 GB checkpoint has never been executed through this code. Read
+those two sentences before any table in this repository.
+
+## Status — audited 2026-08-02
+
+Re-verified from a clean clone on the date above, not quoted from an earlier
+bundle:
+
+| Check | Result |
+| --- | --- |
+| Upstream drift | none — `sqliteai/waste` HEAD is `6931570`, the exact v18 baseline |
+| Patch integrity | `sha256sum -c SHA256SUMS` OK |
+| Replay onto `6931570` | clean `git am`, tree `ce6c527…` matches the pin |
+| `make check` | 29 passed, 0 failed, 13 skipped (server suite: 168 checks) |
+| Inkling seam | recognized before Kimi planning or loading |
+
+The port is current, green, and deliberately inert: 62 new files plus **84
+inserted lines across 5 upstream files**. Its blast radius on the public engine
+is zero because no public code path calls it yet.
+
+Full audit, including what was *not* re-run:
+**[docs/STATE-OF-THE-PORT.md](docs/STATE-OF-THE-PORT.md)**.
+
+## Next enhancement — make parity runnable on one machine
+
+The released weights are the blocker, and not for the reason you would expect.
+The two-sided trace harness is built, but its official side calls
+`AutoModelForCausalLM.from_pretrained()`, which materializes all 495 GiB before
+emitting a single activation — while `inkling_parity.py` already extracts
+bounded, hash-bound fixtures that nothing consumes.
+
+So the next enhancement is a **fixture-backed reference mode** plus a
+layer-scoped partial runtime stage, which turns BF16 layerwise parity from a
+datacenter reservation into a laptop experiment. A few hundred lines of Python
+that unblock every remaining gate.
+
+Gates, commands, budgets, and the running record:
+**[docs/ROADMAP-V19.md](docs/ROADMAP-V19.md)**.
+
+## Where the code is
+
+| Doc | Purpose |
+| --- | --- |
+| **[docs/CODEBASE-MAP.md](docs/CODEBASE-MAP.md)** | Every translation unit, tool, and test — and the refactor from patch bundles to a reviewable C tree |
+| [docs/STATE-OF-THE-PORT.md](docs/STATE-OF-THE-PORT.md) | Verified state, measured sizes, named risks |
+| [docs/ROADMAP-V19.md](docs/ROADMAP-V19.md) | G0-G6 path to running the open weights |
+
+Note the structural caveat the map opens with: **the source of truth is the
+patch**, not the readable snapshot under `waste-inkling-patch-v16/src`. Editing
+that snapshot changes nothing CI validates. Fixing that is what the refactor is
+for.
+
 ## Current foundation: v18
 
 v18 targets `sqliteai/waste@69315701f634648f7a790915a0a525ed8aabf218`:
@@ -77,16 +131,18 @@ The expected applied Git tree is
 
 ## Current evidence
 
-- WASTE suite: **29 passed, 0 failed, 13 skipped**
-- server suite: **168 checks passed**
+- WASTE suite: **29 passed, 0 failed, 13 skipped** (re-run 2026-08-02)
+- server suite: **168 checks passed** (re-run 2026-08-02)
 - ASan + UBSan: **28 passed, 0 failed, 14 skipped**
 - sanitizer fuzzing: **200 cases, 0 crashes, 0 hangs**
 - strict C: **11 Inkling/architecture translation units**
 - dependency-light Python: **17 tests passed**
 
 The v16 bundle records 99 private-runtime Python tests from before the upstream
-rebases. The official 532 GB checkpoint was not available in this environment,
-so none of the counts above is presented as official-weight parity.
+rebases; nothing in this repository currently re-runs them, which
+[the map](docs/CODEBASE-MAP.md) proposes to fix with a deep CI tier. The
+official 532 GB checkpoint was not available in this environment, so none of
+the counts above is presented as official-weight parity.
 
 ## Promotion path
 

@@ -1,0 +1,68 @@
+Patch 18 validation
+===================
+
+Date: 2026-08-02
+Host: Linux x86_64
+Compiler: GCC / cc
+Upstream: sqliteai/waste@69315701f634648f7a790915a0a525ed8aabf218
+WASTE: 0.6.3; API 1; format 0
+
+BASELINE COMPARISON
+-------------------
+PASS  compared c7cb640..6931570 through GitHub
+      Result: upstream is 12 commits ahead; 35 files changed.
+      Production-relevant delta: cgroup-aware automatic memory budgeting via
+      waste_usable_ram(), src/memory.c, test_memory, and usable_ram_bytes.
+
+PASS  replayed the Patch 17 source surface with git am --3way
+      Conflicts: Makefile and tools/convert.py only.
+      Resolution retained both upstream 0.6.3 behavior and Inkling behavior:
+        - src/memory.c, test_memory, sweep, all Inkling C units, test_inkling
+        - converter worker thread caps and fail-closed Inkling detection
+
+VALIDATION
+----------
+PASS  PATH=/usr/bin:/bin make check
+      Result: 29 passed, 0 failed, 13 skipped
+      Includes:
+        - cgroup-v2 limits vs the automatic budget ceiling
+        - Inkling architecture seam and scalar runtime primitives
+        - Inkling rejection before Kimi planning or loading
+        - upstream serve suite: 168 checks passed
+
+PASS  PATH=/usr/bin:/bin make asan
+      Result: 28 passed, 0 failed, 14 skipped
+      AddressSanitizer and UndefinedBehaviorSanitizer were clean.
+
+PASS  PATH=/usr/bin:/bin make fuzz-asan FUZZ_RUNS=200
+      Result: 200 cases; 147 rejected; 53 loaded; 0 crashed; 0 hung
+
+PASS  strict compile of src/arch.c and all src/inkling*.c
+      Flags: -std=gnu11 -Wall -Wextra -Werror -Isrc
+      Result: 11 translation units compiled
+
+PASS  python3 -m compileall -q tools tests
+
+PASS  dependency-light Python regression selection
+      Files:
+        tests/test_inspect_inkling.py
+        tests/test_inkling_plan.py
+        tests/test_inkling_release.py
+        tests/test_inkling_config_c.py
+      Result: 17 tests passed
+
+INHERITED EVIDENCE
+------------------
+The v16 bundle records 99 Python tests passing before the current-upstream
+rebases. Patch 18 changes integration and provenance, not the private Python/C
+algorithms; the dependency-light tests, full current WASTE C suite, sanitizers,
+and fuzzing were re-run on 0.6.3.
+
+ENVIRONMENT LIMITATION
+----------------------
+The complete v16 Python suite requires real PyTorch. This environment exposes
+neither an installed PyTorch package nor a practical cached dependency set, so
+that 99-test suite was not re-run here. No official 532 GB checkpoint was
+available, so real-weight parity remains an explicit gate rather than a claimed
+result. Existing upstream warnings remain in tokenizer.c, image.c, and
+cli/main.c; the strict Inkling selection is warning-free.

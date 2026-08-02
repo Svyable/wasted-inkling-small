@@ -1,0 +1,111 @@
+name: Validate WASTE Inkling v18
+
+on:
+  pull_request:
+    paths:
+      - "waste-inkling-patch-v18/**"
+      - ".github/workflows/validate-waste-inkling-v18.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "waste-inkling-patch-v18/**"
+      - ".github/workflows/validate-waste-inkling-v18.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-v18-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_REPOSITORY: https://github.com/sqliteai/waste.git
+  UPSTREAM_COMMIT: 69315701f634648f7a790915a0a525ed8aabf218
+  BUNDLE_DIR: waste-inkling-patch-v18
+  PATCH_FILE: waste-inkling-patch-v18/patches/0018-waste-693157-consolidated-inkling-runtime.patch
+  EXPECTED_TREE: ce6c5272e801c651cc6b71f869a1b0cd7167dab5
+
+jobs:
+  replay-and-regress:
+    name: Replay and regress
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out bundle
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify and replay consolidated patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd "$BUNDLE_DIR" && sha256sum -c SHA256SUMS)
+          git clone "$UPSTREAM_REPOSITORY" upstream-waste
+          git -C upstream-waste checkout --detach "$UPSTREAM_COMMIT"
+          git -C upstream-waste \
+            -c user.name="WASTE Inkling CI" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            am "$GITHUB_WORKSPACE/$PATCH_FILE"
+          actual_tree="$(git -C upstream-waste rev-parse 'HEAD^{tree}')"
+          test "$actual_tree" = "$EXPECTED_TREE"
+
+      - name: Run current WASTE regression suite
+        shell: bash
+        run: PATH=/usr/bin:/bin make -C upstream-waste check
+
+      - name: Compile every Inkling unit with warnings as errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          object_dir="$(mktemp -d)"
+          for source in upstream-waste/src/arch.c upstream-waste/src/inkling*.c; do
+            cc -std=gnu11 -Wall -Wextra -Werror -Iupstream-waste/src \
+              -c "$source" -o "$object_dir/$(basename "${source%.c}").o"
+          done
+          test "$(find "$object_dir" -name '*.o' | wc -l)" -eq 11
+
+      - name: Run dependency-light Python validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q upstream-waste/tools upstream-waste/tests
+          cd upstream-waste
+          python3 tests/test_inspect_inkling.py
+          python3 tests/test_inkling_plan.py
+          python3 tests/test_inkling_release.py
+          python3 tests/test_inkling_config_c.py
+
+  sanitizers:
+    name: Sanitizers and container fuzzing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out bundle
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify and replay consolidated patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd "$BUNDLE_DIR" && sha256sum -c SHA256SUMS)
+          git clone "$UPSTREAM_REPOSITORY" upstream-waste
+          git -C upstream-waste checkout --detach "$UPSTREAM_COMMIT"
+          git -C upstream-waste \
+            -c user.name="WASTE Inkling CI" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            am "$GITHUB_WORKSPACE/$PATCH_FILE"
+          actual_tree="$(git -C upstream-waste rev-parse 'HEAD^{tree}')"
+          test "$actual_tree" = "$EXPECTED_TREE"
+
+      - name: Run ASan and UBSan
+        shell: bash
+        run: PATH=/usr/bin:/bin make -C upstream-waste asan
+
+      - name: Fuzz malformed containers under sanitizers
+        shell: bash
+        run: PATH=/usr/bin:/bin make -C upstream-waste fuzz-asan FUZZ_RUNS=200

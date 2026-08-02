@@ -1,0 +1,59 @@
+Patch 17 validation
+===================
+
+Date: 2026-08-01
+Host: Linux x86_64
+Compiler: GCC / cc
+Upstream: sqliteai/waste@c7cb64022963871506908317a661338f1794f70e
+WASTE: 0.6.2; API 1; format 0
+
+PASS  make clean && make test
+      All current upstream and Inkling C sources compiled. No new warnings
+      were introduced; existing warnings remain in upstream tokenizer.c,
+      image.c, and cli/main.c.
+
+PASS  ./test_inkling
+      Result: INKLING OK
+
+PASS  PATH=/usr/bin:/bin make check
+      Result: 28 passed, 0 failed, 13 skipped
+      Includes:
+        - Inkling architecture seam and scalar runtime primitives
+        - Inkling rejection before Kimi planning or loading
+        - upstream serve suite: 167 checks passed
+
+PASS  PATH=/usr/bin:/bin make asan
+      Result: 27 passed, 0 failed, 14 skipped
+      AddressSanitizer and UndefinedBehaviorSanitizer were clean.
+
+PASS  PATH=/usr/bin:/bin make fuzz-asan FUZZ_RUNS=200
+      Result: 200 cases; 142 rejected; 58 loaded; 0 crashed; 0 hung
+
+PASS  strict compile of src/arch.c and all src/inkling*.c
+      Flags: -std=gnu11 -Wall -Wextra -Werror -Isrc
+      Result: 11 translation units compiled
+
+PASS  python3 -m compileall -q tools tests
+
+PASS  dependency-light Python regression selection
+      Files:
+        tests/test_inspect_inkling.py
+        tests/test_inkling_plan.py
+        tests/test_inkling_release.py
+        tests/test_inkling_config_c.py
+      Result: 17 tests passed
+
+INHERITED EVIDENCE
+------------------
+The v16 bundle records 99 Python tests passing before this rebase. Patch 17
+does not change the private Python/C algorithms from v16; it consolidates and
+integrates them with current upstream WASTE.
+
+ENVIRONMENT LIMITATION
+----------------------
+The complete v16 Python suite requires real PyTorch. This environment exposes
+neither an installed PyTorch package nor a practical cached dependency set, so
+that 99-test suite was not re-run here. The dependency-light tests, Python
+compilation, current upstream C suite, sanitizers, and fuzzing were run. No
+official 532 GB checkpoint was available, so real-weight parity remains an
+explicit gate rather than a claimed result.

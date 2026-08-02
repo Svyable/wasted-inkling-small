@@ -33,9 +33,15 @@ integration/waste/verify.sh            # tree hash, -Werror compile, make check
 integration/waste/generate.sh WORKDIR dist/waste-inkling-6931570/patches
 ```
 
-The patch is byte-deterministic: identical sources produce an identical patch
-file, which is what makes `SHA256SUMS` meaningful rather than a record of when
-the build ran.
+The generator pins the commit timestamp and passes `--no-signature`, so
+repeated runs over identical sources produce identical patch bytes rather than
+recording when the build ran or which Git emitted it.
+
+The authoritative check is nonetheless the **applied tree hash**, not the patch
+bytes. `format-patch` output is a function of the local Git as well as the
+content, so CI verifies that the committed patch *applies to*
+`e372f1ef2b92c4bcc94f5c2474d6597d068f5c84` — which is what a consumer actually
+depends on, and is immune to toolchain drift.
 
 ## What changed against `waste-inkling-patch-v18`
 

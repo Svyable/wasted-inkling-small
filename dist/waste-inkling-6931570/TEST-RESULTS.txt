@@ -19,9 +19,21 @@ PASS  integration/waste/generate.sh reproduces the reviewed v18 tree
       tree produced by `git am` of waste-inkling-patch-v18. Established before
       any source change, as the correctness check on the extraction itself.
 
-PASS  integration/waste/generate.sh is deterministic
+PASS  integration/waste/generate.sh is deterministic on a fixed toolchain
       Two independent runs over identical sources produced identical patch
-      bytes: sha256 f637bd86770e17585323d2af4028902a313dbd81649d8df72142ae26741982a4
+      bytes.
+
+      Qualified after CI disproved the unqualified claim: `git format-patch`
+      ends the file with the LOCAL Git version, so a runner on Git 2.54.0
+      produced different bytes from this host's 2.43.0 with nothing stale.
+      The generator now passes --no-signature, and the CI gate compares the
+      APPLIED TREE HASH rather than patch bytes — content-addressed, immune to
+      toolchain drift, and identical to what a consumer relies on.
+
+PASS  committed bundle applies to the reviewed tree
+      git am of dist/waste-inkling-6931570/patches/*.patch onto the pinned
+      upstream yields e372f1ef2b92c4bcc94f5c2474d6597d068f5c84.
+      Patch sha256: a15a2aa355fda43fb0e1ebfd1a94a0843ec74f5dfaf85f7a219a4d2414140b07
 
 PASS  integration/waste/verify.sh
       Generated tree: e372f1ef2b92c4bcc94f5c2474d6597d068f5c84

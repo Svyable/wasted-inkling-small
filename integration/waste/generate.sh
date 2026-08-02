@@ -83,7 +83,13 @@ tree=$(git -C "$work" rev-parse 'HEAD^{tree}')
 
 if [ -n "$outdir" ]; then
     mkdir -p "$outdir"
-    git -C "$work" format-patch --quiet -1 -o "$(CDPATH= cd -- "$outdir" && pwd)"
+    # --no-signature: format-patch otherwise ends the file with the *local*
+    # Git version, so the same sources produce different bytes on a machine
+    # with a different Git. The tree hash is the real gate either way (see
+    # verify.sh and the CI bundle check), but there is no reason to ship a
+    # patch whose checksum depends on the toolchain that emitted it.
+    git -C "$work" format-patch --quiet --no-signature -1 \
+        -o "$(CDPATH= cd -- "$outdir" && pwd)"
 fi
 
 printf '%s\n' "$tree"

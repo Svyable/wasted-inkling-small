@@ -34,7 +34,7 @@ bundle:
 | Check | Result |
 | --- | --- |
 | Upstream drift | none — `sqliteai/waste` HEAD is `6931570`, the exact baseline |
-| Patch generation | reproduces the reviewed v18 tree `ce6c527…` byte-for-byte, and is deterministic across runs |
+| Patch generation | reproduces the reviewed v18 tree `ce6c527…` byte-for-byte; the committed bundle applies to the pinned tree |
 | `make check` | 29 passed, 0 failed, 13 skipped (server suite: 168 checks) |
 | ASan + UBSan | 28 passed, 0 failed, 14 skipped |
 | Fuzzing | 200 cases, 0 crashed, 0 hung |
@@ -88,8 +88,9 @@ waste-inkling-patch-v16..18/ frozen provenance, kept for the audit trail
 ```
 
 To change the port: edit `inkling/`, run `integration/waste/verify.sh`, and
-regenerate the bundle. CI regenerates it independently and fails if the
-committed one is stale, so `dist/` cannot ship code nobody reviewed.
+regenerate the bundle. CI regenerates from source, and separately applies the
+committed bundle and checks it lands on the same tree — so `dist/` cannot ship
+code nobody reviewed.
 
 ## Current foundation
 
@@ -105,8 +106,8 @@ committed one is stale, so `dist/` cannot ship code nobody reviewed.
 | [bundle README](dist/waste-inkling-6931570/README.md) | Apply instructions and what changed |
 | [bundle validation](dist/waste-inkling-6931570/TEST-RESULTS.txt) | Generation, tree, sanitizer, fuzz, strict C, and 140 Python tests |
 | [bundle baseline](dist/waste-inkling-6931570/BASELINE) | Machine-readable upstream and tree provenance |
-| [bundle checksum](dist/waste-inkling-6931570/SHA256SUMS) | Patch integrity, over deterministic bytes |
-| [CI](.github/workflows/validate-waste-inkling.yml) | Generate, tree hash, strict compile, regression, stale-bundle check, torch differential suite, sanitizers, fuzzing |
+| [bundle checksum](dist/waste-inkling-6931570/SHA256SUMS) | Patch integrity for the shipped file |
+| [CI](.github/workflows/validate-waste-inkling.yml) | Generate, tree hash, strict compile, regression, bundle-applies check, torch differential suite, sanitizers, fuzzing |
 
 The historical bundles remain applicable as-is; `waste-inkling-patch-v18`
 replaced patches 1-17 and is superseded by the generated bundle above.
@@ -164,8 +165,8 @@ All measured on 2026-08-02 in one environment, on the generated tree:
 - sanitizer fuzzing: **200 cases, 137 rejected, 63 loaded, 0 crashes, 0 hangs**
 - strict C: **11 Inkling/architecture translation units**, `-Werror`
 - Python: **140 tests passed** (122 + 18), torch differential suite included
-- patch generation: reproduces the reviewed v18 tree byte-for-byte, and is
-  deterministic across independent runs
+- patch generation: reproduces the reviewed v18 tree byte-for-byte; the
+  committed bundle applies to the pinned tree `e372f1e…`
 
 The v16 bundle recorded 99 Python tests and nothing re-ran them. They now run
 in CI, and they pass. The official 532 GB checkpoint was not available in this

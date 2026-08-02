@@ -43,22 +43,31 @@ jobs:
         shell: bash
         run: integration/waste/verify.sh "${RUNNER_TEMP}/waste"
 
-      # The committed bundle must be what the sources produce. A stale dist/
-      # would otherwise ship code nobody reviewed.
-      - name: Committed bundle matches the generated one
+      # The committed bundle must produce the reviewed tree. The gate is the
+      # applied tree hash, not the patch bytes: `format-patch` output varies
+      # with the local Git version, so a byte comparison fails on a runner
+      # whose Git differs from the committer's without anything being stale.
+      # This check is also exactly what a consumer does.
+      - name: Committed bundle applies to the reviewed tree
         shell: bash
         run: |
           set -euo pipefail
-          out="${RUNNER_TEMP}/regen"
-          integration/waste/generate.sh "${RUNNER_TEMP}/waste-regen" "$out" >/dev/null
-          for patch in "$out"/*.patch; do
-            name=$(basename "$patch")
-            if ! cmp -s "$patch" "dist/waste-inkling-6931570/patches/$name"; then
-              echo "dist/ is stale: regenerate with integration/waste/generate.sh" >&2
-              exit 1
-            fi
-          done
+          # shellcheck source=/dev/null
+          . integration/waste/baseline.env
           (cd dist/waste-inkling-6931570 && sha256sum -c SHA256SUMS)
+          work="${RUNNER_TEMP}/waste-bundle"
+          git clone --quiet "$UPSTREAM_REPOSITORY" "$work"
+          git -C "$work" -c advice.detachedHead=false checkout --quiet --detach "$UPSTREAM_COMMIT"
+          git -C "$work" \
+            -c user.name="bundle check" -c user.email="ci@waste.invalid" \
+            am "${GITHUB_WORKSPACE}"/dist/waste-inkling-6931570/patches/*.patch
+          applied=$(git -C "$work" rev-parse 'HEAD^{tree}')
+          if [ "$applied" != "$EXPECTED_APPLIED_TREE" ]; then
+            echo "dist/ is stale: applies to $applied, sources produce $EXPECTED_APPLIED_TREE" >&2
+            echo "regenerate with integration/waste/generate.sh" >&2
+            exit 1
+          fi
+          echo "committed bundle applies to $applied"
 
       - name: Dependency-light Python validation
         shell: bash

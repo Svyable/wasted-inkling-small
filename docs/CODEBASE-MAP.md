@@ -36,8 +36,9 @@ continue unless the resulting tree hash matches `EXPECTED_APPLIED_TREE`.
 
 The extraction was proved by reproducing the reviewed v18 tree
 (`ce6c5272e801c651cc6b71f869a1b0cd7167dab5`) byte-for-byte *before* any source
-changed. The generated patch is byte-deterministic, so its checksum describes
-its content rather than the moment it was built.
+changed. The generator pins the commit date and suppresses the Git-version
+signature, so repeated runs match; the gate that matters is the applied tree
+hash, which no toolchain difference can move.
 
 The map below describes the generated tree. Paths are given as they appear
 there — `src/inkling_layer.c` in the applied tree is `inkling/src/inkling_layer.c`
@@ -339,10 +340,15 @@ Two implementation notes worth keeping, because both cost a debugging cycle:
 - `git add -A` **silently drops** `tests/data/*.json`, because upstream's
   `.gitignore` lists `data/`. `git am` never consulted `.gitignore`, so the
   generator must use `--force` or the generated tree quietly loses two files.
-- `format-patch` embeds the commit date, so an unpinned generator produces a
-  different patch on every run over identical sources. `PATCH_DATE` in
-  `baseline.env` pins it; two runs now yield the same sha256, which is what
-  makes `SHA256SUMS` a statement about content.
+- `format-patch` embeds **the commit date and the local Git version**. The
+  date is pinned by `PATCH_DATE`; the version is suppressed with
+  `--no-signature`. Both were found the hard way — the second by CI, on a
+  runner with Git 2.54.0 against a committer on 2.43.0, failing a byte
+  comparison with nothing actually stale.
+- Which is the deeper lesson: **compare trees, not patches.** A patch file is a
+  rendering, and renderings have toolchain in them. The applied tree hash is
+  content-addressed, is what consumers depend on, and is what the CI staleness
+  gate now checks by running `git am` on the committed bundle.
 
 ## 7. Migration, in order, each step green before the next
 

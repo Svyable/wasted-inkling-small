@@ -67,9 +67,15 @@ ones. The fixture supplies the weights; the harness supplies the input.
   needs `transformers` with Inkling support present, so it must be written and
   first run on a machine that has it — writing it blind would produce exactly
   the plausible-but-unverified code this port exists to avoid.
-- ⬜ **C-side layer harness.** Bind fixture weights through
-  `waste_inkling_bind_weights()` and run `waste_inkling_layer_forward_trace()`
-  over the same input, writing the same archive names.
+- ✅ **`tools/inkling_layer_parity.py`** — the C-side layer harness. Binds one
+  layer's weights from a fixture (resolving names through `inkling_plan.py`,
+  splitting the provider's row-interleaved gate/up, placing routed expert
+  slices at their own indices), runs
+  `waste_inkling_layer_step_backend_trace()` over supplied input hidden
+  states, and writes the same archive names `inkling_trace.py` uses. Proved by
+  running identical weights through this binding and a direct one and
+  requiring bit-identical output, plus a probe that compares every ctypes
+  struct size against the C compiler's.
 
 ```sh
 # once, on a machine with the checkpoint mounted (streaming read, ~8 GiB written)
@@ -93,8 +99,8 @@ python tools/inkling_parity.py --compare-reference /parity/python \
 **Done when.** Both archives for layers 0, 2, and 5 are produced on a machine
 with < 64 GB RAM and a comparison report exists, whatever it says.
 
-**Cost.** The remaining two pieces are a few hundred lines of Python between
-them, and still no C changes. This is the highest-leverage item in the
+**Cost.** One piece remains — the official-side module construction — and it is
+still no C change. This is the highest-leverage item in the
 repository: every gate below is blocked on it, and none of them is blocked on
 anything else.
 
@@ -281,7 +287,7 @@ and is the best parallel track for a second contributor.
 
 | Gate | Status | Evidence |
 | --- | --- | --- |
-| G0 fixture parity | **in progress** — reader landed, both harness sides remain | `tools/inkling_fixture.py`, 41 tests in CI |
+| G0 fixture parity | **in progress** — reader and C side landed; official side remains | `inkling_fixture.py`, `inkling_layer_parity.py`, 53 tests |
 | G1 BF16 parity | not started | — |
 | G2 quantized tolerance | not started | — |
 | G3 conversion measurement | not started | — |

@@ -1,4 +1,4 @@
-From 1163a84a246329146ff33a2dcc673ebc9e8bf68a Mon Sep 17 00:00:00 2001
+From 48c9460c74c9c72e33be141dca9749537568069e Mon Sep 17 00:00:00 2001
 From: WASTE Inkling integration <inkling@waste.invalid>
 Date: Sun, 2 Aug 2026 00:00:00 +0000
 Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
@@ -43,6 +43,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tests/test_inkling_config_c.py        | 259 +++++++
  tests/test_inkling_fixture.py         | 401 +++++++++++
  tests/test_inkling_layer_c.py         | 450 +++++++++++++
+ tests/test_inkling_layer_parity.py    | 384 +++++++++++
  tests/test_inkling_model_c.py         | 503 ++++++++++++++
  tests/test_inkling_parity.py          | 110 +++
  tests/test_inkling_plan.py            | 109 +++
@@ -60,8 +61,9 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/convert.py                      |  13 +-
  tools/convert_inkling.py              | 306 +++++++++
  tools/inkling_fixture.py              | 388 +++++++++++
+ tools/inkling_layer_parity.py         | 586 ++++++++++++++++
  tools/inkling_parity.py               | 416 ++++++++++++
- tools/inkling_plan.py                 | 519 ++++++++++++++
+ tools/inkling_plan.py                 | 563 ++++++++++++++++
  tools/inkling_qtrunk.py               | 254 +++++++
  tools/inkling_reference.py            | 163 +++++
  tools/inkling_release.py              | 287 ++++++++
@@ -73,7 +75,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/inkling_vq.py                   | 927 ++++++++++++++++++++++++++
  tools/inkling_weights.py              | 369 ++++++++++
  tools/inspect_inkling.py              | 799 ++++++++++++++++++++++
- 69 files changed, 15992 insertions(+), 7 deletions(-)
+ 71 files changed, 17006 insertions(+), 7 deletions(-)
  create mode 100644 PATCH18-HANDOFF.md
  create mode 100644 TEST-RESULTS-P18.txt
  create mode 100644 docs/INKLING.md
@@ -109,6 +111,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100644 tests/test_inkling_config_c.py
  create mode 100644 tests/test_inkling_fixture.py
  create mode 100644 tests/test_inkling_layer_c.py
+ create mode 100644 tests/test_inkling_layer_parity.py
  create mode 100644 tests/test_inkling_model_c.py
  create mode 100644 tests/test_inkling_parity.py
  create mode 100644 tests/test_inkling_plan.py
@@ -125,6 +128,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100755 tests/test_inspect_inkling.py
  create mode 100644 tools/convert_inkling.py
  create mode 100644 tools/inkling_fixture.py
+ create mode 100644 tools/inkling_layer_parity.py
  create mode 100644 tools/inkling_parity.py
  create mode 100644 tools/inkling_plan.py
  create mode 100755 tools/inkling_qtrunk.py
@@ -6926,6 +6930,396 @@ index 0000000..ae21655
 +
 +if __name__ == "__main__":
 +    unittest.main()
+diff --git a/tests/test_inkling_layer_parity.py b/tests/test_inkling_layer_parity.py
+new file mode 100644
+index 0000000..9e81e20
+--- /dev/null
++++ b/tests/test_inkling_layer_parity.py
+@@ -0,0 +1,384 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++"""Tests for the fixture-backed C layer harness.
++
++The C decoder layer is already validated against PyTorch by
++test_inkling_layer_c.py. What is new here is everything *around* it: reading a
++bounded fixture, resolving source tensor names through inkling_plan, splitting
++the provider's row-interleaved gate/up, placing routed expert slices at their
++own indices, and keeping every ctypes buffer alive.
++
++So the central test is an equivalence: the same weights, run through the
++already-validated direct path and through the fixture path, must produce
++identical output. Any defect in the new code moves those numbers.
++"""
++
++import ctypes
++import json
++import sys
++import tempfile
++import unittest
++import zlib
++from array import array
++from pathlib import Path
++
++import torch
++
++REPO = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(REPO / "tools"))
++sys.path.insert(0, str(REPO / "tests"))
++
++from inkling_fixture import load_fixture
++from inkling_layer_parity import (
++    AttentionState, Config as ParityConfig, LayerBinding, LayerParityError,
++    LayerScratch, LayerState, LayerWeights, bind_layer, build_library,
++    configure_library, run_layer_trace, split_fused_gate_up,
++)
++from inkling_plan import layer_attention_names, layer_sparse_mlp_names
++
++FP = ctypes.POINTER(ctypes.c_float)
++
++CONFIG = {
++    "n_layers": 2, "hidden": 8, "vocab": 32, "unpadded_vocab": 30,
++    "max_context": 16,
++    "global_heads": 2, "global_kv_heads": 1, "global_head_dim": 4,
++    "local_heads": 2, "local_kv_heads": 1, "local_head_dim": 4,
++    "sliding_window": 3, "d_rel": 2, "rel_extent": 5, "conv_kernel": 3,
++    "dense_layers": 1, "dense_intermediate": 12, "moe_intermediate": 6,
++    "n_routed_experts": 3, "top_k": 2, "n_shared_experts": 1,
++    "rms_eps": 1e-6, "route_scale": 2.0, "logits_width_multiplier": 2.0,
++    "log_scaling_n_floor": 2, "log_scaling_alpha": 0.2,
++    "local_layer_ids": [0],
++}
++
++
++def fuse_gate_up(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
++    """Inverse of split_fused_gate_up: interleave rows as the provider ships."""
++    inter, hidden = gate.shape
++    out = torch.empty(2 * inter, hidden, dtype=gate.dtype)
++    out[0::2] = gate
++    out[1::2] = up
++    return out
++
++
++def make_tensors(layer: int, seed: int = 7) -> dict[str, torch.Tensor]:
++    torch.manual_seed(seed + layer)
++    c = CONFIG
++    h = c["hidden"]
++    is_local = layer in c["local_layer_ids"]
++    heads = c["local_heads"] if is_local else c["global_heads"]
++    kv = c["local_kv_heads"] if is_local else c["global_kv_heads"]
++    hd = c["local_head_dim"] if is_local else c["global_head_dim"]
++    extent = c["sliding_window"] if is_local else c["rel_extent"]
++    k = c["conv_kernel"]
++    t = {
++        "input_norm": torch.rand(h) + 0.5,
++        "post_attention_norm": torch.rand(h) + 0.5,
++        "wq": torch.randn(heads * hd, h) * 0.15,
++        "wk": torch.randn(kv * hd, h) * 0.15,
++        "wv": torch.randn(kv * hd, h) * 0.15,
++        "wr": torch.randn(heads * c["d_rel"], h) * 0.15,
++        "wo": torch.randn(h, heads * hd) * 0.15,
++        "q_norm": torch.rand(hd) + 0.5,
++        "k_norm": torch.rand(hd) + 0.5,
++        "relative_proj": torch.randn(c["d_rel"], extent) * 0.2,
++        "k_sconv": torch.randn(kv * hd, k) * 0.2,
++        "v_sconv": torch.randn(kv * hd, k) * 0.2,
++        "attn_sconv": torch.randn(h, k) * 0.2,
++        "mlp_sconv": torch.randn(h, k) * 0.2,
++    }
++    if layer < c["dense_layers"]:
++        di = c["dense_intermediate"]
++        t["dense_gate"] = torch.randn(di, h) * 0.15
++        t["dense_up"] = torch.randn(di, h) * 0.15
++        t["dense_down"] = torch.randn(h, di) * 0.15
++        t["dense_global_scale"] = torch.tensor([1.25])
++    else:
++        mi, ne, ns = c["moe_intermediate"], c["n_routed_experts"], c["n_shared_experts"]
++        t["router_weight"] = torch.randn(ne + ns, h) * 0.2
++        t["router_bias"] = torch.randn(ne) * 0.1
++        t["router_global_scale"] = torch.tensor([0.75])
++        t["routed_gate"] = torch.randn(ne, mi, h) * 0.15
++        t["routed_up"] = torch.randn(ne, mi, h) * 0.15
++        t["routed_down"] = torch.randn(ne, h, mi) * 0.15
++        t["shared_gate"] = torch.randn(ns, mi, h) * 0.15
++        t["shared_up"] = torch.randn(ns, mi, h) * 0.15
++        t["shared_down"] = torch.randn(ns, h, mi) * 0.15
++    return t
++
++
++def write_fixture(root: Path, layer: int, t: dict[str, torch.Tensor]) -> Path:
++    """Write a fixture in provider_raw source naming, F32 so the comparison is
++    about the harness rather than about BF16 rounding."""
++    entries = []
++
++    def add(name: str, tensor: torch.Tensor, axis0: int | None = None) -> None:
++        payload = tensor.detach().float().contiguous().view(torch.uint8).numpy().tobytes()
++        rel = f"e{len(entries)}.bin"
++        (root / rel).write_bytes(payload)
++        entry = {
++            "name": name, "kind": "tensor" if axis0 is None else "axis0-slice",
++            "dtype": "F32", "shape": list(tensor.shape), "bytes": len(payload),
++            "crc32": zlib.crc32(payload) & 0xFFFFFFFF, "path": rel,
++        }
++        if axis0 is not None:
++            entry["axis0"] = axis0
++        entries.append(entry)
++
++    names = layer_attention_names(layer, "provider_raw")
++    for role, key in (("input_norm", "input_norm"),
++                      ("post_attention_norm", "post_attention_norm"),
++                      ("q", "wq"), ("k", "wk"), ("v", "wv"), ("r", "wr"),
++                      ("o", "wo"), ("q_norm", "q_norm"), ("k_norm", "k_norm"),
++                      ("rel_proj", "relative_proj"), ("k_sconv", "k_sconv"),
++                      ("v_sconv", "v_sconv"), ("attn_sconv", "attn_sconv"),
++                      ("mlp_sconv", "mlp_sconv")):
++        add(names[role], t[key])
++
++    experts: dict[str, list[int]] = {}
++    if layer < CONFIG["dense_layers"]:
++        from inkling_plan import layer_dense_mlp_names
++        mlp = layer_dense_mlp_names(layer, "provider_raw")
++        add(mlp["fused_gate_up"], fuse_gate_up(t["dense_gate"], t["dense_up"]))
++        add(mlp["down"], t["dense_down"])
++        add(mlp["global_scale"], t["dense_global_scale"])
++    else:
++        sparse = layer_sparse_mlp_names(layer, "provider_raw")
++        add(sparse["router"]["weight"], t["router_weight"])
++        add(sparse["router"]["correction_bias"], t["router_bias"])
++        add(sparse["router"]["global_scale"], t["router_global_scale"])
++        shared = torch.stack([
++            fuse_gate_up(t["shared_gate"][s], t["shared_up"][s])
++            for s in range(CONFIG["n_shared_experts"])
++        ])
++        add(sparse["shared"]["fused_gate_up"], shared)
++        add(sparse["shared"]["down"], t["shared_down"])
++        ids = list(range(CONFIG["n_routed_experts"]))
++        for e in ids:
++            add(sparse["routed"]["fused_gate_up"],
++                fuse_gate_up(t["routed_gate"][e], t["routed_up"][e]), axis0=e)
++            add(sparse["routed"]["down"], t["routed_down"][e], axis0=e)
++        experts[str(layer)] = ids
++
++    manifest = {
++        "format": "inkling-parity-fixture", "version": 1,
++        "model_id": "synthetic", "layers": [layer], "experts": experts,
++        "source": {"config_sha256": "0" * 64, "index_sha256": "1" * 64},
++        "total_payload_bytes": sum(e["bytes"] for e in entries),
++        "entries": entries,
++    }
++    (root / "fixture.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
++    return root
++
++
++def direct_binding(t: dict[str, torch.Tensor], layer: int) -> LayerBinding:
++    """Weights bound straight from the tensors, bypassing the fixture.
++
++    Same struct and same executor as the fixture path; the only difference is
++    where the numbers came from. That is precisely the variable under test.
++    """
++    binding = LayerBinding()
++    flat = lambda name: t[name].detach().float().contiguous().view(-1).tolist()
++    for field in ("input_norm", "post_attention_norm", "wq", "wk", "wv", "wr",
++                  "wo", "q_norm", "k_norm", "relative_proj", "k_sconv",
++                  "v_sconv", "attn_sconv", "mlp_sconv"):
++        binding.set(field, flat(field))
++    sparse = layer >= CONFIG["dense_layers"]
++    binding.weights.sparse = int(sparse)
++    fields = (("router_weight", "router_bias", "router_global_scale",
++               "shared_gate", "shared_up", "shared_down",
++               "routed_gate", "routed_up", "routed_down") if sparse else
++              ("dense_gate", "dense_up", "dense_down", "dense_global_scale"))
++    for field in fields:
++        binding.set(field, flat(field))
++    return binding
++
++
++class LayerParityHarnessTest(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cls.td = tempfile.TemporaryDirectory()
++        try:
++            lib_path = build_library(REPO / "src", Path(cls.td.name) / "lib.so")
++        except LayerParityError as exc:
++            cls.td.cleanup()
++            raise unittest.SkipTest(str(exc))
++        cls.lib = ctypes.CDLL(str(lib_path))
++        configure_library(cls.lib)
++
++    @classmethod
++    def tearDownClass(cls):
++        cls.td.cleanup()
++
++    def setUp(self):
++        self.td = tempfile.TemporaryDirectory()
++        self.root = Path(self.td.name)
++        self.addCleanup(self.td.cleanup)
++
++    def direct_run(self, layer, tensors, inputs):
++        binding = direct_binding(tensors, layer)
++        return run_layer_trace(self.lib, CONFIG, layer, binding, inputs)["outputs"]
++
++    def fixture_run(self, layer, tensors, inputs):
++        write_fixture(self.root, layer, tensors)
++        fixture = load_fixture(self.root)
++        binding = bind_layer(fixture, CONFIG, layer)
++        return run_layer_trace(self.lib, CONFIG, layer, binding, inputs)
++
++    def test_dense_layer_matches_the_direct_path(self):
++        tensors = make_tensors(0)
++        inputs = [torch.randn(CONFIG["hidden"]).tolist() for _ in range(3)]
++        want = self.direct_run(0, tensors, inputs)
++        got = self.fixture_run(0, tensors, inputs)["outputs"]
++        self.assertEqual(got, want)
++
++    def test_sparse_layer_matches_the_direct_path(self):
++        tensors = make_tensors(1)
++        inputs = [torch.randn(CONFIG["hidden"]).tolist() for _ in range(4)]
++        want = self.direct_run(1, tensors, inputs)
++        got = self.fixture_run(1, tensors, inputs)["outputs"]
++        self.assertEqual(got, want)
++
++    def test_trace_names_match_the_private_runtime_convention(self):
++        tensors = make_tensors(1)
++        inputs = [torch.randn(CONFIG["hidden"]).tolist() for _ in range(2)]
++        traced = self.fixture_run(1, tensors, inputs)
++        names = set(traced["values"])
++        self.assertIn("token.0.layer.1.output", names)
++        self.assertIn("token.1.layer.1.output", names)
++        for name in names:
++            self.assertTrue(name.startswith("token."), name)
++            self.assertIn(".layer.1.", name)
++        # routing indices are traced as integers, not floats
++        routing = [n for n in names if traced["dtypes"][n] == "I32"]
++        self.assertTrue(routing, "expected at least one integer trace record")
++
++    def test_state_advances_across_positions(self):
++        tensors = make_tensors(1)
++        row = torch.randn(CONFIG["hidden"]).tolist()
++        traced = self.fixture_run(1, tensors, [row, list(row)])
++        self.assertNotEqual(traced["outputs"][0], traced["outputs"][1],
++                            "identical inputs at different positions must differ: "
++                            "the conv rings and KV cache carry state")
++
++
++class StructLayoutTest(unittest.TestCase):
++    """The ctypes declarations in inkling_layer_parity are a hand transcription
++    of three C headers. A wrong one is not a test failure — it is a buffer
++    overrun that produces correct numbers and crashes later, somewhere else.
++    So ask the C compiler."""
++
++    PROBE = """
++    #include <stdio.h>
++    #include "inkling_layer.h"
++    int main(void) {
++        printf("%zu %zu %zu %zu %zu\\n",
++               sizeof(waste_inkling_attention_state),
++               sizeof(waste_inkling_layer_state),
++               sizeof(waste_inkling_layer_scratch),
++               sizeof(waste_inkling_layer_weights),
++               sizeof(waste_inkling_config));
++        return 0;
++    }
++    """
++
++    def test_struct_layout_matches_c(self):
++        import shutil
++        import subprocess
++
++        cc = shutil.which("cc") or shutil.which("gcc")
++        if not cc:
++            self.skipTest("no C compiler")
++        with tempfile.TemporaryDirectory() as td:
++            src = Path(td) / "probe.c"
++            exe = Path(td) / "probe"
++            src.write_text(self.PROBE)
++            build = subprocess.run(
++                [cc, "-std=c11", f"-I{REPO / 'src'}", str(src), "-o", str(exe)],
++                capture_output=True, text=True)
++            self.assertEqual(build.returncode, 0, build.stderr)
++            out = subprocess.run([str(exe)], capture_output=True, text=True)
++            self.assertEqual(out.returncode, 0, out.stderr)
++        sizes = [int(x) for x in out.stdout.split()]
++        for got, want, name in zip(
++            (ctypes.sizeof(AttentionState), ctypes.sizeof(LayerState),
++             ctypes.sizeof(LayerScratch), ctypes.sizeof(LayerWeights),
++             ctypes.sizeof(ParityConfig)),
++            sizes,
++            ("attention_state", "layer_state", "layer_scratch",
++             "layer_weights", "config"),
++        ):
++            self.assertEqual(got, want, f"{name}: ctypes {got} bytes, C {want}")
++
++
++class FusedSplitTest(unittest.TestCase):
++    def test_split_is_the_inverse_of_the_provider_interleave(self):
++        gate = torch.randn(5, 3)
++        up = torch.randn(5, 3)
++        fused = fuse_gate_up(gate, up)
++        values = array("f", fused.contiguous().view(-1).tolist())
++        got_gate, got_up = split_fused_gate_up(values, 5, 3)
++        self.assertEqual(list(got_gate), gate.contiguous().view(-1).tolist())
++        self.assertEqual(list(got_up), up.contiguous().view(-1).tolist())
++
++    def test_wrong_length_is_refused(self):
++        with self.assertRaises(LayerParityError):
++            split_fused_gate_up(array("f", [0.0] * 7), 2, 3)
++
++
++class BindingRejectionTest(unittest.TestCase):
++    def setUp(self):
++        self.td = tempfile.TemporaryDirectory()
++        self.root = Path(self.td.name)
++        self.addCleanup(self.td.cleanup)
++
++    def test_missing_tensor_names_itself(self):
++        tensors = make_tensors(0)
++        write_fixture(self.root, 0, tensors)
++        manifest = json.loads((self.root / "fixture.json").read_text())
++        names = layer_attention_names(0, "provider_raw")
++        manifest["entries"] = [e for e in manifest["entries"] if e["name"] != names["q"]]
++        manifest.pop("total_payload_bytes")
++        (self.root / "fixture.json").write_text(json.dumps(manifest))
++        fixture = load_fixture(self.root)
++        with self.assertRaises(Exception) as ctx:
++            bind_layer(fixture, CONFIG, 0)
++        self.assertIn(names["q"], str(ctx.exception))
++
++    def test_shape_disagreement_is_refused(self):
++        tensors = make_tensors(0)
++        tensors["wq"] = torch.randn(CONFIG["local_heads"] * CONFIG["local_head_dim"],
++                                    CONFIG["hidden"] + 1)
++        write_fixture(self.root, 0, tensors)
++        fixture = load_fixture(self.root)
++        with self.assertRaises(LayerParityError) as ctx:
++            bind_layer(fixture, CONFIG, 0)
++        self.assertIn("config implies", str(ctx.exception))
++
++    def test_uncovered_layer_is_refused(self):
++        write_fixture(self.root, 0, make_tensors(0))
++        fixture = load_fixture(self.root)
++        with self.assertRaises(Exception):
++            bind_layer(fixture, CONFIG, 1)
++
++    def test_sparse_layer_without_experts_is_refused(self):
++        tensors = make_tensors(1)
++        write_fixture(self.root, 1, tensors)
++        manifest = json.loads((self.root / "fixture.json").read_text())
++        manifest["experts"] = {}
++        (self.root / "fixture.json").write_text(json.dumps(manifest))
++        fixture = load_fixture(self.root)
++        with self.assertRaises(LayerParityError) as ctx:
++            bind_layer(fixture, CONFIG, 1)
++        self.assertIn("no routed experts", str(ctx.exception))
++
++    def test_requesting_an_absent_expert_is_refused(self):
++        write_fixture(self.root, 1, make_tensors(1))
++        fixture = load_fixture(self.root)
++        with self.assertRaises(Exception) as ctx:
++            bind_layer(fixture, CONFIG, 1, experts=[0, 99])
++        self.assertIn("99", str(ctx.exception))
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/tests/test_inkling_model_c.py b/tests/test_inkling_model_c.py
 new file mode 100644
 index 0000000..53c9497
@@ -10943,6 +11337,598 @@ index 0000000..86655ab
 +
 +if __name__ == "__main__":
 +    raise SystemExit(main())
+diff --git a/tools/inkling_layer_parity.py b/tools/inkling_layer_parity.py
+new file mode 100644
+index 0000000..30963b5
+--- /dev/null
++++ b/tools/inkling_layer_parity.py
+@@ -0,0 +1,586 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 SQLite Cloud, Inc.
++"""Run one Inkling decoder layer in C from a bounded parity fixture.
++
++This is the candidate side of layer-level parity. Whole-model parity needs the
++whole checkpoint, because layer N's activations depend on layers 0..N-1; a
++single layer does not, provided both implementations are handed the *same*
++input hidden state. That is what makes fixture-scale parity possible at all.
++
++The flow is:
++
++    fixture (bounded, CRC-checked)  ->  waste_inkling_layer_weights
++    fixed input hidden states       ->  waste_inkling_layer_step_backend_trace
++    named activations               ->  the CRC-protected archive
++
++The archive names match `inkling_trace.py` exactly — `token.{p}.layer.{L}.{point}`
++— so `inkling_parity.py --compare-reference` consumes both sides unchanged.
++
++Source tensor names come from `inkling_plan.py`, not from a second copy of the
++naming table.
++"""
++
++from __future__ import annotations
++
++import argparse
++import ctypes
++import json
++import shutil
++import subprocess
++import sys
++from array import array
++from pathlib import Path
++from typing import Any
++
++from inkling_fixture import Fixture, FixtureError, load_fixture
++from inkling_plan import layer_attention_names, layer_dense_mlp_names, layer_sparse_mlp_names
++
++FP = ctypes.POINTER(ctypes.c_float)
++IP = ctypes.POINTER(ctypes.c_int)
++
++
++class LayerParityError(RuntimeError):
++    pass
++
++
++# ---- C structures ---------------------------------------------------------
++# Field order and types mirror inkling_layer.h, inkling_attention.h, and
++# inkling_config.h. A mismatch here is silent memory corruption rather than an
++# error, which is why the tests run the same weights through this binding and
++# through a direct one and require identical output: a wrong offset moves the
++# numbers.
++
++MAX_LAYERS = 128
++
++
++class LayerCfg(ctypes.Structure):
++    _fields_ = [
++        ("is_local", ctypes.c_int), ("num_heads", ctypes.c_int),
++        ("num_kv_heads", ctypes.c_int), ("head_dim", ctypes.c_int),
++        ("relative_extent", ctypes.c_int),
++    ]
++
++
++class Config(ctypes.Structure):
++    _fields_ = [
++        ("n_layers", ctypes.c_int), ("hidden", ctypes.c_int),
++        ("vocab", ctypes.c_int), ("unpadded_vocab", ctypes.c_int),
++        ("max_context", ctypes.c_int),
++        ("global_heads", ctypes.c_int), ("global_kv_heads", ctypes.c_int),
++        ("global_head_dim", ctypes.c_int),
++        ("local_heads", ctypes.c_int), ("local_kv_heads", ctypes.c_int),
++        ("local_head_dim", ctypes.c_int),
++        ("sliding_window", ctypes.c_int), ("d_rel", ctypes.c_int),
++        ("rel_extent", ctypes.c_int), ("conv_kernel", ctypes.c_int),
++        ("dense_layers", ctypes.c_int), ("dense_intermediate", ctypes.c_int),
++        ("moe_intermediate", ctypes.c_int),
++        ("n_routed_experts", ctypes.c_int), ("top_k", ctypes.c_int),
++        ("n_shared_experts", ctypes.c_int),
++        ("rms_eps", ctypes.c_float), ("route_scale", ctypes.c_float),
++        ("logits_width_multiplier", ctypes.c_float),
++        ("log_scaling_n_floor", ctypes.c_int),
++        ("log_scaling_alpha", ctypes.c_float),
++        ("layer", LayerCfg * MAX_LAYERS),
++    ]
++
++
++class ConfigArgs(ctypes.Structure):
++    _fields_ = Config._fields_[:-1] + [
++        ("local_layer_ids", ctypes.POINTER(ctypes.c_int)),
++        ("n_local_layers", ctypes.c_int),
++    ]
++
++
++class AttentionState(ctypes.Structure):
++    """Must match waste_inkling_attention_state exactly, field for field.
++
++    An earlier version of this declaration was six fields where the header has
++    eleven. Every call to waste_inkling_layer_state_init then wrote 88 bytes
++    into a 64-byte buffer: the tests passed, the numbers were right, and the
++    process segfaulted during shutdown garbage collection. That is why
++    test_struct_layout_matches_c compiles a probe and compares sizes rather
++    than trusting this block to have been transcribed correctly.
++    """
++
++    _fields_ = [
++        ("is_local", ctypes.c_int),
++        ("num_heads", ctypes.c_int),
++        ("num_kv_heads", ctypes.c_int),
++        ("head_dim", ctypes.c_int),
++        ("d_rel", ctypes.c_int),
++        ("relative_extent", ctypes.c_int),
++        ("capacity", ctypes.c_int),
++        ("rms_eps", ctypes.c_float),
++        ("next_position", ctypes.c_int),
++        ("k_cache", FP),
++        ("v_cache", FP),
++    ]
++
++
++class LayerWeights(ctypes.Structure):
++    _fields_ = [
++        ("input_norm", FP), ("post_attention_norm", FP),
++        ("wq", FP), ("wk", FP), ("wv", FP), ("wr", FP), ("wo", FP),
++        ("q_norm", FP), ("k_norm", FP), ("relative_proj", FP),
++        ("k_sconv", FP), ("v_sconv", FP), ("attn_sconv", FP), ("mlp_sconv", FP),
++        ("sparse", ctypes.c_int),
++        ("dense_gate", FP), ("dense_up", FP), ("dense_down", FP),
++        ("dense_global_scale", FP),
++        ("router_weight", FP), ("router_bias", FP), ("router_global_scale", FP),
++        ("shared_gate", FP), ("shared_up", FP), ("shared_down", FP),
++        ("routed_gate", FP), ("routed_up", FP), ("routed_down", FP),
++    ]
++
++
++class LayerState(ctypes.Structure):
++    _fields_ = [
++        ("attention", AttentionState),
++        ("k_conv_state", FP), ("v_conv_state", FP),
++        ("attn_conv_state", FP), ("mlp_conv_state", FP),
++    ]
++
++
++class LayerScratch(ctypes.Structure):
++    _fields_ = [
++        (name, FP) for name in (
++            "norm", "q", "k", "v", "relative", "scores", "attn_out", "branch",
++            "gate", "up", "ff", "router_logits", "routed_weight", "shared_weight",
++        )
++    ] + [
++        ("routed_index", IP),
++        ("float_count", ctypes.c_size_t),
++        ("int_count", ctypes.c_size_t),
++    ]
++
++
++TraceFloat = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int,
++                              ctypes.c_char_p, FP, ctypes.c_size_t)
++TraceInt = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int,
++                            ctypes.c_char_p, IP, ctypes.c_size_t)
++
++
++class Trace(ctypes.Structure):
++    _fields_ = [("emit_float", TraceFloat), ("emit_int", TraceInt),
++                ("ctx", ctypes.c_void_p)]
++
++
++class MatrixBackend(ctypes.Structure):
++    _fields_ = [("matvec", ctypes.c_void_p), ("ctx", ctypes.c_void_p)]
++
++
++LAYER_SOURCES = ("inkling_layer.c", "inkling_attention.c", "inkling_config.c",
++                 "inkling.c")
++
++
++def build_library(src_dir: Path, out: Path) -> Path:
++    """Compile the layer subset into a shared library.
++
++    Deliberately not the whole engine: layer parity needs four translation
++    units, and a smaller build fails faster and more legibly.
++    """
++    cc = shutil.which("cc") or shutil.which("gcc")
++    if not cc:
++        raise LayerParityError("no C compiler available")
++    cmd = [cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
++           f"-I{src_dir}"] + [str(src_dir / name) for name in LAYER_SOURCES] + \
++          ["-o", str(out), "-lm"]
++    result = subprocess.run(cmd, capture_output=True, text=True)
++    if result.returncode:
++        raise LayerParityError(f"library build failed:\n{result.stderr}")
++    return out
++
++
++def configure_library(lib: ctypes.CDLL) -> None:
++    lib.waste_inkling_config_build.argtypes = [
++        ctypes.POINTER(Config), ctypes.POINTER(ConfigArgs)]
++    lib.waste_inkling_config_build.restype = ctypes.c_int
++    lib.waste_inkling_layer_scratch_floats.argtypes = [
++        ctypes.POINTER(Config), ctypes.c_int, ctypes.c_int]
++    lib.waste_inkling_layer_scratch_floats.restype = ctypes.c_size_t
++    lib.waste_inkling_layer_scratch_ints.argtypes = [ctypes.POINTER(Config)]
++    lib.waste_inkling_layer_scratch_ints.restype = ctypes.c_size_t
++    lib.waste_inkling_layer_scratch_init.argtypes = [
++        ctypes.POINTER(LayerScratch), ctypes.POINTER(Config), ctypes.c_int,
++        ctypes.c_int, FP, ctypes.c_size_t, IP, ctypes.c_size_t]
++    lib.waste_inkling_layer_scratch_init.restype = ctypes.c_int
++    lib.waste_inkling_layer_state_init.argtypes = [
++        ctypes.POINTER(LayerState), ctypes.POINTER(Config), ctypes.c_int,
++        ctypes.c_int, FP, FP, FP, FP, FP, FP]
++    lib.waste_inkling_layer_state_init.restype = ctypes.c_int
++    lib.waste_inkling_layer_step_backend_trace.restype = ctypes.c_int
++    lib.waste_inkling_layer_step_backend_trace.argtypes = [
++        ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(LayerWeights),
++        ctypes.POINTER(MatrixBackend), ctypes.POINTER(LayerState),
++        FP, ctypes.c_int, ctypes.POINTER(LayerScratch),
++        ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(Trace),
++    ]
++
++
++# ---- fixture -> C weights -------------------------------------------------
++
++def _carray(values) -> ctypes.Array:
++    buf = (ctypes.c_float * len(values))()
++    buf[:] = values
++    return buf
++
++
++def _rows(values: array, rows: int, cols: int, index: int) -> array:
++    """One [rows][cols] slab out of a [n][rows][cols] tensor."""
++    stride = rows * cols
++    base = index * stride
++    if base + stride > len(values):
++        raise LayerParityError("expert slab index is out of range")
++    return values[base:base + stride]
++
++
++def split_fused_gate_up(values: array, intermediate: int, hidden: int) -> tuple[array, array]:
++    """Official checkpoints ship gate and up fused as [2*inter][hidden] with the
++    two interleaved by row: row 2i is gate row i, row 2i+1 is up row i. This is
++    the same transform inkling_trunk.py applies when staging, restated here
++    because a fixture holds source bytes, not staged artifacts."""
++    if len(values) != 2 * intermediate * hidden:
++        raise LayerParityError(
++            f"fused gate/up has {len(values)} values, expected {2 * intermediate * hidden}")
++    gate = array("f", bytes(4 * intermediate * hidden))
++    up = array("f", bytes(4 * intermediate * hidden))
++    for row in range(intermediate):
++        g0 = (2 * row) * hidden
++        u0 = (2 * row + 1) * hidden
++        d0 = row * hidden
++        gate[d0:d0 + hidden] = values[g0:g0 + hidden]
++        up[d0:d0 + hidden] = values[u0:u0 + hidden]
++    return gate, up
++
++
++class LayerBinding:
++    """Holds the ctypes buffers alive for as long as the weights struct is used.
++
++    ctypes will happily let a temporary array be garbage collected while the C
++    struct still points at it. Every buffer is therefore retained here.
++    """
++
++    def __init__(self) -> None:
++        self.weights = LayerWeights()
++        self._buffers: list[ctypes.Array] = []
++
++    def set(self, field: str, values) -> None:
++        buf = _carray(values)
++        self._buffers.append(buf)
++        setattr(self.weights, field, ctypes.cast(buf, FP))
++
++
++def bind_layer(fixture: Fixture, cfg: dict[str, Any], layer: int, *,
++               dialect: str = "provider_raw",
++               experts: list[int] | None = None) -> LayerBinding:
++    """Build `waste_inkling_layer_weights` for one layer from a fixture.
++
++    Fails closed: a missing tensor names itself, and a shape that disagrees
++    with the config is an error rather than a reinterpretation.
++    """
++    fixture.require_layers([layer])
++    hidden = int(cfg["hidden"])
++    is_local = layer in set(cfg.get("local_layer_ids", []))
++    heads = int(cfg["local_heads"] if is_local else cfg["global_heads"])
++    kv_heads = int(cfg["local_kv_heads"] if is_local else cfg["global_kv_heads"])
++    head_dim = int(cfg["local_head_dim"] if is_local else cfg["global_head_dim"])
++    extent = int(cfg["sliding_window"] if is_local else cfg["rel_extent"])
++    d_rel = int(cfg["d_rel"])
++    conv_k = int(cfg["conv_kernel"])
++    sparse = layer >= int(cfg["dense_layers"])
++
++    names = layer_attention_names(layer, dialect)
++    binding = LayerBinding()
++
++    def take(name: str, expected: int, axis0: int | None = None) -> array:
++        values = fixture.values(name, axis0)
++        if len(values) != expected:
++            raise LayerParityError(
++                f"{name} holds {len(values)} values, config implies {expected}")
++        return values
++
++    binding.set("input_norm", take(names["input_norm"], hidden))
++    binding.set("post_attention_norm", take(names["post_attention_norm"], hidden))
++    binding.set("wq", take(names["q"], heads * head_dim * hidden))
++    binding.set("wk", take(names["k"], kv_heads * head_dim * hidden))
++    binding.set("wv", take(names["v"], kv_heads * head_dim * hidden))
++    binding.set("wr", take(names["r"], heads * d_rel * hidden))
++    binding.set("wo", take(names["o"], hidden * heads * head_dim))
++    binding.set("q_norm", take(names["q_norm"], head_dim))
++    binding.set("k_norm", take(names["k_norm"], head_dim))
++    binding.set("relative_proj", take(names["rel_proj"], d_rel * extent))
++    # Conv1d weights are [channels][1][kernel] at source and [channels][kernel]
++    # canonically. The payload is identical; only the declared rank differs.
++    binding.set("k_sconv", take(names["k_sconv"], kv_heads * head_dim * conv_k))
++    binding.set("v_sconv", take(names["v_sconv"], kv_heads * head_dim * conv_k))
++    binding.set("attn_sconv", take(names["attn_sconv"], hidden * conv_k))
++    binding.set("mlp_sconv", take(names["mlp_sconv"], hidden * conv_k))
++    binding.weights.sparse = int(sparse)
++
++    if not sparse:
++        inter = int(cfg["dense_intermediate"])
++        mlp = layer_dense_mlp_names(layer, dialect)
++        if "fused_gate_up" in mlp:
++            gate, up = split_fused_gate_up(
++                take(mlp["fused_gate_up"], 2 * inter * hidden), inter, hidden)
++        else:
++            gate = take(mlp["gate"], inter * hidden)
++            up = take(mlp["up"], inter * hidden)
++        binding.set("dense_gate", gate)
++        binding.set("dense_up", up)
++        binding.set("dense_down", take(mlp["down"], hidden * inter))
++        binding.set("dense_global_scale", take(mlp["global_scale"], 1))
++        return binding
++
++    inter = int(cfg["moe_intermediate"])
++    routed_n = int(cfg["n_routed_experts"])
++    shared_n = int(cfg["n_shared_experts"])
++    names_sparse = layer_sparse_mlp_names(layer, dialect)
++    router, shared = names_sparse["router"], names_sparse["shared"]
++
++    binding.set("router_weight", take(router["weight"], (routed_n + shared_n) * hidden))
++    binding.set("router_bias", take(router["correction_bias"], routed_n))
++    binding.set("router_global_scale", take(router["global_scale"], 1))
++
++    if "fused_gate_up" in shared:
++        fused = take(shared["fused_gate_up"], shared_n * 2 * inter * hidden)
++        gate = array("f")
++        up = array("f")
++        for s in range(shared_n):
++            g, u = split_fused_gate_up(
++                _rows(fused, 2 * inter, hidden, s), inter, hidden)
++            gate.extend(g)
++            up.extend(u)
++    else:
++        gate = take(shared["gate"], shared_n * inter * hidden)
++        up = take(shared["up"], shared_n * inter * hidden)
++    binding.set("shared_gate", gate)
++    binding.set("shared_up", up)
++    binding.set("shared_down", take(shared["down"], shared_n * hidden * inter))
++
++    # Routed experts. A fixture carries selected axis-0 slices, so the resident
++    # arrays are built only for the experts it holds; every other slot is
++    # zero-filled and must never be selected. The caller states which experts
++    # it expects, and require_experts refuses if the fixture disagrees.
++    wanted = sorted(set(experts if experts is not None
++                        else fixture.experts.get(layer, ())))
++    if not wanted:
++        raise LayerParityError(
++            f"layer {layer} is sparse but the fixture holds no routed experts for it")
++    fixture.require_experts(layer, wanted)
++
++    routed_names = names_sparse["routed"]
++    fused_name = routed_names.get("fused_gate_up")
++    rg = array("f", bytes(4 * routed_n * inter * hidden))
++    ru = array("f", bytes(4 * routed_n * inter * hidden))
++    rd = array("f", bytes(4 * routed_n * hidden * inter))
++    for expert in wanted:
++        fused = fixture.values(fused_name, expert)
++        if len(fused) != 2 * inter * hidden:
++            raise LayerParityError(
++                f"routed expert {expert} gate/up holds {len(fused)} values, "
++                f"config implies {2 * inter * hidden}")
++        g, u = split_fused_gate_up(fused, inter, hidden)
++        down = fixture.values(routed_names["down"], expert)
++        if len(down) != hidden * inter:
++            raise LayerParityError(
++                f"routed expert {expert} down holds {len(down)} values, "
++                f"config implies {hidden * inter}")
++        off_gu = expert * inter * hidden
++        off_d = expert * hidden * inter
++        rg[off_gu:off_gu + inter * hidden] = g
++        ru[off_gu:off_gu + inter * hidden] = u
++        rd[off_d:off_d + hidden * inter] = down
++    binding.set("routed_gate", rg)
++    binding.set("routed_up", ru)
++    binding.set("routed_down", rd)
++    return binding
++
++
++# ---- execution ------------------------------------------------------------
++
++class TraceCollector:
++    """Same record names as inkling_trace.py, so one comparator reads both."""
++
++    def __init__(self) -> None:
++        self.values: dict[str, list[float] | list[int]] = {}
++        self.dtypes: dict[str, str] = {}
++        self.position = 0
++        self._float_cb = TraceFloat(self._emit_float)
++        self._int_cb = TraceInt(self._emit_int)
++        self.c_trace = Trace(self._float_cb, self._int_cb, None)
++
++    def _name(self, layer: int, point: bytes) -> str:
++        scope = "model" if layer < 0 else f"layer.{layer}"
++        return f"token.{self.position}.{scope}.{point.decode('ascii', 'strict')}"
++
++    def _emit_float(self, _ctx, layer, point, data, count) -> int:
++        name = self._name(layer, point)
++        self.values[name] = [float(data[i]) for i in range(count)]
++        self.dtypes[name] = "F32"
++        return 0
++
++    def _emit_int(self, _ctx, layer, point, data, count) -> int:
++        name = self._name(layer, point)
++        self.values[name] = [int(data[i]) for i in range(count)]
++        self.dtypes[name] = "I32"
++        return 0
++
++
++def _build_config(lib: ctypes.CDLL, cfg: dict[str, Any]) -> ctypes.Array:
++    """Build waste_inkling_config through the C builder rather than packing it
++    here. The builder is the tested source of per-layer geometry; a second
++    Python implementation of it would be a second thing to get wrong."""
++    args = ConfigArgs()
++    for field, key in (
++        ("n_layers", "n_layers"), ("hidden", "hidden"), ("vocab", "vocab"),
++        ("unpadded_vocab", "unpadded_vocab"), ("max_context", "max_context"),
++        ("global_heads", "global_heads"), ("global_kv_heads", "global_kv_heads"),
++        ("global_head_dim", "global_head_dim"), ("local_heads", "local_heads"),
++        ("local_kv_heads", "local_kv_heads"), ("local_head_dim", "local_head_dim"),
++        ("sliding_window", "sliding_window"), ("d_rel", "d_rel"),
++        ("rel_extent", "rel_extent"), ("conv_kernel", "conv_kernel"),
++        ("dense_layers", "dense_layers"), ("dense_intermediate", "dense_intermediate"),
++        ("moe_intermediate", "moe_intermediate"),
++        ("n_routed_experts", "n_routed_experts"), ("top_k", "top_k"),
++        ("n_shared_experts", "n_shared_experts"),
++    ):
++        setattr(args, field, int(cfg[key]))
++    args.rms_eps = float(cfg["rms_eps"])
++    args.route_scale = float(cfg["route_scale"])
++    args.logits_width_multiplier = float(cfg["logits_width_multiplier"])
++    args.log_scaling_n_floor = int(cfg["log_scaling_n_floor"])
++    args.log_scaling_alpha = float(cfg["log_scaling_alpha"])
++    ids = [int(x) for x in cfg.get("local_layer_ids", [])]
++    buf = (ctypes.c_int * max(len(ids), 1))(*ids) if ids else (ctypes.c_int * 1)()
++    args.local_layer_ids = ctypes.cast(buf, IP)
++    args.n_local_layers = len(ids)
++    out = Config()
++    if lib.waste_inkling_config_build(ctypes.byref(out), ctypes.byref(args)):
++        raise LayerParityError("config rejected by waste_inkling_config_build")
++    out._keep = buf
++    return out
++
++
++def run_layer_trace(lib: ctypes.CDLL, cfg: dict[str, Any], layer: int,
++                    binding: LayerBinding, inputs: list[list[float]], *,
++                    attention_capacity: int = 0) -> dict[str, Any]:
++    """Run `layer` over successive input hidden states, tracing each step."""
++    config = _build_config(lib, cfg)
++    hidden = int(cfg["hidden"])
++    is_local = layer in set(cfg.get("local_layer_ids", []))
++    kv_heads = int(cfg["local_kv_heads"] if is_local else cfg["global_kv_heads"])
++    head_dim = int(cfg["local_head_dim"] if is_local else cfg["global_head_dim"])
++    conv_k = int(cfg["conv_kernel"])
++    cap = attention_capacity or max(len(inputs), 1)
++
++    nfloat = lib.waste_inkling_layer_scratch_floats(ctypes.byref(config), layer, cap)
++    nint = lib.waste_inkling_layer_scratch_ints(ctypes.byref(config))
++    if not nfloat:
++        raise LayerParityError("scratch sizing failed")
++    fbuf = (ctypes.c_float * nfloat)()
++    ibuf = (ctypes.c_int * max(nint, 1))()
++    scratch = LayerScratch()
++    if lib.waste_inkling_layer_scratch_init(
++            ctypes.byref(scratch), ctypes.byref(config), layer, cap,
++            fbuf, ctypes.c_size_t(nfloat), ibuf, ctypes.c_size_t(nint)):
++        raise LayerParityError("scratch init failed")
++
++    kv = (ctypes.c_float * (cap * kv_heads * head_dim))()
++    vv = (ctypes.c_float * (cap * kv_heads * head_dim))()
++    kconv = (ctypes.c_float * (kv_heads * head_dim * conv_k))()
++    vconv = (ctypes.c_float * (kv_heads * head_dim * conv_k))()
++    aconv = (ctypes.c_float * (hidden * conv_k))()
++    mconv = (ctypes.c_float * (hidden * conv_k))()
++    state = LayerState()
++    if lib.waste_inkling_layer_state_init(
++            ctypes.byref(state), ctypes.byref(config), layer, cap,
++            kv, vv, kconv, vconv, aconv, mconv):
++        raise LayerParityError("state init failed")
++
++    collector = TraceCollector()
++    backend = MatrixBackend()
++    outputs = []
++    for position, row in enumerate(inputs):
++        if len(row) != hidden:
++            raise LayerParityError(
++                f"input {position} has {len(row)} values, hidden is {hidden}")
++        collector.position = position
++        x = (ctypes.c_float * hidden)(*row)
++        rc = lib.waste_inkling_layer_step_backend_trace(
++            ctypes.byref(config), layer, ctypes.byref(binding.weights),
++            ctypes.byref(backend), ctypes.byref(state), x, position,
++            ctypes.byref(scratch), None, None, ctypes.byref(collector.c_trace))
++        if rc:
++            raise LayerParityError(f"layer step failed at position {position}: {rc}")
++        outputs.append([float(x[i]) for i in range(hidden)])
++        collector.values[f"token.{position}.layer.{layer}.output"] = outputs[-1]
++        collector.dtypes[f"token.{position}.layer.{layer}.output"] = "F32"
++    return {"values": collector.values, "dtypes": collector.dtypes,
++            "outputs": outputs}
++
++
++def write_archive(out: Path | str, traced: dict[str, Any],
++                  metadata: dict[str, Any]) -> dict[str, Any]:
++    """Write the CRC-protected archive inkling_parity.py compares.
++
++    torch is imported here and nowhere else in this module: everything above
++    runs without it, so a fixture can be bound and executed on a machine that
++    has only a C compiler.
++    """
++    import torch
++
++    from inkling_parity import write_activation_archive
++
++    values = {}
++    for name, data in traced["values"].items():
++        dtype = torch.int32 if traced["dtypes"][name] == "I32" else torch.float32
++        values[name] = torch.tensor(data, dtype=dtype)
++    return write_activation_archive(out, values, metadata=metadata)
++
++
++def main(argv: list[str] | None = None) -> int:
++    ap = argparse.ArgumentParser(
++        description="run Inkling decoder layers in C from a bounded parity fixture")
++    ap.add_argument("--fixture", required=True)
++    ap.add_argument("--config", required=True,
++                    help="JSON with the normalized config the C builder accepts")
++    ap.add_argument("--layers", required=True, help="comma-separated layer ids")
++    ap.add_argument("--inputs", required=True,
++                    help="JSON list of input hidden states, one per position")
++    ap.add_argument("--out", required=True)
++    ap.add_argument("--library", help="prebuilt shared library; built if omitted")
++    ap.add_argument("--src", default=str(Path(__file__).resolve().parents[1] / "src"))
++    ap.add_argument("--dialect", default="provider_raw",
++                    choices=("provider_raw", "transformers_normalized"))
++    args = ap.parse_args(argv)
++
++    try:
++        fixture = load_fixture(args.fixture)
++        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
++        inputs = json.loads(Path(args.inputs).read_text(encoding="utf-8"))
++        layers = [int(x) for x in args.layers.split(",") if x]
++        library = Path(args.library) if args.library else build_library(
++            Path(args.src), Path(args.out).with_suffix(".so"))
++        lib = ctypes.CDLL(str(library))
++        configure_library(lib)
++        merged: dict[str, Any] = {"values": {}, "dtypes": {}}
++        for layer in layers:
++            binding = bind_layer(fixture, cfg, layer, dialect=args.dialect)
++            traced = run_layer_trace(lib, cfg, layer, binding, inputs)
++            merged["values"].update(traced["values"])
++            merged["dtypes"].update(traced["dtypes"])
++        write_archive(args.out, merged, {
++            "runtime": "waste-c-layer", "layers": layers,
++            "positions": len(inputs), "fixture": str(args.fixture),
++        })
++    except (FixtureError, LayerParityError, OSError, ValueError, KeyError) as exc:
++        ap.error(str(exc))
++        return 2
++    print(f"wrote C layer trace for layers {layers} to {args.out}")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
++    raise SystemExit(main())
 diff --git a/tools/inkling_parity.py b/tools/inkling_parity.py
 new file mode 100644
 index 0000000..3cf870a
@@ -11367,10 +12353,10 @@ index 0000000..3cf870a
 +    raise SystemExit(main())
 diff --git a/tools/inkling_plan.py b/tools/inkling_plan.py
 new file mode 100644
-index 0000000..3f7fd5b
+index 0000000..90d7d87
 --- /dev/null
 +++ b/tools/inkling_plan.py
-@@ -0,0 +1,519 @@
+@@ -0,0 +1,563 @@
 +#!/usr/bin/env python3
 +# SPDX-License-Identifier: Apache-2.0
 +# Copyright 2026 SQLite Cloud, Inc.
@@ -11460,6 +12446,118 @@ index 0000000..3f7fd5b
 +
 +def _hf_layer_prefix(layer: int) -> str:
 +    return f"model.language_model.layers.{layer}"
++
++
++DIALECTS = ("provider_raw", "transformers_normalized")
++
++
++def _dialect(dialect: str) -> str:
++    if dialect not in DIALECTS:
++        raise PlanError(f"unsupported checkpoint dialect: {dialect!r}")
++    return dialect
++
++
++def layer_prefix(layer: int, dialect: str) -> str:
++    return (_raw_layer_prefix(layer) if _dialect(dialect) == "provider_raw"
++            else _hf_layer_prefix(layer))
++
++
++def layer_attention_names(layer: int, dialect: str) -> dict[str, str]:
++    """Source tensor names for one layer's norms and attention projections.
++
++    Split out of build_plan so a consumer that already has the tensors — a
++    parity fixture, say — can find them by the same names the planner uses,
++    rather than keeping a second copy of this table that drifts.
++    """
++    p = layer_prefix(layer, dialect)
++    if dialect == "provider_raw":
++        return {
++            "input_norm": f"{p}.attn_norm.weight",
++            "post_attention_norm": f"{p}.mlp_norm.weight",
++            "q": f"{p}.attn.wq_du.weight",
++            "k": f"{p}.attn.wk_dv.weight",
++            "v": f"{p}.attn.wv_dv.weight",
++            "r": f"{p}.attn.wr_du.weight",
++            "o": f"{p}.attn.wo_ud.weight",
++            "q_norm": f"{p}.attn.q_norm.weight",
++            "k_norm": f"{p}.attn.k_norm.weight",
++            "rel_proj": f"{p}.attn.rel_logits_proj.proj",
++            "k_sconv": f"{p}.attn.k_sconv.weight",
++            "v_sconv": f"{p}.attn.v_sconv.weight",
++            "attn_sconv": f"{p}.attn_sconv.weight",
++            "mlp_sconv": f"{p}.mlp_sconv.weight",
++        }
++    return {
++        "input_norm": f"{p}.input_layernorm.weight",
++        "post_attention_norm": f"{p}.post_attention_layernorm.weight",
++        "q": f"{p}.self_attn.q_proj.weight",
++        "k": f"{p}.self_attn.k_proj.weight",
++        "v": f"{p}.self_attn.v_proj.weight",
++        "r": f"{p}.self_attn.r_proj.weight",
++        "o": f"{p}.self_attn.o_proj.weight",
++        "q_norm": f"{p}.self_attn.q_norm.weight",
++        "k_norm": f"{p}.self_attn.k_norm.weight",
++        "rel_proj": f"{p}.self_attn.rel_logits_proj.proj",
++        "k_sconv": f"{p}.self_attn.k_sconv.conv1d.weight",
++        "v_sconv": f"{p}.self_attn.v_sconv.conv1d.weight",
++        "attn_sconv": f"{p}.attn_sconv.conv1d.weight",
++        "mlp_sconv": f"{p}.mlp_sconv.conv1d.weight",
++    }
++
++
++def layer_dense_mlp_names(layer: int, dialect: str) -> dict[str, str]:
++    """Source names for a dense layer's MLP. The provider ships gate and up
++    fused into one row-interleaved tensor; the normalized dialect does not."""
++    p = layer_prefix(layer, dialect)
++    if dialect == "provider_raw":
++        return {
++            "fused_gate_up": f"{p}.mlp.w13_dn.weight",
++            "down": f"{p}.mlp.w2_md.weight",
++            "global_scale": f"{p}.mlp.global_scale",
++        }
++    return {
++        "gate": f"{p}.mlp.gate_proj.weight",
++        "up": f"{p}.mlp.up_proj.weight",
++        "down": f"{p}.mlp.down_proj.weight",
++        "global_scale": f"{p}.mlp.global_scale",
++    }
++
++
++def layer_sparse_mlp_names(layer: int, dialect: str) -> dict[str, dict[str, str]]:
++    """Source names for a sparse layer, grouped as routed / router / shared."""
++    p = layer_prefix(layer, dialect)
++    if dialect == "provider_raw":
++        return {
++            "routed": {
++                "fused_gate_up": f"{p}.mlp.experts.w13_weight",
++                "down": f"{p}.mlp.experts.w2_weight",
++            },
++            "router": {
++                "weight": f"{p}.mlp.gate.weight",
++                "correction_bias": f"{p}.mlp.gate.bias",
++                "global_scale": f"{p}.mlp.gate.global_scale",
++            },
++            "shared": {
++                "fused_gate_up": f"{p}.mlp.shared_experts.shared_w13_weight",
++                "down": f"{p}.mlp.shared_experts.shared_w2_weight",
++            },
++        }
++    return {
++        "routed": {
++            "fused_gate_up": f"{p}.mlp.experts.gate_up_proj",
++            "down": f"{p}.mlp.experts.down_proj",
++        },
++        "router": {
++            "weight": f"{p}.mlp.gate.weight",
++            "correction_bias": f"{p}.mlp.gate.e_score_correction_bias",
++            "global_scale": f"{p}.mlp.gate.global_scale",
++        },
++        "shared": {
++            "gate": f"{p}.mlp.shared_experts.gate_proj",
++            "up": f"{p}.mlp.shared_experts.up_proj",
++            "down": f"{p}.mlp.shared_experts.down_proj",
++        },
++    }
 +
 +
 +def build_plan(src: Path, *, require_payloads: bool = False) -> dict[str, Any]:
@@ -11555,40 +12653,7 @@ index 0000000..3f7fd5b
 +        mlp_kind = "dense" if layer < dense_count else "sparse"
 +        p = _raw_layer_prefix(layer) if dialect == "provider_raw" else _hf_layer_prefix(layer)
 +
-+        if dialect == "provider_raw":
-+            attn = {
-+                "input_norm": f"{p}.attn_norm.weight",
-+                "post_attention_norm": f"{p}.mlp_norm.weight",
-+                "q": f"{p}.attn.wq_du.weight",
-+                "k": f"{p}.attn.wk_dv.weight",
-+                "v": f"{p}.attn.wv_dv.weight",
-+                "r": f"{p}.attn.wr_du.weight",
-+                "o": f"{p}.attn.wo_ud.weight",
-+                "q_norm": f"{p}.attn.q_norm.weight",
-+                "k_norm": f"{p}.attn.k_norm.weight",
-+                "rel_proj": f"{p}.attn.rel_logits_proj.proj",
-+                "k_sconv": f"{p}.attn.k_sconv.weight",
-+                "v_sconv": f"{p}.attn.v_sconv.weight",
-+                "attn_sconv": f"{p}.attn_sconv.weight",
-+                "mlp_sconv": f"{p}.mlp_sconv.weight",
-+            }
-+        else:
-+            attn = {
-+                "input_norm": f"{p}.input_layernorm.weight",
-+                "post_attention_norm": f"{p}.post_attention_layernorm.weight",
-+                "q": f"{p}.self_attn.q_proj.weight",
-+                "k": f"{p}.self_attn.k_proj.weight",
-+                "v": f"{p}.self_attn.v_proj.weight",
-+                "r": f"{p}.self_attn.r_proj.weight",
-+                "o": f"{p}.self_attn.o_proj.weight",
-+                "q_norm": f"{p}.self_attn.q_norm.weight",
-+                "k_norm": f"{p}.self_attn.k_norm.weight",
-+                "rel_proj": f"{p}.self_attn.rel_logits_proj.proj",
-+                "k_sconv": f"{p}.self_attn.k_sconv.conv1d.weight",
-+                "v_sconv": f"{p}.self_attn.v_sconv.conv1d.weight",
-+                "attn_sconv": f"{p}.attn_sconv.conv1d.weight",
-+                "mlp_sconv": f"{p}.mlp_sconv.conv1d.weight",
-+            }
++        attn = layer_attention_names(layer, dialect)
 +
 +        expected = {
 +            "input_norm": [hidden],
@@ -11629,12 +12694,8 @@ index 0000000..3f7fd5b
 +        }
 +
 +        if mlp_kind == "dense":
++            mlp = layer_dense_mlp_names(layer, dialect)
 +            if dialect == "provider_raw":
-+                mlp = {
-+                    "fused_gate_up": f"{p}.mlp.w13_dn.weight",
-+                    "down": f"{p}.mlp.w2_md.weight",
-+                    "global_scale": f"{p}.mlp.global_scale",
-+                }
 +                expected_mlp = {
 +                    "fused_gate_up": [2 * dense_inter, hidden],
 +                    "down": [hidden, dense_inter],
@@ -11642,12 +12703,6 @@ index 0000000..3f7fd5b
 +                }
 +                transform = "interleave rows, then split rows into gate/up (official checkpoint mapping)"
 +            else:
-+                mlp = {
-+                    "gate": f"{p}.mlp.gate_proj.weight",
-+                    "up": f"{p}.mlp.up_proj.weight",
-+                    "down": f"{p}.mlp.down_proj.weight",
-+                    "global_scale": f"{p}.mlp.global_scale",
-+                }
 +                expected_mlp = {
 +                    "gate": [dense_inter, hidden],
 +                    "up": [dense_inter, hidden],
@@ -11660,35 +12715,10 @@ index 0000000..3f7fd5b
 +                trunk.append({"role": f"layer.{layer}.mlp.{role}", "source": name, "storage": "resident trunk"})
 +            descriptor["mlp"].update({"intermediate_size": dense_inter, "source_transform": transform})
 +        else:
-+            if dialect == "provider_raw":
-+                routed = {
-+                    "fused_gate_up": f"{p}.mlp.experts.w13_weight",
-+                    "down": f"{p}.mlp.experts.w2_weight",
-+                }
-+                router = {
-+                    "weight": f"{p}.mlp.gate.weight",
-+                    "correction_bias": f"{p}.mlp.gate.bias",
-+                    "global_scale": f"{p}.mlp.gate.global_scale",
-+                }
-+                shared = {
-+                    "fused_gate_up": f"{p}.mlp.shared_experts.shared_w13_weight",
-+                    "down": f"{p}.mlp.shared_experts.shared_w2_weight",
-+                }
-+            else:
-+                routed = {
-+                    "fused_gate_up": f"{p}.mlp.experts.gate_up_proj",
-+                    "down": f"{p}.mlp.experts.down_proj",
-+                }
-+                router = {
-+                    "weight": f"{p}.mlp.gate.weight",
-+                    "correction_bias": f"{p}.mlp.gate.e_score_correction_bias",
-+                    "global_scale": f"{p}.mlp.gate.global_scale",
-+                }
-+                shared = {
-+                    "gate": f"{p}.mlp.shared_experts.gate_proj",
-+                    "up": f"{p}.mlp.shared_experts.up_proj",
-+                    "down": f"{p}.mlp.shared_experts.down_proj",
-+                }
++            sparse_names = layer_sparse_mlp_names(layer, dialect)
++            routed = sparse_names["routed"]
++            router = sparse_names["router"]
++            shared = sparse_names["shared"]
 +
 +            routed_expected = {
 +                "fused_gate_up": [n_experts, 2 * routed_inter, hidden],

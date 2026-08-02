@@ -45,7 +45,10 @@ jobs:
           (cd "$BUNDLE_DIR" && sha256sum -c SHA256SUMS)
           git clone "$UPSTREAM_REPOSITORY" upstream-waste
           git -C upstream-waste checkout --detach "$UPSTREAM_COMMIT"
-          git -C upstream-waste am "$GITHUB_WORKSPACE/$PATCH_FILE"
+          git -C upstream-waste \
+            -c user.name="WASTE Inkling CI" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            am "$GITHUB_WORKSPACE/$PATCH_FILE"
           actual_tree="$(git -C upstream-waste rev-parse 'HEAD^{tree}')"
           test "$actual_tree" = "$EXPECTED_TREE"
 
@@ -92,7 +95,10 @@ jobs:
           (cd "$BUNDLE_DIR" && sha256sum -c SHA256SUMS)
           git clone "$UPSTREAM_REPOSITORY" upstream-waste
           git -C upstream-waste checkout --detach "$UPSTREAM_COMMIT"
-          git -C upstream-waste am "$GITHUB_WORKSPACE/$PATCH_FILE"
+          git -C upstream-waste \
+            -c user.name="WASTE Inkling CI" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            am "$GITHUB_WORKSPACE/$PATCH_FILE"
           actual_tree="$(git -C upstream-waste rev-parse 'HEAD^{tree}')"
           test "$actual_tree" = "$EXPECTED_TREE"
 

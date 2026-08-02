@@ -1,0 +1,42 @@
+diff --git a/src/waste.c b/src/waste.c
+index b1d9bbd..813a7c4 100644
+--- a/src/waste.c
++++ b/src/waste.c
+@@ -22,6 +22,7 @@
+ #endif
+ #include <time.h>
+ 
++#include "arch.h"
+ #include "json.h"
+ #include "memory.h"
+ #include "model.h"
+@@ -175,6 +176,19 @@ waste_status waste_plan_memory(const char *model_path, uint32_t ctx_tokens,
+     js_doc d;
+     if (js_parse(&d, src) < 0) { free(src); return WASTE_E_FORMAT; }
+ 
++    /* Memory planning below is Kimi-specific. Refuse an Inkling manifest
++     * before reading any architecture dimensions; a made-up Kimi floor is
++     * worse than an honest unsupported result. */
++    {
++        char arch[64];
++        js_str(&d, js_get(&d, 0, "arch"), arch, sizeof arch);
++        if (waste_arch_classify(arch) == WASTE_ARCH_INKLING) {
++            js_free(&d);
++            free(src);
++            return WASTE_E_UNSUPPORTED;
++        }
++    }
++
+     memset(out, 0, sizeof *out);
+ 
+     /* trunk: sum the tensor payloads as they are stored, minus the ones the
+@@ -463,7 +477,8 @@ waste_status waste_open(const char *model_path, const waste_cfg *cfg_in,
+              * on K3 that is tens of gigabytes lost to one bad manifest. */
+             waste_model_free(&c->m);
+             free(c);
+-            return rc == -2 ? WASTE_E_FORMAT : WASTE_E_IO;
++            return rc == -3 ? WASTE_E_UNSUPPORTED
++                 : rc == -2 ? WASTE_E_FORMAT : WASTE_E_IO;
+         }
+     }
+     /* Before the warm, which reads records too. The load already applied

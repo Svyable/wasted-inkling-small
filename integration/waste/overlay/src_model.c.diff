@@ -1,0 +1,36 @@
+diff --git a/src/model.c b/src/model.c
+index 8d4992a..4cad9cc 100644
+--- a/src/model.c
++++ b/src/model.c
+@@ -22,6 +22,7 @@
+ #include <fcntl.h>
+ #include <unistd.h>          /* MinGW ships one too: open/close/lseek */
+ 
++#include "arch.h"
+ #include "crc32.h"
+ #include "ecache.h"
+ #include "json.h"
+@@ -972,6 +973,23 @@ int waste_model_load(waste_model *m, const char *dir, int kv_cap,
+         }
+     }
+ 
++    /* The public loader is still Kimi-specific. Recognize Inkling before
++     * Kimi config parsing or tensor binding so a plausible set of dimensions
++     * cannot select the wrong forward path. The private Inkling runtime is
++     * promoted only after official-weight parity and public schema review. */
++    {
++        char arch[64];
++        js_str(&d, js_get(&d, 0, "arch"), arch, sizeof arch);
++        if (waste_arch_classify(arch) == WASTE_ARCH_INKLING) {
++            fprintf(stderr,
++                    "waste: Inkling container recognized, but this build "
++                    "has no integrated public Inkling forward path\n");
++            js_free(&d);
++            free(src);
++            return -3;                       /* -> WASTE_E_UNSUPPORTED */
++        }
++    }
++
+     {
+         int cfg = js_get(&d, 0, "config");
+         /* The converter flattens K3's nested text_config into `config` and

@@ -29,7 +29,7 @@ if [ -n "${WASTE_UPSTREAM_CACHE:-}" ] && [ -d "$WASTE_UPSTREAM_CACHE/.git" ]; th
 else
     git clone --quiet "$UPSTREAM_REPOSITORY" "$work"
 fi
-git -C "$work" checkout --quiet --detach "$UPSTREAM_COMMIT"
+git -C "$work" -c advice.detachedHead=false checkout --quiet --detach "$UPSTREAM_COMMIT"
 
 actual_upstream=$(git -C "$work" rev-parse 'HEAD^{tree}')
 if [ "$actual_upstream" != "$UPSTREAM_TREE" ]; then
@@ -73,6 +73,7 @@ done
 # consulted .gitignore, so this is what keeps the generated tree equal to the
 # replayed one.
 git -C "$work" add -A --force
+GIT_AUTHOR_DATE="$PATCH_DATE" GIT_COMMITTER_DATE="$PATCH_DATE" \
 git -C "$work" \
     -c user.name="$PATCH_AUTHOR_NAME" \
     -c user.email="$PATCH_AUTHOR_EMAIL" \

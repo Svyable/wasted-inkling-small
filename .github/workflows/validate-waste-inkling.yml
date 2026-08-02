@@ -1,0 +1,130 @@
+name: Validate WASTE Inkling
+
+on:
+  pull_request:
+    paths:
+      - "inkling/**"
+      - "integration/**"
+      - "dist/**"
+      - ".github/workflows/validate-waste-inkling.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "inkling/**"
+      - "integration/**"
+      - "dist/**"
+      - ".github/workflows/validate-waste-inkling.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generate-and-regress:
+    name: Generate, prove the tree, regress
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # verify.sh is the whole gate: it regenerates the patch from inkling/
+      # plus the overlay fragments, refuses to continue unless the tree hash
+      # equals the reviewed one, compiles every Inkling unit with -Werror, and
+      # runs the upstream suite.
+      - name: Generate, verify the tree, compile strict, run make check
+        shell: bash
+        run: integration/waste/verify.sh "${RUNNER_TEMP}/waste"
+
+      # The committed bundle must be what the sources produce. A stale dist/
+      # would otherwise ship code nobody reviewed.
+      - name: Committed bundle matches the generated one
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/regen"
+          integration/waste/generate.sh "${RUNNER_TEMP}/waste-regen" "$out" >/dev/null
+          for patch in "$out"/*.patch; do
+            name=$(basename "$patch")
+            if ! cmp -s "$patch" "dist/waste-inkling-6931570/patches/$name"; then
+              echo "dist/ is stale: regenerate with integration/waste/generate.sh" >&2
+              exit 1
+            fi
+          done
+          (cd dist/waste-inkling-6931570 && sha256sum -c SHA256SUMS)
+
+      - name: Dependency-light Python validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/waste"
+          python3 -m compileall -q "$work/tools" "$work/tests"
+          cd "$work"
+          python3 tests/test_inspect_inkling.py
+          python3 tests/test_inkling_plan.py
+          python3 tests/test_inkling_release.py
+          python3 tests/test_inkling_config_c.py
+          python3 tests/test_inkling_fixture.py
+
+  differential:
+    name: Torch differential suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Generate the tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          WASTE_VERIFY_SKIP_CHECK=1 integration/waste/verify.sh "${RUNNER_TEMP}/waste"
+
+      # The 99 private-runtime tests were recorded once and then quoted for
+      # several bundles without being re-run. This job is why they are evidence
+      # again: C-versus-PyTorch parity for the router, relative bias, short
+      # convolution, attention, the complete layer, and the staged runtime.
+      - name: Install torch and numpy
+        shell: bash
+        run: python3 -m pip install --quiet --break-system-packages torch numpy
+
+      - name: Run the complete Inkling Python suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/waste"
+          python3 -m unittest discover -s tests -p "test_ink*.py" -t .
+          python3 -m unittest tests.test_inspect_inkling tests.test_convert_inkling
+
+  sanitizers:
+    name: Sanitizers and container fuzzing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Generate the tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          WASTE_VERIFY_SKIP_CHECK=1 integration/waste/verify.sh "${RUNNER_TEMP}/waste"
+
+      - name: Run ASan and UBSan
+        shell: bash
+        run: PATH=/usr/bin:/bin make -C "${RUNNER_TEMP}/waste" asan
+
+      - name: Fuzz malformed containers under sanitizers
+        shell: bash
+        run: PATH=/usr/bin:/bin make -C "${RUNNER_TEMP}/waste" fuzz-asan FUZZ_RUNS=200

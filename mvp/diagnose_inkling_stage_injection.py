@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Inject exact official Inkling stages into C to localize BF16 drift."""
+"""Inject or requantize Inkling stages to localize BF16 drift."""
 from __future__ import annotations
 
 import argparse
@@ -60,6 +60,19 @@ INJECTION_CASES: dict[str, tuple[str, ...]] = {
     "post_attention_norm": ("post_attention_norm",),
 }
 
+QUANTIZATION_CASES: dict[str, tuple[str, ...]] = {
+    **INJECTION_CASES,
+    "branch_and_residual": (
+        "attention_branch",
+        "post_attention_residual",
+    ),
+    "attention_out_branch_and_residual": (
+        "attention_out",
+        "attention_branch",
+        "post_attention_residual",
+    ),
+}
+
 
 def _validate_injection(
     official: dict[str, torch.Tensor],
@@ -81,6 +94,46 @@ def _validate_injection(
             )
         metrics[point] = metric
     return metrics
+
+
+def _case_result(
+    name: str,
+    official: dict[str, torch.Tensor],
+    candidate: dict[str, torch.Tensor],
+    c_indices: torch.Tensor,
+    c_weights: torch.Tensor,
+    gate: Any,
+    official_indices: torch.Tensor,
+    official_weights: torch.Tensor,
+    *,
+    dtype: torch.dtype,
+) -> dict[str, Any]:
+    routed_indices, routed_weights = _official_route_on_state(
+        gate,
+        candidate["post_attention_norm"],
+        dtype=dtype,
+    )
+    return {
+        "post_attention_norm": _tensor_metrics(
+            official["post_attention_norm"],
+            candidate["post_attention_norm"],
+            compare_dtype=dtype,
+        ),
+        "c_emitted": _route_summary(
+            f"{name}:c_emitted",
+            c_indices,
+            c_weights,
+            official_indices,
+            official_weights,
+        ),
+        "official_bfloat16_router": _route_summary(
+            f"{name}:official_bfloat16_router",
+            routed_indices,
+            routed_weights,
+            official_indices,
+            official_weights,
+        ),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -132,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             gate = module.mlp.gate
-            cases = {}
+            injections = {}
             for case_name, points in INJECTION_CASES.items():
                 replacements = {
                     point: official[point] for point in points
@@ -145,45 +198,58 @@ def main(argv: list[str] | None = None) -> int:
                     input_values,
                     replace_stages=replacements,
                 )
-                injected_metrics = _validate_injection(
+                result = _case_result(
+                    case_name,
+                    official,
+                    injected,
+                    c_indices,
+                    c_weights,
+                    gate,
+                    official_indices,
+                    official_weights,
+                    dtype=dtype,
+                )
+                result["points"] = list(points)
+                result["injected_stage_metrics"] = _validate_injection(
                     official,
                     injected,
                     points,
                     dtype=dtype,
                 )
-                routed_indices, routed_weights = _official_route_on_state(
+                injections[case_name] = result
+
+            quantizations = {}
+            for case_name, points in QUANTIZATION_CASES.items():
+                quantized, c_indices, c_weights = _capture_c_pre_router(
+                    lib,
+                    fixture,
+                    c_config,
+                    layer,
+                    input_values,
+                    quantize_points=points,
+                )
+                result = _case_result(
+                    case_name,
+                    official,
+                    quantized,
+                    c_indices,
+                    c_weights,
                     gate,
-                    injected["post_attention_norm"],
+                    official_indices,
+                    official_weights,
                     dtype=dtype,
                 )
-                cases[case_name] = {
-                    "points": list(points),
-                    "injected_stage_metrics": injected_metrics,
-                    "post_attention_norm": _tensor_metrics(
-                        official["post_attention_norm"],
-                        injected["post_attention_norm"],
-                        compare_dtype=dtype,
-                    ),
-                    "c_emitted": _route_summary(
-                        f"{case_name}:c_emitted",
-                        c_indices,
-                        c_weights,
-                        official_indices,
-                        official_weights,
-                    ),
-                    "official_bfloat16_router": _route_summary(
-                        f"{case_name}:official_bfloat16_router",
-                        routed_indices,
-                        routed_weights,
-                        official_indices,
-                        official_weights,
-                    ),
-                }
-            layer_results[str(layer)] = {"cases": cases}
+                result["points"] = list(points)
+                quantizations[case_name] = result
+
+            layer_results[str(layer)] = {
+                "cases": injections,
+                "quantization_cases": quantizations,
+            }
 
         result = {
-            "format": "inkling-stage-injection-diagnosis",
-            "version": 1,
+            "format": "inkling-stage-counterfactual-diagnosis",
+            "version": 2,
             "model_id": fixture.model_id,
             "revision": fixture.source.get("revision"),
             "config_sha256": fixture.source.get("config_sha256"),
@@ -194,6 +260,10 @@ def main(argv: list[str] | None = None) -> int:
             "injection_cases": {
                 name: list(points)
                 for name, points in INJECTION_CASES.items()
+            },
+            "quantization_cases": {
+                name: list(points)
+                for name, points in QUANTIZATION_CASES.items()
             },
             "layers": layer_results,
         }

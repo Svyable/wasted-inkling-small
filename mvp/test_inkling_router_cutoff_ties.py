@@ -5,10 +5,12 @@ from __future__ import annotations
 import unittest
 
 import torch
+from torch.nn import functional as F
 
 from audit_inkling_router_cutoff_ties import (
     RouterTieAuditError,
     cutoff_tie_row,
+    expected_candidate_weights,
 )
 
 
@@ -45,6 +47,48 @@ class RouterCutoffTieTest(unittest.TestCase):
 
         self.assertFalse(result["candidate_valid_under_official_cutoff"])
         self.assertEqual(result["differing_ids"], [2, 4])
+
+    def test_candidate_weights_apply_official_normalization_to_candidate_ids(self) -> None:
+        logits = torch.tensor(
+            [0.5, -0.25, 0.75, -0.5, 0.125], dtype=torch.bfloat16
+        )
+        candidate = torch.tensor([2, 0], dtype=torch.int64)
+        got = expected_candidate_weights(
+            logits,
+            candidate,
+            n_routed=3,
+            n_shared=2,
+            route_scale=2.0,
+            global_scale=torch.tensor([0.75], dtype=torch.bfloat16),
+        )
+
+        selected = torch.cat([logits[candidate], logits[3:]])
+        log_probs = F.logsigmoid(selected)
+        expected = torch.exp(log_probs - torch.logsumexp(log_probs, dim=0))
+        expected = expected * 2.0 * torch.tensor(
+            [0.75], dtype=torch.bfloat16
+        )
+        self.assertTrue(torch.equal(got, expected[:2]))
+
+    def test_candidate_weight_helper_fails_on_invalid_ids(self) -> None:
+        with self.assertRaisesRegex(RouterTieAuditError, "outside routed"):
+            expected_candidate_weights(
+                torch.zeros(5, dtype=torch.bfloat16),
+                torch.tensor([0, 3]),
+                n_routed=3,
+                n_shared=2,
+                route_scale=1.0,
+                global_scale=torch.ones(1, dtype=torch.bfloat16),
+            )
+        with self.assertRaisesRegex(RouterTieAuditError, "not unique"):
+            expected_candidate_weights(
+                torch.zeros(5, dtype=torch.bfloat16),
+                torch.tensor([1, 1]),
+                n_routed=3,
+                n_shared=2,
+                route_scale=1.0,
+                global_scale=torch.ones(1, dtype=torch.bfloat16),
+            )
 
     def test_invalid_row_shape_fails_closed(self) -> None:
         with self.assertRaisesRegex(RouterTieAuditError, "top_k"):

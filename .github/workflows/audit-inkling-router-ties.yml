@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   audit:
-    name: Official cutoff ties vs C choices
+    name: Official cutoff-valid C routing
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -77,7 +77,7 @@ jobs:
             --model-config "${RUNNER_TEMP}/config.json" \
             --out "${RUNNER_TEMP}/c-config.json"
 
-      - name: Audit exact IDs against BF16 cutoff equivalence
+      - name: Audit IDs and weights against BF16 cutoff equivalence
         shell: bash
         run: |
           set -euo pipefail
@@ -88,6 +88,7 @@ jobs:
             --inputs "${RUNNER_TEMP}/inputs.json" \
             --layers 2,5 \
             --dtype bfloat16 \
+            --weight-atol 1e-3 \
             --out "${RUNNER_TEMP}/router-cutoff-ties.json" > /dev/null
           python3 - <<'PY'
           import json
@@ -101,31 +102,37 @@ jobs:
               "ROUTER_TIE_ENV "
               f"torch={audit['torch_version']} "
               f"threads={audit['torch_threads']} "
-              f"cpu_capability={audit['cpu_capability']}"
+              f"cpu_capability={audit['cpu_capability']} "
+              f"weight_atol={audit['weight_atol']}"
           )
           for layer, value in sorted(
               audit["layers"].items(), key=lambda item: int(item[0])
           ):
               print(
                   "ROUTER_TIE_AUDIT "
-                  f"layer={layer} "
+                  f"layer={layer} passed={value['passed']} "
                   f"exact_rows={value['exact_rows']}/8 "
                   f"tie_equivalent_rows={value['tie_equivalent_rows']}/8 "
                   f"ambiguous_rows={value['ambiguous_cutoff_rows']}/8 "
                   f"outside_tie={value['mismatch_positions_outside_official_cutoff_tie']} "
+                  f"weight_failures={value['candidate_weight_failure_positions']} "
+                  f"max_abs_weight={value['max_abs_candidate_weight_vs_official_logits']:.9g} "
                   f"topk_repeat_stable={value['topk_repeat_stable']}"
               )
               for row in value["rows"]:
-                  if row["exact_ids"]:
+                  if row["exact_ids"] and row["candidate_weights_within_atol"]:
                       continue
                   print(
                       "ROUTER_TIE_ROW "
                       f"layer={layer} position={row['position']} "
                       f"tie_equivalent={row['candidate_valid_under_official_cutoff']} "
+                      f"weight_ok={row['candidate_weights_within_atol']} "
+                      f"weight_max_abs={row['candidate_weight_max_abs_vs_official_logits']:.9g} "
                       f"above={row['above_ids']} "
                       f"tie_ids={row['cutoff_tie_ids']} "
                       f"slots={row['slots_from_cutoff_tie']} "
                       f"official={row['official_ids']} "
                       f"candidate={row['candidate_ids']}"
                   )
+          raise SystemExit(0 if audit["passed"] else 2)
           PY

@@ -82,7 +82,13 @@ def deterministic_hidden_states(tokens: int, hidden: int, seed: int) -> torch.Te
 
 def input_sha256(inputs: torch.Tensor, dtype: torch.dtype) -> str:
     """Hash tensor bytes without depending on NumPy being installed."""
-    octets = inputs.to(dtype=dtype).contiguous().view(torch.uint8).tolist()
+    octets = (
+        inputs.to(dtype=dtype)
+        .contiguous()
+        .view(torch.uint8)
+        .reshape(-1)
+        .tolist()
+    )
     return hashlib.sha256(bytes(octets)).hexdigest()
 
 

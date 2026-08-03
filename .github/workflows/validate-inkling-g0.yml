@@ -31,9 +31,8 @@ jobs:
         run: |
           python3 -m pip install --quiet --break-system-packages \
             torch 'transformers==5.14.1'
-      - name: Compile and test the bounded reference adapter
+      - name: Compile and run every G0 evidence test
         run: |
           python3 -m compileall -q mvp
-          PYTHONPATH=mvp python3 -m unittest \
-            mvp/test_inkling_fixture_reference.py \
-            mvp/test_inkling_release_config.py -v
+          PYTHONPATH=mvp python3 -m unittest discover \
+            -s mvp -p 'test_inkling_*.py' -v

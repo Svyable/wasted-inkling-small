@@ -238,6 +238,38 @@ class _QuantizingTraceCollector(TraceCollector):
         return super()._emit_float(ctx, layer, point, data, count)
 
 
+class _InjectingTraceCollector(TraceCollector):
+    """Diagnostic collector that replaces one or more C stages with an oracle."""
+
+    def __init__(self, replacements: dict[str, torch.Tensor]) -> None:
+        self.replacements = {
+            point: tensor.detach().float().cpu().reshape(tensor.shape[0], -1).tolist()
+            for point, tensor in replacements.items()
+        }
+        self.error: str | None = None
+        super().__init__()
+
+    def _emit_float(self, ctx, layer, point, data, count) -> int:
+        decoded = point.decode("ascii", "strict")
+        rows = self.replacements.get(decoded)
+        if rows is not None:
+            if self.position >= len(rows):
+                self.error = (
+                    f"oracle point {decoded} has no position {self.position}"
+                )
+                return 1
+            row = rows[self.position]
+            if len(row) != int(count):
+                self.error = (
+                    f"oracle point {decoded} position {self.position} has "
+                    f"{len(row)} values; C emitted {int(count)}"
+                )
+                return 1
+            for index, value in enumerate(row):
+                data[index] = float(value)
+        return super()._emit_float(ctx, layer, point, data, count)
+
+
 def _capture_c_pre_router(
     lib,
     fixture,
@@ -246,16 +278,24 @@ def _capture_c_pre_router(
     inputs: list[list[float]],
     *,
     quantize_points: Collection[str] = (),
+    replace_stages: dict[str, torch.Tensor] | None = None,
 ) -> tuple[
     dict[str, torch.Tensor],
     torch.Tensor,
     torch.Tensor,
 ]:
     """Capture C stages and route, optionally requantizing traced buffers."""
-    unknown = sorted(set(quantize_points).difference(POINTS))
+    replacement_points = set((replace_stages or {}).keys())
+    unknown = sorted(
+        set(quantize_points).union(replacement_points).difference(POINTS)
+    )
     if unknown:
         raise PreRouterDiagnosisError(
-            "unknown quantization trace points: " + ", ".join(unknown)
+            "unknown mutation trace points: " + ", ".join(unknown)
+        )
+    if quantize_points and replace_stages:
+        raise PreRouterDiagnosisError(
+            "quantization and oracle replacement are separate counterfactuals"
         )
     compact = bind_sparse_layer_compact(fixture, cfg, layer)
     config = _build_config(lib, cfg)
@@ -314,11 +354,12 @@ def _capture_c_pre_router(
     ):
         raise PreRouterDiagnosisError("state init failed")
 
-    collector = (
-        _QuantizingTraceCollector(quantize_points)
-        if quantize_points
-        else TraceCollector()
-    )
+    if replace_stages:
+        collector = _InjectingTraceCollector(replace_stages)
+    elif quantize_points:
+        collector = _QuantizingTraceCollector(quantize_points)
+    else:
+        collector = TraceCollector()
     backend = MatrixBackend()
     reject = _RejectExperts(layer)
     reject_ptr = ctypes.cast(reject.callback, ctypes.c_void_p)
@@ -343,6 +384,9 @@ def _capture_c_pre_router(
             None,
             ctypes.byref(collector.c_trace),
         )
+        collector_error = getattr(collector, "error", None)
+        if collector_error:
+            raise PreRouterDiagnosisError(collector_error)
         if rc == 0 or len(reject.requests) != before + 1:
             raise PreRouterDiagnosisError(
                 f"layer {layer} position {position} did not stop at one expert lookup"

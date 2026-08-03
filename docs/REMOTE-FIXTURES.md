@@ -40,6 +40,28 @@ The adversarial unit suite uses a local HTTP server and verifies exact expert
 slicing, hash binding, byte ceilings, unsafe shard rejection, and refusal of a
 server that ignores `Range`.
 
+## Evidence-driven expert selection
+
+The first plan used six speculative expert IDs per sparse layer. Those IDs were
+planning placeholders, not routing evidence.
+
+`mvp/discover_inkling_router_experts.py` now runs the official layer far enough
+to capture its exact `topk(sorted=False)` choices. It constructs each layer
+from a bounded one-expert seed, replaces the routed expert bank before forward,
+and aborts immediately after the official router supplies IDs and attached
+weights. Seed expert values therefore cannot affect selection.
+
+For eight deterministic BF16 positions (`seed=19`, input SHA-256
+`53102b39703fcec1ea4593c4a149e168169d0062769f7bac7944c1afe9831b7f`), the
+immutable release selected:
+
+- layer 2: **33 unique routed experts**;
+- layer 5: **26 unique routed experts**.
+
+The exact per-position ID/weight pairs and source hashes are committed in
+`docs/OFFICIAL-ROUTER-SELECTION.json`. CI reconstructs the one-expert seed and
+requires byte-for-byte JSON equality with that artifact.
+
 ## Plan without downloading weights
 
 The release upload commit is:
@@ -48,29 +70,26 @@ The release upload commit is:
 21152b5312c653be115f33a8342759064144e281
 ```
 
+The authoritative command is recorded in `docs/OFFICIAL-FIXTURE-PLAN.json`.
 A plan fetches only config, index, and relevant safetensors headers:
 
 ```sh
 python mvp/inkling_remote_fixture.py \
   --revision 21152b5312c653be115f33a8342759064144e281 \
   --layers 0,2,5 \
-  --experts '2:4,17,39,88,143,221;5:1,8,22,64,150,201' \
+  --experts '2:13,19,25,26,27,30,33,39,60,67,69,81,90,91,92,95,96,112,116,117,126,131,133,140,146,150,152,166,175,217,238,247,254;5:6,21,32,44,45,56,60,63,66,91,105,110,120,145,152,156,163,166,179,180,219,233,236,238,250,252' \
   --max-total-gib 8 \
   --plan-only > /parity/fixture-plan.json
 ```
 
-The plan reports selected entries, exact payload bytes, touched shards,
-metadata bytes read, request count, and source hashes. No tensor payload is
-requested.
-
 ### Reproduced release plan
 
-GitHub Actions ran the command above against the immutable release and recorded:
+GitHub Actions ran that command against the immutable release and recorded:
 
 | Field | Result |
 | --- | ---: |
-| Fixture entries | 81 |
-| Planned payload | 1,476,808,202 bytes (~1.38 GiB) |
+| Fixture entries | 175 |
+| Planned payload | 3,842,395,658 bytes (~3.58 GiB) |
 | Metadata and headers read | 179,397 bytes |
 | HTTP requests | 52 |
 | Shards touched | 25 of 32 |
@@ -79,19 +98,20 @@ GitHub Actions ran the command above against the immutable release and recorded:
 
 The complete machine-readable result is committed as
 `docs/OFFICIAL-FIXTURE-PLAN.json`. CI repeats the live plan and compares every
-source, geometry, byte-count, request-count, and shard field to that file. A
-release change or planner change therefore requires an explicit evidence
+source, selection, geometry, byte-count, request-count, and shard field to that
+file. A release or planner change therefore requires an explicit evidence
 update.
 
 ## Extract the fixture
 
-Remove `--plan-only` and provide an output directory:
+Run the command recorded in `docs/OFFICIAL-FIXTURE-PLAN.json` without
+`--plan-only`, adding the output directory:
 
 ```sh
 python mvp/inkling_remote_fixture.py \
   --revision 21152b5312c653be115f33a8342759064144e281 \
   --layers 0,2,5 \
-  --experts '2:4,17,39,88,143,221;5:1,8,22,64,150,201' \
+  --experts '2:13,19,25,26,27,30,33,39,60,67,69,81,90,91,92,95,96,112,116,117,126,131,133,140,146,150,152,166,175,217,238,247,254;5:6,21,32,44,45,56,60,63,66,91,105,110,120,145,152,156,163,166,179,180,219,233,236,238,250,252' \
   --max-total-gib 8 \
   --out /parity/fixture-L0-L2-L5
 
@@ -99,9 +119,9 @@ python inkling/tools/inkling_fixture.py \
   --fixture /parity/fixture-L0-L2-L5 --verify
 ```
 
-If routing later names an expert absent from the fixture, add that ID and
-extract again. The expert selection is evidence-driven; it is not silently
-expanded.
+That expert set covers the committed eight-position input sequence. Different
+hidden states may route differently and require a separately recorded selection
+artifact; the extractor never silently expands coverage.
 
 ## Scope boundary
 

@@ -1,5 +1,5 @@
 diff --git a/Makefile b/Makefile
-index a70fe0c..b42b0b9 100644
+index a70fe0c..2ba4ecc 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -89,9 +89,12 @@ CFLAGS  += -DVQ_SUPER=$(VQ_SUPER)
@@ -18,19 +18,25 @@ index a70fe0c..b42b0b9 100644
  # Match what backend.c tests for. Linux/aarch64 reports "aarch64", which
  # does not contain "arm" — the old findstring left kda_neon.c out of the
  # build while backend.c still emitted the call to it, so the link failed
-@@ -216,12 +219,14 @@ waste$(EXE): cli/main.o libwaste.a
+@@ -216,12 +219,20 @@ waste$(EXE): cli/main.o libwaste.a
  # One list, used by both `test` and `clean`. A stale test binary is one of
  # the two failures tests/run.sh was written to catch, so a binary that
  # `test` builds and `clean` forgets defeats the check meant to notice it.
 -TESTNAMES := test_kda test_container test_forward test_tokenizer test_k3parts \
 -             test_state test_vision test_image test_memory sweep
-+TESTNAMES := test_inkling test_kda test_container test_forward test_tokenizer \
-+             test_k3parts test_state test_vision test_image test_memory sweep
++TESTNAMES := test_inkling test_inkling_io test_kda test_container test_forward \
++             test_tokenizer test_k3parts test_state test_vision test_image \
++             test_memory sweep
  TESTBINS  := $(addsuffix $(EXE),$(TESTNAMES))
  
  test: $(TESTBINS)
  
 +test_inkling$(EXE): tests/test_inkling.o libwaste.a
++	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
++# The staged-artifact readers, as C rather than through ctypes: this is the
++# only test that a Windows cross-build can run, and therefore the only thing
++# that ever executes inkling_stage_reader.c's ReadFile/OVERLAPPED branch.
++test_inkling_io$(EXE): tests/test_inkling_io.o libwaste.a
 +	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
  test_kda$(EXE): tests/test_kda.o libwaste.a
  	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)

@@ -1,8 +1,8 @@
 diff --git a/tests/run.sh b/tests/run.sh
-index a644b0a..81d85a8 100755
+index a644b0a..da3aab6 100755
 --- a/tests/run.sh
 +++ b/tests/run.sh
-@@ -53,6 +53,12 @@ else
+@@ -53,6 +53,20 @@ else
      exit 1
  fi
  
@@ -12,10 +12,18 @@ index a644b0a..81d85a8 100755
 +    no "Inkling architecture seam and scalar runtime primitives"
 +fi
 +
++# The staged readers in C. Same binary cross-compiles for Windows, which is
++# how the ReadFile/OVERLAPPED branch gets executed at all — see the mingw job.
++if ./test_inkling_io "$TMP" 2>/dev/null | grep -q "^INKLING IO OK"; then
++    ok "Inkling staged tensor and expert-bank readers"
++else
++    no "Inkling staged tensor and expert-bank readers"
++fi
++
  # ---------------------------------------------------------------- unit ----
  head_ "kernels vs the reference implementations"
  
-@@ -770,6 +776,73 @@ PYFV
+@@ -770,6 +784,73 @@ PYFV
          no "format_version not enforced (rc=$rc rc2=$rc2)"
      fi
  

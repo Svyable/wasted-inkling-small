@@ -41,14 +41,17 @@ The port is **healthy, current, and deliberately inert**.
 Reproduced without adjustment, which means the v18 bundle's recorded evidence
 is real and the CI workflow is not the only thing holding it up.
 
-**Update, same day:** everything that was inherited has since been re-run in
-this environment against the generated tree. `make asan` 28/0/14, `make
-fuzz-asan FUZZ_RUNS=200` (200 cases, 137 rejected, 63 loaded, 0 crashed, 0
-hung), the 11-unit `-Werror` compile, and — for the first time in this
-repository — the complete Inkling Python suite: **140 tests, 0 failures**. The
-v16 bundle's 99-test claim is confirmed (81 + 18, all passing); the remaining
-41 are the new fixture-reader tests. See
-`dist/waste-inkling-6931570/TEST-RESULTS.txt`.
+**Update, same day.** Everything inherited has since been re-run in this
+environment against the generated tree, and the numbers below have moved as
+work landed. Current state: `make check` **31 passed / 0 failed / 13 skipped**,
+`make asan` 30/0/14, `make fuzz-asan FUZZ_RUNS=200` (200 cases, 137 rejected,
+63 loaded, 0 crashed, 0 hung), a **12-unit** `-Werror` compile natively *and*
+cross-compiled for Windows, and — for the first time in this repository — the
+complete Inkling Python suite: **152 tests, 0 failures**. The v16 bundle's
+99-test claim is confirmed; the rest are the fixture reader and the
+layer-parity harness. `dist/waste-inkling-6931570/TEST-RESULTS.txt` is the
+authoritative record and is regenerated with the bundle; the figures in §2's
+table above are the *original* audit and are left as they were found.
 
 ## 3. What exists, by weight
 
@@ -56,10 +59,10 @@ Measured on the applied tree:
 
 | Surface | Size | Status |
 | --- | --- | --- |
-| Inkling C translation units | 10 units, 2,922 lines (`+ src/arch.c`, 11 TUs total) | compiled into `libwaste.a` and the shared library |
+| Inkling C translation units | 12 TUs including `src/arch.c` and `src/inkling_public.c` | compiled into `libwaste.a` and the shared library |
 | Inkling headers | 812 lines | private; not exported through `waste.h` |
 | Python converter + parity tooling | 14 files, 5,909 lines | runnable, torch-dependent for the heavy paths |
-| Inkling tests (C + Python) | 21 files, 4,723 lines | 4 run dependency-light in CI; the rest need torch |
+| Inkling tests (C + Python) | 23 files | 5 dependency-light in CI, 2 C binaries (one runs on Windows), the rest torch |
 | Upstream files modified | 5 files, +84 / −7 lines | `Makefile`, `src/model.c`, `src/waste.c`, `tests/run.sh`, `tools/convert.py` |
 | New files added | 62 | everything else |
 
@@ -72,9 +75,10 @@ its blast radius on the public engine is currently zero.
 Both are one classification call against `waste_arch_classify()`
 (`src/arch.c`), which lowercases and prefix-matches `"inkling"`:
 
-- `src/waste.c:179` — `waste_plan_memory()` refuses an Inkling manifest with
-  `WASTE_E_UNSUPPORTED` *before* reading a single architecture dimension, so
-  Kimi's memory formulas can never produce a confident wrong floor.
+- `src/waste.c:179` — `waste_plan_memory()` **dispatched** since the planning
+  promotion: an Inkling manifest goes to `waste_inkling_plan_memory_json()`
+  before a single Kimi dimension is read, so Kimi's formulas still never see
+  it. The Inkling planner fails closed rather than defaulting.
 - `src/model.c:976` — the loader refuses after the `format_version` check and
   *before* Kimi config parsing or tensor binding, so a plausible set of
   dimensions cannot select the wrong forward path.
@@ -140,11 +144,16 @@ duplicate the converter for a one-time operation. The right step is to make the
 Python conversion **measurable and resumable enough to trust**, which it
 largely already is, and then measure it (§Roadmap gate G3).
 
-### 5.3 Nothing is public yet (correctly)
+### 5.3 Almost nothing is public yet (correctly)
 
-No manifest schema extension, no `waste_open` dispatch, no tokenizer
-integration, no chat template, no serving. All four are downstream of parity
-and should stay downstream of parity.
+Planning is public; nothing else is. No `waste_open` dispatch, no tokenizer
+integration, no chat template, no serving — all downstream of parity and they
+should stay there. The manifest needs no schema extension: the planner reads
+only fields format v0 already defines.
+
+The asymmetry is deliberate. A plan is arithmetic over declared geometry, so a
+bug yields a wrong byte count the caller sees at once. A forward pass is a
+claim about a model whose official weights this code has never read.
 
 ## 6. Risks worth naming
 
@@ -161,8 +170,14 @@ and should stay downstream of parity.
   *(Both are struck through rather than deleted. The original wording — a
   15,824-line patch is not reviewable, and review has to be possible before any
   community can engage with the work — is the reason the refactor happened.)*
-- **Windows is entirely unclaimed.** The reader has `ReadFile`/`OVERLAPPED`
-  paths that have never been compiled by MinGW in CI, let alone run.
+- ~~**Windows is entirely unclaimed.**~~ **Partly closed.** All 12 Inkling
+  translation units now cross-compile with MinGW under `-Werror`, the full
+  `make CC=x86_64-w64-mingw32-gcc-posix` produces `waste.exe` and
+  `libwaste.dll`, and `tests/test_inkling_io.c` executes the
+  `ReadFile`/`OVERLAPPED` positional-read branch under Wine in CI — the first
+  time that code has run anywhere. Still unclaimed: *native* Windows, offsets
+  above 4 GiB, NTFS atomic replacement, Unicode paths, and cancel/resume
+  during a multi-hundred-GB conversion.
 
 ## 7. Verdict
 

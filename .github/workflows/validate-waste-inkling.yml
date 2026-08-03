@@ -137,3 +137,69 @@ jobs:
       - name: Fuzz malformed containers under sanitizers
         shell: bash
         run: PATH=/usr/bin:/bin make -C "${RUNNER_TEMP}/waste" fuzz-asan FUZZ_RUNS=200
+
+  windows:
+    name: Windows cross-build and execution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Generate the tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          WASTE_VERIFY_SKIP_CHECK=1 integration/waste/verify.sh "${RUNNER_TEMP}/waste"
+
+      - name: Install MinGW and Wine
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-mingw-w64-x86-64 wine wine64
+
+      # inkling_stage_reader.c carries a whole second I/O implementation for
+      # Windows — ReadFile with OVERLAPPED — that no job compiled until this
+      # one. Every Inkling unit must build for the target with warnings as
+      # errors, exactly as the native build does.
+      - name: Cross-compile every Inkling unit with -Werror
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/waste"
+          objects="$(mktemp -d)"
+          units=0
+          for source in "$work"/src/arch.c "$work"/src/inkling*.c; do
+            x86_64-w64-mingw32-gcc-posix -std=gnu11 -Wall -Wextra -Werror \
+              -I"$work/src" -c "$source" -o "$objects/$(basename "${source%.c}").o"
+            units=$((units + 1))
+          done
+          test "$units" -eq 12
+          echo "cross-compiled $units Inkling translation units"
+
+      - name: Build the Windows binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATH=/usr/bin:/bin make -C "${RUNNER_TEMP}/waste" \
+            CC=x86_64-w64-mingw32-gcc-posix test_inkling.exe test_inkling_io.exe
+
+      # Compiling proves the branch parses. Running it proves the positional
+      # reads actually work, which is the part that had never been true.
+      - name: Run the Inkling C tests under Wine
+        shell: bash
+        env:
+          WINEDEBUG: "-all"
+          WINEPREFIX: /tmp/wineprefix
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/waste"
+          scratch="$(mktemp -d)"
+          wineboot --init >/dev/null 2>&1 || true
+          (cd "$work" && wine ./test_inkling.exe | grep -q "^INKLING OK")
+          (cd "$work" && wine ./test_inkling_io.exe "Z:$scratch" | grep -q "^INKLING IO OK")
+          echo "Inkling scalar primitives and staged readers pass on Windows"

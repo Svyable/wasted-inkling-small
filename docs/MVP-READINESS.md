@@ -10,11 +10,14 @@ The repository has bounded checkpoint fixtures, a fixture-backed C decoder
 layer runner, and an official `InklingDecoderLayer` harness that avoids
 materializing the complete checkpoint or 256-expert bank.
 
-The real release `config.json` is now public. It confirms the recorded Small
-geometry: dense width 16384 and routed-expert width 2048. The apparent 3072
-width came from passing the release schema directly into Transformers 5.14.1,
-whose field names have different meanings. See
-`docs/CONFIG-SCHEMA-RESOLUTION.md`.
+The real release `config.json` confirms the recorded Small geometry: dense
+width 16384 and routed-expert width 2048. The apparent 3072 width came from
+passing the release schema directly into Transformers 5.14.1, whose field names
+have different meanings. See `docs/CONFIG-SCHEMA-RESOLUTION.md`.
+
+PR #13 established an independent synthetic oracle: the C decoder layer and
+official Transformers layer compute the same dense/local and sparse/global
+functions to float32 epsilon. Official-weight parity is still not established.
 
 ## Evidence harness
 
@@ -44,6 +47,42 @@ different slot order.
 These tools intentionally remain outside the generated WASTE patch until they
 have run against an official fixture. Promotion into `inkling/tools/` should be
 the commit that records the run and regenerates the bundle.
+
+## Acquire a bounded official fixture
+
+A local 532 GB checkpoint mount is no longer required. The remote extractor
+reads only release metadata, safetensors headers, selected layer tensors, and
+selected expert slices from immutable release commit
+`21152b5312c653be115f33a8342759064144e281`.
+
+Plan first; this downloads no tensor payloads:
+
+```sh
+python mvp/inkling_remote_fixture.py \
+  --revision 21152b5312c653be115f33a8342759064144e281 \
+  --layers 0,2,5 \
+  --experts '2:4,17,39,88,143,221;5:1,8,22,64,150,201' \
+  --max-total-gib 8 \
+  --plan-only > /parity/fixture-plan.json
+```
+
+Then extract the exact planned ranges:
+
+```sh
+python mvp/inkling_remote_fixture.py \
+  --revision 21152b5312c653be115f33a8342759064144e281 \
+  --layers 0,2,5 \
+  --experts '2:4,17,39,88,143,221;5:1,8,22,64,150,201' \
+  --max-total-gib 8 \
+  --out /parity/fixture-L0-L2-L5
+
+python inkling/tools/inkling_fixture.py \
+  --fixture /parity/fixture-L0-L2-L5 --verify
+```
+
+The extractor refuses mutable revisions, unsafe index paths, missing tensors,
+invalid safetensors geometry, incomplete sparse expert selections, and any
+server that ignores HTTP `Range`. See `docs/REMOTE-FIXTURES.md`.
 
 ## Run the G0 loop
 
@@ -78,14 +117,14 @@ repeat until the chosen input states are covered.
 
 ## MVP sequence from here
 
-1. Run the commands above for layer 0 (dense), layer 2 (sparse local
-   attention), and layer 5 (sparse global attention).
-2. Fix the first activation mismatch and commit the comparison report.
-3. Promote the harness and schema adapter into `inkling/tools/`, add tests to
-   the differential suite, regenerate the distribution patch, and update the
-   applied-tree hash.
-4. Establish tokenizer and chat-template parity in parallel.
-5. Only after BF16 and text-interface evidence is green, promote public loading
+1. Produce and verify the remote bounded fixture for layers 0, 2, and 5.
+2. Run the official and C archives over identical hidden states and commit the
+   first comparison report, whatever it says.
+3. Fix the first activation mismatch, then repeat until the BF16 gate is green.
+4. Promote the evidence tools into `inkling/tools/`, regenerate the distribution
+   patch, and update the applied-tree hash.
+5. Establish tokenizer and chat-template parity in parallel.
+6. Only after BF16 and text-interface evidence is green, promote public loading
    and stepping. Keep unsupported behavior for every unverified variant.
 
 ## Definition of an MVP

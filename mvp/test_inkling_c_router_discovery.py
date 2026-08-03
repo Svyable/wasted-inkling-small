@@ -62,6 +62,10 @@ class CRouterDiscoveryTest(unittest.TestCase):
         for position in range(len(inputs)):
             prefix = f"token.{position}.layer.1."
             self.assertEqual(
+                discovered["router_inputs"][position],
+                complete["values"][prefix + "post_attention_norm"],
+            )
+            self.assertEqual(
                 discovered["topk_indices"][position],
                 complete["values"][prefix + "routed_index"],
             )

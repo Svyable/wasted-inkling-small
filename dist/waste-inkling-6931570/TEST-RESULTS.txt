@@ -41,17 +41,18 @@ PASS  integration/waste/verify.sh
 VALIDATION
 ----------
 PASS  PATH=/usr/bin:/bin make check
-      Result: 30 passed, 0 failed, 13 skipped
+      Result: 31 passed, 0 failed, 13 skipped
       Includes:
         - cgroup-v2 limits vs the automatic budget ceiling
         - Inkling architecture seam and scalar runtime primitives
         - a Kimi container relabelled Inkling refused by every path
         - an Inkling container plans, fails closed on a missing config
           field, and still refuses to load
+        - the staged tensor and expert-bank readers, as C
         - upstream serve suite: 168 checks passed
 
 PASS  PATH=/usr/bin:/bin make asan
-      Result: 29 passed, 0 failed, 14 skipped
+      Result: 30 passed, 0 failed, 14 skipped
       AddressSanitizer and UndefinedBehaviorSanitizer were clean.
 
 PASS  PATH=/usr/bin:/bin make fuzz-asan FUZZ_RUNS=200
@@ -91,6 +92,27 @@ PASS  dependency-light selection, no torch installed
       tests/test_inkling_fixture.py
 
 PASS  python3 -m compileall -q tools tests
+
+PASS  Windows cross-build and execution
+      Toolchain: x86_64-w64-mingw32-gcc-posix 13.2.0, run under Wine 9.0
+      - all 12 Inkling translation units compiled -Werror for the target
+      - full `make CC=x86_64-w64-mingw32-gcc-posix` produced waste.exe and
+        libwaste.dll
+      - test_inkling.exe  -> INKLING OK
+      - test_inkling_io.exe -> INKLING IO OK
+      - waste.exe plan on an Inkling container produced byte-identical
+        figures to the Linux build
+
+      This is the first time inkling_stage_reader.c's Windows branch has been
+      compiled by anything, let alone run. It carries a complete second
+      positional-read implementation (ReadFile with OVERLAPPED) that the
+      Python differential tests cannot reach and that no CI job touched.
+      test_inkling_io.c exists so that one binary exercises it on both
+      platforms.
+
+      NOT claimed: native Windows. This is a cross-build executed under Wine.
+      Offsets above 4 GiB, NTFS atomic replacement, Unicode paths, and
+      cancellation during a multi-hundred-GB conversion remain untested.
 
 PUBLIC SURFACE PROMOTED
 -----------------------

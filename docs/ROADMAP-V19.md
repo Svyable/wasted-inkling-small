@@ -261,11 +261,10 @@ Inkling-specific executable, and the suite is green with the container present.
   work behind text parity.
 - **MTP.** `num_nextn_predict_layers: 8` is a speculative-decoding opportunity,
   not a correctness requirement.
-- **Native Windows.** The reader's `ReadFile`/`OVERLAPPED` paths have never
-  been compiled by MinGW in CI. Add the cross-compile to CI during v19; run
-  WSL2 first and claim native Windows only after > 4 GiB offsets, NTFS atomic
-  replacement, Unicode paths, and a cancel/resume during a multi-hundred-GB
-  conversion have all been exercised.
+- **Native Windows.** The cross-compile *and* execution under Wine are now in
+  CI, which is what closes the "never compiled" gap. Native Windows still
+  waits on > 4 GiB offsets, NTFS atomic replacement, Unicode paths, and a
+  cancel/resume during a multi-hundred-GB conversion.
 - **A C-side safetensors reader.** Tempting, and wrong: it would duplicate the
   converter to save a one-time operation. Revisit only if G3 shows conversion
   is the dominant cost of adoption.

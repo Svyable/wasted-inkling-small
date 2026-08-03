@@ -6,8 +6,8 @@ be impressed by adjectives.**
 This repository develops Inkling-Small support for
 [`sqliteai/waste`](https://github.com/sqliteai/waste).
 
-**Read the code in [`inkling/`](inkling/).** It is the source of truth: eleven
-C translation units, fifteen Python tools, and the tests. The integration patch
+**Read the code in [`inkling/`](inkling/).** It is the source of truth: twelve
+C translation units, sixteen Python tools, and the tests. The integration patch
 in [`dist/waste-inkling-6931570/`](dist/waste-inkling-6931570/) is generated
 from it by `integration/waste/generate.sh` and verified against a pinned tree
 hash — apply that, but never edit it.
@@ -35,12 +35,13 @@ bundle:
 | --- | --- |
 | Upstream drift | none — `sqliteai/waste` HEAD is `6931570`, the exact baseline |
 | Patch generation | reproduces the reviewed v18 tree `ce6c527…` byte-for-byte; the committed bundle applies to the pinned tree |
-| `make check` | 29 passed, 0 failed, 13 skipped (server suite: 168 checks) |
-| ASan + UBSan | 28 passed, 0 failed, 14 skipped |
+| `make check` | 31 passed, 0 failed, 13 skipped (server suite: 168 checks) |
+| ASan + UBSan | 30 passed, 0 failed, 14 skipped |
 | Fuzzing | 200 cases, 0 crashed, 0 hung |
-| Strict compile | 11 translation units, `-Werror` |
+| Strict compile | 12 translation units, `-Werror`, native + MinGW |
 | Python suite | **152 tests, 0 failures** — run, not quoted |
 | Inkling seam | plans; refuses to load; refuses a mislabelled container |
+| Windows | 12 units cross-compile; both C tests pass under Wine |
 
 The port is current, green, and deliberately inert: 62 new files plus **84
 inserted lines across 5 upstream files**. Its blast radius on the public engine
@@ -176,7 +177,7 @@ sha256sum -c SHA256SUMS
 ```
 
 The expected applied Git tree is
-`5b1796b1b14ea66c4f4a24ca9f65dd4bc1b6b8be`.
+`b040727cf0b0355c55676266d075d83aea31d4ea`.
 
 Or build and check it from source in one command:
 
@@ -188,11 +189,12 @@ integration/waste/verify.sh /tmp/waste
 
 All measured on 2026-08-02 in one environment, on the generated tree:
 
-- WASTE suite: **29 passed, 0 failed, 13 skipped**
+- WASTE suite: **31 passed, 0 failed, 13 skipped**
 - server suite: **168 checks passed**
-- ASan + UBSan: **28 passed, 0 failed, 14 skipped**
+- ASan + UBSan: **30 passed, 0 failed, 14 skipped**
 - sanitizer fuzzing: **200 cases, 137 rejected, 63 loaded, 0 crashes, 0 hangs**
-- strict C: **11 Inkling/architecture translation units**, `-Werror`
+- strict C: **12 Inkling/architecture translation units**, `-Werror`,
+  natively and cross-compiled for Windows
 - Python: **152 tests passed** (134 + 18), torch differential suite included
 - patch generation: reproduces the reviewed v18 tree byte-for-byte; the
   committed bundle applies to the pinned tree `e372f1e…`

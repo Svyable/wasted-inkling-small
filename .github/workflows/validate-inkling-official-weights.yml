@@ -107,7 +107,7 @@ jobs:
             --model-config "${RUNNER_TEMP}/config.json" \
             --out "${RUNNER_TEMP}/c-config.json"
 
-      - name: Run official and C layers separately
+      - name: Run official and compact C layers separately
         shell: bash
         run: |
           set -euo pipefail
@@ -122,7 +122,7 @@ jobs:
               --layers "$layer" \
               --dtype bfloat16 \
               --out "$official"
-            python3 inkling/tools/inkling_layer_parity.py \
+            PYTHONPATH=mvp python3 mvp/inkling_compact_layer_parity.py \
               --fixture "$fixture" \
               --config "${RUNNER_TEMP}/c-config.json" \
               --inputs "${RUNNER_TEMP}/inputs.json" \

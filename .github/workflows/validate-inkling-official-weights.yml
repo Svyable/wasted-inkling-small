@@ -87,10 +87,48 @@ jobs:
             --inputs "${RUNNER_TEMP}/inputs.json" \
             --layers 2,5 \
             --dtype bfloat16 \
-            --out "${RUNNER_TEMP}/router-analysis.json"
-          echo "INKLING_ROUTER_ANALYSIS_BEGIN"
-          cat "${RUNNER_TEMP}/router-analysis.json"
-          echo "INKLING_ROUTER_ANALYSIS_END"
+            --out "${RUNNER_TEMP}/router-analysis.json" > /dev/null
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          analysis = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "router-analysis.json").read_text()
+          )
+          for layer, value in sorted(analysis["layers"].items(), key=lambda item: int(item[0])):
+              variants = value["variants"]
+              inputs = value["pre_router_state"]
+              logits = value["routed_logits"]["official_vs_c_float"]
+              print(
+                  "ROUTER_DIAG "
+                  f"layer={layer} "
+                  f"classification={value['classification']} "
+                  f"input_bf16_exact={inputs['quantized_exact_fraction']:.9f} "
+                  f"input_max_abs={inputs['max_abs']:.9g} "
+                  f"logit_bf16_exact={logits['quantized_exact_fraction']:.9f} "
+                  f"logit_max_abs={logits['max_abs']:.9g} "
+                  f"c_emitted_rows={variants['c_emitted']['exact_rows']}/8 "
+                  f"c_rounded_rows={variants['c_routed_logits_rounded_bfloat16']['exact_rows']}/8 "
+                  f"official_on_c_rows={variants['official_bfloat16_matmul_on_c_input']['exact_rows']}/8 "
+                  f"float_official_rows={variants['float32_matmul_on_official_input']['exact_rows']}/8"
+              )
+              margins = value["decision_margin"]
+              for row in variants["c_emitted"]["rows"]:
+                  if row["exact_indices"]:
+                      continue
+                  position = row["position"]
+                  print(
+                      "ROUTER_DIAG_MISMATCH "
+                      f"layer={layer} position={position} "
+                      f"official_ids={row['expected_ids']} "
+                      f"c_ids={row['actual_ids']} "
+                      f"official_margin={margins['official'][position]:.9g} "
+                      f"c_float_margin={margins['c_float32'][position]:.9g} "
+                      f"c_rounded_margin={margins['c_rounded_bfloat16'][position]:.9g} "
+                      f"official_on_c_margin={margins['official_bfloat16_matmul_c_input'][position]:.9g}"
+                  )
+          PY
 
       - name: Compare every routed pair before expert computation
         shell: bash
@@ -101,7 +139,7 @@ jobs:
             --config "${RUNNER_TEMP}/c-config.json" \
             --inputs "${RUNNER_TEMP}/inputs.json" \
             --layers 2,5 \
-            --out "${RUNNER_TEMP}/c-router-selection.json"
+            --out "${RUNNER_TEMP}/c-router-selection.json" > /dev/null
           python3 - <<'PY'
           import json
           import os
@@ -160,9 +198,25 @@ jobs:
               }
               passed = passed and layer_ok
           result["passed"] = passed
-          print("INKLING_ROUTER_PARITY_BEGIN")
-          print(json.dumps(result, indent=2, sort_keys=True))
-          print("INKLING_ROUTER_PARITY_END")
+          out = Path(os.environ["RUNNER_TEMP"]) / "router-parity.json"
+          out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          for layer, value in sorted(result["layers"].items(), key=lambda item: int(item[0])):
+              exact = sum(1 for row in value["rows"] if row["exact_indices"])
+              print(
+                  "ROUTER_PARITY "
+                  f"layer={layer} passed={value['passed']} "
+                  f"exact_rows={exact}/8 max_abs_weight={value['max_abs_weight']:.9g}"
+              )
+              for row in value["rows"]:
+                  if row["passed"]:
+                      continue
+                  print(
+                      "ROUTER_PARITY_MISMATCH "
+                      f"layer={layer} position={row['position']} "
+                      f"official_ids={row['official_ids']} "
+                      f"candidate_ids={row['candidate_ids']} "
+                      f"max_abs_weight={row['max_abs_weight']}"
+                  )
           raise SystemExit(0 if passed else 2)
           PY
 

@@ -80,7 +80,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PYTHONPATH=mvp python3 mvp/analyze_inkling_router_mismatch.py \
+          PYTHONPATH=mvp python3 mvp/diagnose_inkling_router_boundary.py \
             --fixture "${RUNNER_TEMP}/router-seed" \
             --model-config "${RUNNER_TEMP}/config.json" \
             --c-config "${RUNNER_TEMP}/c-config.json" \

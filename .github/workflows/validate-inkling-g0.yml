@@ -1,0 +1,33 @@
+name: Validate Inkling G0 harness
+
+on:
+  pull_request:
+    paths:
+      - "mvp/**"
+      - "docs/MVP-READINESS.md"
+      - ".github/workflows/validate-inkling-g0.yml"
+  push:
+    branches: [main]
+    paths:
+      - "mvp/**"
+      - "docs/MVP-READINESS.md"
+      - ".github/workflows/validate-inkling-g0.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install torch
+        run: python3 -m pip install --quiet --break-system-packages torch
+      - name: Compile and test the bounded reference adapter
+        run: |
+          python3 -m compileall -q mvp
+          PYTHONPATH=mvp python3 -m unittest mvp/test_inkling_fixture_reference.py -v

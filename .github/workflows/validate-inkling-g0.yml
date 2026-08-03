@@ -44,14 +44,14 @@ jobs:
             -s mvp -p 'test_inkling_*.py' -v
 
   release-plan:
-    name: Plan immutable release fixture
+    name: Plan discovered official fixture
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Reproduce the committed release plan
+      - name: Plan the evidence-selected fixture
         shell: bash
         run: |
           set -euo pipefail
@@ -59,7 +59,7 @@ jobs:
           python3 mvp/inkling_remote_fixture.py \
             --revision "$revision" \
             --layers 0,2,5 \
-            --experts '2:4,17,39,88,143,221;5:1,8,22,64,150,201' \
+            --experts '2:13,19,25,26,27,30,33,39,60,67,69,81,90,91,92,95,96,112,116,117,126,131,133,140,146,150,152,166,175,217,238,247,254;5:6,21,32,44,45,56,60,63,66,91,105,110,120,145,152,156,163,166,179,180,219,233,236,238,250,252' \
             --max-total-gib 8 \
             --plan-only > fixture-plan.json
           python3 - <<'PY'
@@ -67,17 +67,18 @@ jobs:
           from pathlib import Path
 
           plan = json.loads(Path("fixture-plan.json").read_text())
-          evidence = json.loads(Path("docs/OFFICIAL-FIXTURE-PLAN.json").read_text())
-          keys = (
-              "model_id", "revision", "config_sha256", "index_sha256",
-              "layers", "experts", "entries", "payload_bytes",
-              "metadata_bytes_read", "requests", "shards",
+          selection = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
           )
-          for key in keys:
-              assert plan[key] == evidence[key], (
-                  key, plan[key], evidence[key]
-              )
-          assert evidence["payload_downloaded"] is False
+          assert plan["model_id"] == selection["model_id"]
+          assert plan["revision"] == selection["revision"]
+          assert plan["config_sha256"] == selection["config_sha256"]
+          assert plan["index_sha256"] == selection["index_sha256"]
+          assert plan["layers"] == [0, 2, 5]
+          assert plan["experts"] == {
+              layer: value["selected_experts"]
+              for layer, value in selection["layers"].items()
+          }
           assert 0 < plan["payload_bytes"] <= 8 << 30
           assert 0 < plan["metadata_bytes_read"] < 64 << 20
           print(json.dumps(plan, indent=2, sort_keys=True))
@@ -117,7 +118,7 @@ jobs:
           )
           Path("${RUNNER_TEMP}/config.json").write_bytes(source.file("config.json"))
           PY
-      - name: Record exact official choices
+      - name: Reproduce exact official choices
         shell: bash
         run: |
           set -euo pipefail
@@ -129,5 +130,14 @@ jobs:
             --seed 19 \
             --dtype bfloat16 \
             --out router-selection.json
-          cat seed-fixture.json
-          cat router-selection.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          actual = json.loads(Path("router-selection.json").read_text())
+          expected = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          assert actual == expected
+          print(json.dumps(actual, indent=2, sort_keys=True))
+          PY

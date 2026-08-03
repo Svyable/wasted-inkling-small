@@ -21,8 +21,136 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  routing-parity:
+    name: Exact official-vs-C routing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install torch for input hash binding
+        run: python3 -m pip install --quiet --break-system-packages torch
+
+      - name: Extract the one-expert routing seed
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          fixture="${RUNNER_TEMP}/router-seed"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" \
+            --layers 2,5 \
+            --experts '2:0;5:0' \
+            --max-total-gib 4 \
+            --out "$fixture" > "${RUNNER_TEMP}/seed-manifest.json"
+          PYTHONPATH=mvp python3 - <<PY
+          import json
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import (
+              deterministic_hidden_states,
+              input_sha256,
+          )
+          from inkling_remote_fixture import HttpRangeSource
+
+          root = Path("${RUNNER_TEMP}")
+          source = HttpRangeSource(
+              "https://huggingface.co/thinkingmachines/Inkling-Small",
+              "$revision",
+          )
+          (root / "config.json").write_bytes(source.file("config.json"))
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          assert input_sha256(inputs, torch.bfloat16) == selection["inputs_sha256"]
+          (root / "inputs.json").write_text(
+              json.dumps(inputs.tolist()) + "\n", encoding="utf-8"
+          )
+          PY
+          PYTHONPATH=mvp python3 mvp/inkling_c_config.py \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --out "${RUNNER_TEMP}/c-config.json"
+
+      - name: Compare every routed pair before expert computation
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=mvp python3 mvp/discover_inkling_c_router_experts.py \
+            --fixture "${RUNNER_TEMP}/router-seed" \
+            --config "${RUNNER_TEMP}/c-config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --layers 2,5 \
+            --out "${RUNNER_TEMP}/c-router-selection.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          official = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          candidate = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "c-router-selection.json").read_text()
+          )
+          for key in (
+              "model_id", "revision", "config_sha256", "index_sha256",
+              "tokens", "input_dtype", "inputs_sha256",
+          ):
+              assert candidate[key] == official[key], (
+                  key, candidate[key], official[key]
+              )
+
+          passed = True
+          result = {"format": "inkling-router-parity", "version": 1, "layers": {}}
+          for layer, expected in official["layers"].items():
+              got = candidate["layers"][layer]
+              rows = []
+              layer_ok = True
+              max_abs = 0.0
+              for position, (want_ids, want_weights, got_ids, got_weights) in enumerate(zip(
+                  expected["topk_indices"], expected["topk_weights"],
+                  got["topk_indices"], got["topk_weights"],
+              )):
+                  want = sorted(zip(want_ids, want_weights))
+                  actual = sorted(zip(got_ids, got_weights))
+                  ids_ok = [pair[0] for pair in actual] == [pair[0] for pair in want]
+                  row_abs = max(
+                      (abs(float(a[1]) - float(w[1])) for a, w in zip(actual, want)),
+                      default=0.0,
+                  ) if ids_ok else None
+                  if row_abs is not None:
+                      max_abs = max(max_abs, row_abs)
+                  row_ok = ids_ok and row_abs is not None and row_abs <= 1e-3
+                  layer_ok = layer_ok and row_ok
+                  rows.append({
+                      "position": position,
+                      "passed": row_ok,
+                      "exact_indices": ids_ok,
+                      "max_abs_weight": row_abs,
+                      "official_ids": [pair[0] for pair in want],
+                      "candidate_ids": [pair[0] for pair in actual],
+                  })
+              result["layers"][layer] = {
+                  "passed": layer_ok,
+                  "max_abs_weight": max_abs,
+                  "official_unique": expected["selected_experts"],
+                  "candidate_unique": got["selected_experts"],
+                  "rows": rows,
+              }
+              passed = passed and layer_ok
+          result["passed"] = passed
+          print("INKLING_ROUTER_PARITY_BEGIN")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          print("INKLING_ROUTER_PARITY_END")
+          raise SystemExit(0 if passed else 2)
+          PY
+
   layer-parity:
     name: Official BF16 layers 0, 2, and 5
+    needs: routing-parity
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:

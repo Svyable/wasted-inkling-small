@@ -77,7 +77,7 @@ jobs:
             --model-config "${RUNNER_TEMP}/config.json" \
             --out "${RUNNER_TEMP}/c-config.json"
 
-      - name: Locate BF16 drift before routing
+      - name: Locate and test BF16 drift before routing
         shell: bash
         run: |
           set -euo pipefail
@@ -100,18 +100,40 @@ jobs:
           for layer, value in sorted(
               analysis["layers"].items(), key=lambda item: int(item[0])
           ):
+              counter = value["counterfactuals"]["requantize_all_traced_stages"]
               print(
                   "PRE_ROUTER_DIAG "
                   f"layer={layer} "
-                  f"first_nonexact={value['first_nonexact_bfloat16_stage']} "
-                  f"all_stages_exact={value['all_stages_bfloat16_exact']}"
+                  f"baseline_first={value['first_nonexact_bfloat16_stage']} "
+                  f"requantized_first={counter['first_nonexact_bfloat16_stage']} "
+                  f"requantized_all_exact={counter['all_stages_bfloat16_exact']}"
               )
-              for point, metrics in value["stages"].items():
+              for point in value["stages"]:
+                  baseline = value["stages"][point]
+                  requantized = counter["stages"][point]
                   print(
                       "PRE_ROUTER_STAGE "
                       f"layer={layer} point={point} "
-                      f"bf16_exact={metrics['quantized_exact_fraction']:.9f} "
-                      f"max_abs={metrics['max_abs']:.9g} "
-                      f"mean_abs={metrics['mean_abs']:.9g}"
+                      f"baseline_exact={baseline['quantized_exact_fraction']:.9f} "
+                      f"requantized_exact={requantized['quantized_exact_fraction']:.9f} "
+                      f"baseline_max={baseline['max_abs']:.9g} "
+                      f"requantized_max={requantized['max_abs']:.9g}"
                   )
+              for name, route in value["routing"].items():
+                  print(
+                      "PRE_ROUTER_ROUTE "
+                      f"layer={layer} variant={name} "
+                      f"exact_rows={route['exact_rows']}/{route['total_rows']} "
+                      f"max_abs_weight={route['max_abs_weight_on_exact_rows']:.9g}"
+                  )
+                  for row in route["rows"]:
+                      if row["exact_indices"]:
+                          continue
+                      print(
+                          "PRE_ROUTER_ROUTE_MISMATCH "
+                          f"layer={layer} variant={name} "
+                          f"position={row['position']} "
+                          f"official_ids={row['expected_ids']} "
+                          f"actual_ids={row['actual_ids']}"
+                      )
           PY

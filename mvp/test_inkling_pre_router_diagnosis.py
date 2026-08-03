@@ -135,6 +135,31 @@ class PreRouterDiagnosisTest(unittest.TestCase):
                     )
                 )
 
+    def test_official_stage_injection_replaces_writable_buffers(self) -> None:
+        fixture, inputs = self._fixture_and_inputs()
+        replacements = {
+            "attention_branch": torch.full(
+                (len(inputs), H), 0.125, dtype=torch.float32
+            ),
+            "post_attention_norm": torch.full(
+                (len(inputs), H), -0.25, dtype=torch.float32
+            ),
+        }
+        captured, indices, weights = _capture_c_pre_router(
+            self.lib,
+            fixture,
+            C_CONFIG,
+            1,
+            inputs.tolist(),
+            replace_stages=replacements,
+        )
+
+        for point, expected in replacements.items():
+            with self.subTest(point=point):
+                self.assertTrue(torch.equal(captured[point], expected))
+        self.assertEqual(tuple(indices.shape), (len(inputs), TOPK))
+        self.assertEqual(tuple(weights.shape), (len(inputs), TOPK))
+
     def test_first_nonexact_stage_uses_declared_trace_order(self) -> None:
         official = {
             point: torch.zeros(2, 3, dtype=torch.float32) for point in POINTS

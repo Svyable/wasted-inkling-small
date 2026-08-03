@@ -61,12 +61,25 @@ ones. The fixture supplies the weights; the harness supplies the input.
   module-relative state-dict keys, and refuses — by name — any layer or expert
   the fixture does not cover. 41 tests, dependency-light, in CI. The BF16 and
   F16 widening is checked bit-for-bit against torch where torch is available.
-- ⬜ **Official-side module construction.** Instantiate the official decoder
-  layer for one fixture layer, load `layer_state_dict_entries()` into it, and
-  drive the existing `register_reference_hooks()`. This is the one piece that
-  needs `transformers` with Inkling support present, so it must be written and
-  first run on a machine that has it — writing it blind would produce exactly
-  the plausible-but-unverified code this port exists to avoid.
+- 🟡 **Official-side module construction — unblocked, and it found something.**
+  Earlier notes said this needed "a machine that has transformers." That was
+  asserted, not tested, and it was wrong: `pip install transformers` yields
+  5.14.1 with the whole Inkling text stack, and `InklingDecoderLayer(config,
+  layer_idx)` constructs from config alone with no checkpoint.
+
+  Verified against the official source: the decoder-layer order matches our C
+  exactly (norm → attn → attn_sconv → residual → norm → mlp → mlp_sconv →
+  residual); `InklingAttention.scaling` is `1/head_dim`, not `1/sqrt(head_dim)`,
+  matching our C; the short convolution adds its own input back inside the
+  module, as ours does; and every official parameter name matches
+  `layer_attention_names(..., "transformers_normalized")` in `inkling_plan.py`.
+
+  Two differences to carry into the comparator: the official router takes
+  `topk(..., sorted=False)`, so selected experts must be compared as
+  (index, weight) **pairs** rather than positionally — our C returns them in
+  descending choice order. And the routed-expert width is now an open question
+  (see immediately below), which must be settled before a comparison means
+  anything.
 - ✅ **`tools/inkling_layer_parity.py`** — the C-side layer harness. Binds one
   layer's weights from a fixture (resolving names through `inkling_plan.py`,
   splitting the provider's row-interleaved gate/up, placing routed expert
@@ -103,6 +116,73 @@ with < 64 GB RAM and a comparison report exists, whatever it says.
 still no C change. This is the highest-leverage item in the
 repository: every gate below is blocked on it, and none of them is blocked on
 anything else.
+
+---
+
+## ⚠ Blocking question found 2026-08-03: which key holds the routed intermediate?
+
+`transformers` 5.14.1 ships full Inkling support (`InklingDecoderLayer`,
+`InklingAttention`, `InklingMoE`, `InklingTopkRouter`, `InklingShortConvolution`).
+That makes the official side of G0 buildable with no checkpoint — and the first
+thing it surfaced is a config-naming collision this port cannot resolve on its
+own.
+
+**The official class and our recorded release config disagree about the routed
+expert width.**
+
+| | dense MLP | routed experts |
+| --- | --- | --- |
+| `InklingTextConfig` field | `intermediate_size` | `moe_intermediate_size` (default **3072**) |
+| `tests/data/inkling-small-config.json` | `dense_intermediate_size` = 16384 | `intermediate_size` = **2048** |
+
+Feeding our recorded JSON straight into the official class:
+
+```
+intermediate_size      -> 16384   (JSON said 2048)
+moe_intermediate_size  -> 3072    (JSON has no such key)
+```
+
+The official class evidently accepts `dense_intermediate_size` and folds it
+into `intermediate_size`, so **dense agrees at 16384**. The routed width does
+not: our JSON's `intermediate_size: 2048` does not land on
+`moe_intermediate_size`, which falls back to its 3072 default.
+
+**Why this matters more than a name.** The routed intermediate is load-bearing
+for numbers this repository already publishes:
+
+- the VQ3R record size of 9,457,664 bytes is `hidden 4096 x inter 2048` at 3
+  b/w plus scales;
+- the ~90.2 GiB expert-bank total and the 108 MB minimum expert cache in the
+  memory plan promoted to `waste_plan_memory()` derive from it;
+- at 3072 instead of 2048 every one of those is 1.5x out.
+
+**What is not in doubt.** `src/inkling_public.c` fails closed here rather than
+guessing: fed a config using the official key names it would not find
+`dense_intermediate_size`, so `req_int` fails and planning returns
+`WASTE_E_FORMAT`. The discipline holds; the number is the open question.
+
+**Do not "fix" this by renaming.** Two readings are consistent with the
+evidence — our recorded JSON is missing a key the real release carries, or it
+faithfully records a release whose key names differ from the library's and the
+library applies a compatibility shim we have only half-observed. Choosing
+between them by taste is precisely the plausible-but-unverified move this port
+exists to refuse.
+
+**Resolved by one artifact:** the real `config.json` from
+`thinkingmachines/Inkling-Small`. A few kilobytes. Until it arrives, treat the
+routed intermediate — and everything derived from it — as unconfirmed.
+
+**Reproduce:**
+
+```sh
+python3 -c "
+import json
+from transformers.models.inkling.configuration_inkling import InklingTextConfig
+b = json.load(open('inkling/tests/data/inkling-small-config.json'))['text_config']
+c = InklingTextConfig(**b)
+print(c.intermediate_size, c.moe_intermediate_size, b['intermediate_size'])
+"
+```
 
 ---
 

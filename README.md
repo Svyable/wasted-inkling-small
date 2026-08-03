@@ -92,8 +92,13 @@ bit-identical, and a compiled probe checks every ctypes struct size against the
 C compiler's — after a six-field-instead-of-eleven declaration silently
 overran a buffer while every test passed.
 
-What remains for the gate is the official-side module construction, which needs
-`transformers` with Inkling support present.
+The official side is no longer blocked: `transformers` 5.14.1 ships the whole
+Inkling text stack, and `InklingDecoderLayer` constructs from config alone. It
+immediately surfaced a **blocking question about which config key holds the
+routed-expert width** — see the warning block in
+[docs/ROADMAP-V19.md](docs/ROADMAP-V19.md). Settling it needs the real
+`config.json` from the release, a few kilobytes, and until then the routed
+intermediate and everything derived from it is unconfirmed.
 
 Gates, commands, budgets, and the running record:
 **[docs/ROADMAP-V19.md](docs/ROADMAP-V19.md)**.

@@ -92,13 +92,24 @@ bit-identical, and a compiled probe checks every ctypes struct size against the
 C compiler's — after a six-field-instead-of-eleven declaration silently
 overran a buffer while every test passed.
 
-The official side is no longer blocked: `transformers` 5.14.1 ships the whole
-Inkling text stack, and `InklingDecoderLayer` constructs from config alone. It
-immediately surfaced a **blocking question about which config key holds the
-routed-expert width** — see the warning block in
-[docs/ROADMAP-V19.md](docs/ROADMAP-V19.md). Settling it needs the real
-`config.json` from the release, a few kilobytes, and until then the routed
-intermediate and everything derived from it is unconfirmed.
+**The C decoder layer now matches the official implementation.**
+`transformers` 5.14.1 ships the whole Inkling text stack, so
+`mvp/test_inkling_official_layer_parity.py` runs our C layer and
+`InklingDecoderLayer` over the *same* synthetic fixture and requires agreement.
+Both layer kinds, at 3, 4, and 6 tokens, agree to **float32 epsilon**
+(2.4e-07 local/dense, 6.0e-08 sparse/global) — covering attention with and
+without the sliding window, the relative bias, log scaling, all four short
+convolutions, the dense MLP, MoE routing, shared experts, and both norms.
+
+That is the first genuinely *independent* oracle this port has had. Every other
+differential compares the C against a PyTorch reference written in this
+repository, which cannot catch a misreading the two share.
+
+It also found two harness bugs that would each have produced a large,
+plausible, position-dependent "mismatch" pointing at the C: `attention_mask=None`
+means *unmasked* rather than causal, and a local layer's attention ring capacity
+**is** its sliding window, so defaulting it to the token count silently makes a
+windowed layer full-context. Both are fixed and both are regression-tested.
 
 Gates, commands, budgets, and the running record:
 **[docs/ROADMAP-V19.md](docs/ROADMAP-V19.md)**.
@@ -182,7 +193,7 @@ sha256sum -c SHA256SUMS
 ```
 
 The expected applied Git tree is
-`b040727cf0b0355c55676266d075d83aea31d4ea`.
+`c74783e5fa4487735592b530a0ce789e11854bff`.
 
 Or build and check it from source in one command:
 

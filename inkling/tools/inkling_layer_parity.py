@@ -472,7 +472,18 @@ def run_layer_trace(lib: ctypes.CDLL, cfg: dict[str, Any], layer: int,
     kv_heads = int(cfg["local_kv_heads"] if is_local else cfg["global_kv_heads"])
     head_dim = int(cfg["local_head_dim"] if is_local else cfg["global_head_dim"])
     conv_k = int(cfg["conv_kernel"])
-    cap = attention_capacity or max(len(inputs), 1)
+    # A local layer's attention ring IS its sliding window: the C state uses
+    # `capacity` as the window, so defaulting it to the token count silently
+    # turns a windowed layer into a full-context one. That produces plausible
+    # numbers that diverge from the official implementation only once the
+    # sequence outgrows the window — which is exactly when a parity run would
+    # start chasing a phantom bug in the C.
+    if attention_capacity:
+        cap = attention_capacity
+    elif is_local:
+        cap = min(max(len(inputs), 1), int(cfg["sliding_window"]))
+    else:
+        cap = max(len(inputs), 1)
 
     nfloat = lib.waste_inkling_layer_scratch_floats(ctypes.byref(config), layer, cap)
     nint = lib.waste_inkling_layer_scratch_ints(ctypes.byref(config))

@@ -1,4 +1,4 @@
-From 9061dacbe1c84b1a005487dd7e66f0b52c00a922 Mon Sep 17 00:00:00 2001
+From 188f483771fd1b61a25cb44d1a702c74a3a24290 Mon Sep 17 00:00:00 2001
 From: WASTE Inkling integration <inkling@waste.invalid>
 Date: Sun, 2 Aug 2026 00:00:00 +0000
 Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
@@ -64,7 +64,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/convert.py                      |  13 +-
  tools/convert_inkling.py              | 306 +++++++++
  tools/inkling_fixture.py              | 388 +++++++++++
- tools/inkling_layer_parity.py         | 586 ++++++++++++++++
+ tools/inkling_layer_parity.py         | 597 +++++++++++++++++
  tools/inkling_parity.py               | 416 ++++++++++++
  tools/inkling_plan.py                 | 563 ++++++++++++++++
  tools/inkling_qtrunk.py               | 254 +++++++
@@ -78,7 +78,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/inkling_vq.py                   | 927 ++++++++++++++++++++++++++
  tools/inkling_weights.py              | 369 ++++++++++
  tools/inspect_inkling.py              | 799 ++++++++++++++++++++++
- 74 files changed, 17614 insertions(+), 7 deletions(-)
+ 74 files changed, 17625 insertions(+), 7 deletions(-)
  create mode 100644 PATCH18-HANDOFF.md
  create mode 100644 TEST-RESULTS-P18.txt
  create mode 100644 docs/INKLING.md
@@ -11971,10 +11971,10 @@ index 0000000..86655ab
 +    raise SystemExit(main())
 diff --git a/tools/inkling_layer_parity.py b/tools/inkling_layer_parity.py
 new file mode 100644
-index 0000000..30963b5
+index 0000000..6786389
 --- /dev/null
 +++ b/tools/inkling_layer_parity.py
-@@ -0,0 +1,586 @@
+@@ -0,0 +1,597 @@
 +#!/usr/bin/env python3
 +# SPDX-License-Identifier: Apache-2.0
 +# Copyright 2026 SQLite Cloud, Inc.
@@ -12449,7 +12449,18 @@ index 0000000..30963b5
 +    kv_heads = int(cfg["local_kv_heads"] if is_local else cfg["global_kv_heads"])
 +    head_dim = int(cfg["local_head_dim"] if is_local else cfg["global_head_dim"])
 +    conv_k = int(cfg["conv_kernel"])
-+    cap = attention_capacity or max(len(inputs), 1)
++    # A local layer's attention ring IS its sliding window: the C state uses
++    # `capacity` as the window, so defaulting it to the token count silently
++    # turns a windowed layer into a full-context one. That produces plausible
++    # numbers that diverge from the official implementation only once the
++    # sequence outgrows the window — which is exactly when a parity run would
++    # start chasing a phantom bug in the C.
++    if attention_capacity:
++        cap = attention_capacity
++    elif is_local:
++        cap = min(max(len(inputs), 1), int(cfg["sliding_window"]))
++    else:
++        cap = max(len(inputs), 1)
 +
 +    nfloat = lib.waste_inkling_layer_scratch_floats(ctypes.byref(config), layer, cap)
 +    nint = lib.waste_inkling_layer_scratch_ints(ctypes.byref(config))

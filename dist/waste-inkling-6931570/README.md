@@ -24,7 +24,7 @@ cd /path/to/dist/waste-inkling-6931570
 sha256sum -c SHA256SUMS
 ```
 
-The applied Git tree must be `b040727cf0b0355c55676266d075d83aea31d4ea`.
+The applied Git tree must be `c74783e5fa4487735592b530a0ce789e11854bff`.
 
 ## Regenerate and verify from source
 
@@ -40,7 +40,7 @@ recording when the build ran or which Git emitted it.
 The authoritative check is nonetheless the **applied tree hash**, not the patch
 bytes. `format-patch` output is a function of the local Git as well as the
 content, so CI verifies that the committed patch *applies to*
-`b040727cf0b0355c55676266d075d83aea31d4ea` — which is what a consumer actually
+`c74783e5fa4487735592b530a0ce789e11854bff` — which is what a consumer actually
 depends on, and is immune to toolchain drift.
 
 ## What changed against `waste-inkling-patch-v18`

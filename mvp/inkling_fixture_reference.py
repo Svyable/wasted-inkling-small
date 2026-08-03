@@ -502,22 +502,55 @@ def run_layer_reference(
     handles = register_reference_hooks(
         host, [layer], store, lambda: position[0]
     )
-    cache = DynamicCache(config=config)
+    def _mask(length: int) -> torch.Tensor:
+        """Causal, and windowed on a sliding layer.
+
+        `attention_mask=None` does NOT mean causal in the eager path — it means
+        unmasked, so the layer attends to future tokens. Passing None produced
+        reference activations that differed from a correct decoder by ~4e-1 and
+        decayed with position, which reads exactly like a bug in the candidate
+        rather than in the reference.
+        """
+        neg = torch.finfo(dtype).min
+        m = torch.triu(torch.full((length, length), neg, dtype=dtype), diagonal=1)
+        window = int(getattr(config, "sliding_window_size", 0) or 0)
+        if window and config.layer_types[layer] == "hybrid_sliding":
+            for row in range(length):
+                low = row - window + 1
+                if low > 0:
+                    m[row, :low] = neg
+        return m.view(1, 1, length, length).to(device=device)
+
+    # One prefill over the whole sequence, not one cached step per token.
+    # The official short convolution only trims its output back to the query
+    # length when a previous conv state exists, so a fresh cache fed a short
+    # prefix emits kernel-length states and the attention reshape fails. A
+    # single prefill sidesteps that entirely and is what a reference is for.
+    #
+    # Consequence worth knowing: the hooks in register_reference_hooks collapse
+    # to the last token, so hook-captured *intermediate* activations describe
+    # the final position. The per-position `.output` entries below come from
+    # the returned tensor and are exact for every position.
+    if len(rows) < int(getattr(config, "sconv_kernel_size", 1) or 1):
+        raise FixtureReferenceError(
+            f"need at least sconv_kernel_size={config.sconv_kernel_size} input "
+            f"positions to prefill; got {len(rows)}"
+        )
     try:
         with torch.no_grad():
-            for index, row in enumerate(rows):
-                position[0] = index
-                value = torch.tensor(
-                    row, device=device, dtype=dtype
-                ).view(1, 1, hidden)
-                output = module(
-                    value,
-                    attention_mask=None,
-                    conv_mask=None,
-                    past_key_values=cache,
-                )
+            position[0] = len(rows) - 1
+            prefix = torch.tensor(rows, device=device, dtype=dtype).view(
+                1, len(rows), hidden
+            )
+            output = module(
+                prefix,
+                attention_mask=_mask(len(rows)),
+                conv_mask=None,
+                past_key_values=DynamicCache(config=config),
+            )
+            for index in range(len(rows)):
                 store[f"token.{index}.layer.{layer}.output"] = (
-                    output[0, -1].detach().float().cpu().contiguous()
+                    output[0, index].detach().float().cpu().contiguous()
                 )
     finally:
         for handle in handles:

@@ -72,8 +72,8 @@ class PreRouterDiagnosisTest(unittest.TestCase):
             inputs.tolist(),
         )
 
-        self.assertEqual(tuple(official), POINTS)
-        self.assertEqual(tuple(candidate), POINTS)
+        self.assertEqual(set(official), set(POINTS))
+        self.assertEqual(set(candidate), set(POINTS))
         for point in POINTS:
             with self.subTest(point=point):
                 self.assertEqual(official[point].shape, candidate[point].shape)

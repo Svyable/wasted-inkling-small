@@ -63,6 +63,26 @@ The plan reports selected entries, exact payload bytes, touched shards,
 metadata bytes read, request count, and source hashes. No tensor payload is
 requested.
 
+### Reproduced release plan
+
+GitHub Actions ran the command above against the immutable release and recorded:
+
+| Field | Result |
+| --- | ---: |
+| Fixture entries | 81 |
+| Planned payload | 1,476,808,202 bytes (~1.38 GiB) |
+| Metadata and headers read | 179,397 bytes |
+| HTTP requests | 52 |
+| Shards touched | 25 of 32 |
+| Config SHA-256 | `dcb5b1d587bce2f1e6b29833d739a724d05b4bfaa2dc1164fbe679330478ba53` |
+| Index SHA-256 | `68b1ab9dade825da1d9d162303f7356167ba2b90fd2c5fdf519e898d45adb0d9` |
+
+The complete machine-readable result is committed as
+`docs/OFFICIAL-FIXTURE-PLAN.json`. CI repeats the live plan and compares every
+source, geometry, byte-count, request-count, and shard field to that file. A
+release change or planner change therefore requires an explicit evidence
+update.
+
 ## Extract the fixture
 
 Remove `--plan-only` and provide an output directory:

@@ -14,6 +14,7 @@ import argparse
 import ctypes
 import json
 import sys
+from array import array
 from pathlib import Path
 from typing import Any
 
@@ -174,8 +175,8 @@ def bind_sparse_layer_compact(
 
     if "fused_gate_up" in shared:
         fused = take(shared["fused_gate_up"], shared_n * 2 * inter * hidden)
-        gate = []
-        up = []
+        gate = array("f")
+        up = array("f")
         for shared_id in range(shared_n):
             one_gate, one_up = split_fused_gate_up(
                 _rows(fused, 2 * inter, hidden, shared_id), inter, hidden

@@ -1,0 +1,159 @@
+name: Validate Inkling official weights
+
+on:
+  pull_request:
+    paths:
+      - "mvp/**"
+      - "inkling/tools/inkling_fixture.py"
+      - "inkling/tools/inkling_layer_parity.py"
+      - "inkling/tools/inkling_parity.py"
+      - "inkling/tools/inkling_plan.py"
+      - "docs/OFFICIAL-FIXTURE-PLAN.json"
+      - "docs/OFFICIAL-ROUTER-SELECTION.json"
+      - ".github/workflows/validate-inkling-official-weights.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-official-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  layer-parity:
+    name: Official BF16 layers 0, 2, and 5
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            torch 'transformers==5.14.1'
+
+      - name: Extract and verify the evidence-selected fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          fixture="${RUNNER_TEMP}/official-fixture"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" \
+            --layers 0,2,5 \
+            --experts '2:13,19,25,26,27,30,33,39,60,67,69,81,90,91,92,95,96,112,116,117,126,131,133,140,146,150,152,166,175,217,238,247,254;5:6,21,32,44,45,56,60,63,66,91,105,110,120,145,152,156,163,166,179,180,219,233,236,238,250,252' \
+            --max-total-gib 8 \
+            --out "$fixture" > "${RUNNER_TEMP}/fixture-manifest.json"
+          python3 inkling/tools/inkling_fixture.py \
+            --fixture "$fixture" --verify
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          fixture = Path(os.environ["RUNNER_TEMP"]) / "official-fixture"
+          manifest = json.loads((fixture / "fixture.json").read_text())
+          plan = json.loads(Path("docs/OFFICIAL-FIXTURE-PLAN.json").read_text())
+          assert manifest["total_payload_bytes"] == plan["payload_bytes"]
+          assert len(manifest["entries"]) == plan["entries"]
+          assert manifest["experts"] == plan["experts"]
+          assert manifest["source"]["revision"] == plan["revision"]
+          assert manifest["source"]["config_sha256"] == plan["config_sha256"]
+          assert manifest["source"]["index_sha256"] == plan["index_sha256"]
+          print(json.dumps({
+              "entries": len(manifest["entries"]),
+              "payload_bytes": manifest["total_payload_bytes"],
+              "remote_bytes_read": manifest["remote_bytes_read"],
+              "remote_requests": manifest["remote_requests"],
+          }, indent=2, sort_keys=True))
+          PY
+
+      - name: Bind release config and deterministic inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          PYTHONPATH=mvp python3 - <<PY
+          import json
+          from pathlib import Path
+          from discover_inkling_router_experts import (
+              deterministic_hidden_states,
+              input_sha256,
+          )
+          from inkling_remote_fixture import HttpRangeSource
+
+          root = Path("${RUNNER_TEMP}")
+          source = HttpRangeSource(
+              "https://huggingface.co/thinkingmachines/Inkling-Small",
+              "$revision",
+          )
+          config = source.file("config.json")
+          (root / "config.json").write_bytes(config)
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          assert input_sha256(inputs, __import__("torch").bfloat16) == (
+              selection["inputs_sha256"]
+          )
+          (root / "inputs.json").write_text(
+              json.dumps(inputs.tolist()) + "\n", encoding="utf-8"
+          )
+          PY
+          PYTHONPATH=mvp python3 mvp/inkling_c_config.py \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --out "${RUNNER_TEMP}/c-config.json"
+
+      - name: Run official and C layers separately
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="${RUNNER_TEMP}/official-fixture"
+          for layer in 0 2 5; do
+            official="${RUNNER_TEMP}/official-${layer}"
+            candidate="${RUNNER_TEMP}/candidate-${layer}"
+            PYTHONPATH=mvp python3 mvp/run_inkling_fixture_reference.py \
+              --fixture "$fixture" \
+              --model-config "${RUNNER_TEMP}/config.json" \
+              --inputs "${RUNNER_TEMP}/inputs.json" \
+              --layers "$layer" \
+              --dtype bfloat16 \
+              --out "$official"
+            python3 inkling/tools/inkling_layer_parity.py \
+              --fixture "$fixture" \
+              --config "${RUNNER_TEMP}/c-config.json" \
+              --inputs "${RUNNER_TEMP}/inputs.json" \
+              --layers "$layer" \
+              --out "$candidate"
+          done
+
+      - name: Compare and publish the complete report to the log
+        shell: bash
+        run: |
+          set -uo pipefail
+          status=0
+          for layer in 0 2 5; do
+            PYTHONPATH=mvp python3 mvp/compare_inkling_layer_archives.py \
+              --compare-reference "${RUNNER_TEMP}/official-${layer}" \
+              --compare-candidate "${RUNNER_TEMP}/candidate-${layer}" \
+              --allow-candidate-extras \
+              --atol 1e-3 --rtol 1e-3 \
+              --report "${RUNNER_TEMP}/layer-${layer}-report.json" || status=1
+          done
+          PYTHONPATH=mvp python3 mvp/official_weight_parity_report.py \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layer-report "0:${RUNNER_TEMP}/layer-0-report.json" \
+            --layer-report "2:${RUNNER_TEMP}/layer-2-report.json" \
+            --layer-report "5:${RUNNER_TEMP}/layer-5-report.json" \
+            --candidate-archive "0:${RUNNER_TEMP}/candidate-0" \
+            --candidate-archive "2:${RUNNER_TEMP}/candidate-2" \
+            --candidate-archive "5:${RUNNER_TEMP}/candidate-5" \
+            --route-atol 1e-3 \
+            --out "${RUNNER_TEMP}/official-weight-parity.json" || status=1
+          echo "OFFICIAL_WEIGHT_PARITY_REPORT_BEGIN"
+          cat "${RUNNER_TEMP}/official-weight-parity.json"
+          echo "OFFICIAL_WEIGHT_PARITY_REPORT_END"
+          exit "$status"

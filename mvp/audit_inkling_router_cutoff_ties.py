@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from torch.nn import functional as F
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / "inkling" / "tools"
@@ -40,6 +41,41 @@ class RouterTieAuditError(RuntimeError):
 
 def _sorted_ids(values: torch.Tensor) -> list[int]:
     return sorted(int(value) for value in values.tolist())
+
+
+def expected_candidate_weights(
+    logits: torch.Tensor,
+    candidate_indices: torch.Tensor,
+    *,
+    n_routed: int,
+    n_shared: int,
+    route_scale: float,
+    global_scale: torch.Tensor,
+) -> torch.Tensor:
+    """Apply official BF16 weight normalization to a candidate expert set."""
+    if logits.ndim != 1:
+        raise RouterTieAuditError("router logit row must be one-dimensional")
+    if logits.numel() != n_routed + n_shared:
+        raise RouterTieAuditError(
+            f"router logit row has {logits.numel()} values; expected "
+            f"{n_routed + n_shared}"
+        )
+    if candidate_indices.ndim != 1 or not candidate_indices.numel():
+        raise RouterTieAuditError("candidate indices must be a nonempty row")
+    if torch.any(candidate_indices < 0) or torch.any(candidate_indices >= n_routed):
+        raise RouterTieAuditError("candidate expert ID is outside routed range")
+    if torch.unique(candidate_indices).numel() != candidate_indices.numel():
+        raise RouterTieAuditError("candidate expert IDs are not unique")
+
+    routed_logits = logits[:n_routed]
+    shared_logits = logits[n_routed:]
+    selected_logits = torch.cat(
+        [routed_logits.gather(0, candidate_indices), shared_logits], dim=0
+    )
+    log_probs = F.logsigmoid(selected_logits)
+    weights = torch.exp(log_probs - torch.logsumexp(log_probs, dim=0))
+    weights = weights * route_scale * global_scale.to(logits.dtype)
+    return weights[: candidate_indices.numel()].contiguous()
 
 
 def cutoff_tie_row(
@@ -99,21 +135,32 @@ def audit_layer(
     c_result: dict[str, Any],
     *,
     repeat_topk: int = 16,
+    weight_atol: float = 1e-3,
 ) -> dict[str, Any]:
     gate = module.mlp.gate
     routed_n = int(gate.num_experts)
+    shared_n = int(gate.n_shared_experts)
     top_k = int(gate.top_k)
-    if official_logits.shape[-1] < routed_n:
-        raise RouterTieAuditError("official router logits omit routed experts")
+    if official_logits.shape[-1] != routed_n + shared_n:
+        raise RouterTieAuditError(
+            f"official router logits hold {official_logits.shape[-1]} values; "
+            f"expected {routed_n + shared_n}"
+        )
     routed_logits = official_logits[..., :routed_n]
     choice = routed_logits.sigmoid() + gate.e_score_correction_bias.detach().to(
         routed_logits.dtype
     )
     c_indices = torch.tensor(c_result["topk_indices"], dtype=torch.int64)
+    c_weights = torch.tensor(c_result["topk_weights"], dtype=torch.float32)
     if c_indices.shape != official_indices.cpu().shape:
         raise RouterTieAuditError(
             f"C routed index shape {tuple(c_indices.shape)} differs from official "
             f"{tuple(official_indices.shape)}"
+        )
+    if c_weights.shape != c_indices.shape:
+        raise RouterTieAuditError(
+            f"C routed weight shape {tuple(c_weights.shape)} differs from IDs "
+            f"{tuple(c_indices.shape)}"
         )
 
     repeats = [
@@ -131,6 +178,8 @@ def audit_layer(
     tie_equivalent_rows = 0
     ambiguous_rows = 0
     mismatches_outside_tie = []
+    weight_failures = []
+    max_abs_candidate_weight = 0.0
     for position in range(choice.shape[0]):
         row = cutoff_tie_row(
             choice[position],
@@ -139,11 +188,38 @@ def audit_layer(
             top_k,
         )
         row["position"] = position
+        expected_weights = expected_candidate_weights(
+            official_logits[position],
+            c_indices[position].to(official_logits.device),
+            n_routed=routed_n,
+            n_shared=shared_n,
+            route_scale=float(gate.route_scale),
+            global_scale=gate.global_scale.detach(),
+        ).float().cpu()
+        weight_delta = (expected_weights - c_weights[position]).abs()
+        row_weight_max = (
+            float(weight_delta.max()) if weight_delta.numel() else 0.0
+        )
+        max_abs_candidate_weight = max(
+            max_abs_candidate_weight, row_weight_max
+        )
+        row["candidate_weight_max_abs_vs_official_logits"] = row_weight_max
+        row["candidate_weights_within_atol"] = row_weight_max <= weight_atol
+        row["weight_atol"] = weight_atol
+        row["expected_candidate_weights"] = [
+            float(value) for value in expected_weights.tolist()
+        ]
+        row["candidate_weights"] = [
+            float(value) for value in c_weights[position].tolist()
+        ]
+
         exact_rows += int(row["exact_ids"])
         tie_equivalent_rows += int(row["candidate_valid_under_official_cutoff"])
         ambiguous_rows += int(row["ambiguous_cutoff"])
         if not row["exact_ids"] and not row["candidate_valid_under_official_cutoff"]:
             mismatches_outside_tie.append(position)
+        if not row["candidate_weights_within_atol"]:
+            weight_failures.append(position)
         rows.append(row)
 
     return {
@@ -154,6 +230,11 @@ def audit_layer(
         "ambiguous_cutoff_rows": ambiguous_rows,
         "mismatch_positions_outside_official_cutoff_tie": mismatches_outside_tie,
         "all_mismatches_cutoff_tie_equivalent": not mismatches_outside_tie,
+        "weight_atol": weight_atol,
+        "max_abs_candidate_weight_vs_official_logits": max_abs_candidate_weight,
+        "candidate_weight_failure_positions": weight_failures,
+        "all_candidate_weights_within_atol": not weight_failures,
+        "passed": not mismatches_outside_tie and not weight_failures,
         "topk_repeat_count": repeat_topk,
         "topk_repeat_stable": repeat_stable,
     }
@@ -169,8 +250,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--dtype", choices=tuple(DTYPES), default="bfloat16")
+    ap.add_argument("--weight-atol", type=float, default=1e-3)
     args = ap.parse_args(argv)
     try:
+        if args.weight_atol < 0.0:
+            raise RouterTieAuditError("--weight-atol must be nonnegative")
         fixture = load_fixture(args.fixture)
         config_json = verify_config_binding(fixture, args.model_config)
         config = build_transformers_text_config(config_json)
@@ -207,10 +291,11 @@ def main(argv: list[str] | None = None) -> int:
                 official_logits,
                 indices,
                 c_result,
+                weight_atol=args.weight_atol,
             )
         result = {
             "format": "inkling-router-cutoff-tie-audit",
-            "version": 1,
+            "version": 2,
             "model_id": fixture.model_id,
             "revision": fixture.source.get("revision"),
             "config_sha256": fixture.source.get("config_sha256"),
@@ -218,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
             "tokens": int(inputs.shape[0]),
             "input_dtype": args.dtype,
             "inputs_sha256": input_sha256(inputs, dtype),
+            "weight_atol": args.weight_atol,
             "torch_version": torch.__version__,
             "torch_threads": torch.get_num_threads(),
             "cpu_capability": (
@@ -226,6 +312,7 @@ def main(argv: list[str] | None = None) -> int:
                 else None
             ),
             "layers": analyses,
+            "passed": all(value["passed"] for value in analyses.values()),
         }
         Path(args.out).write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n",

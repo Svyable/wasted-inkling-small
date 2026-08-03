@@ -90,6 +90,36 @@ class RouterPairTest(unittest.TestCase):
             report = compare_pairwise(rd, cd)
             self.assertTrue(report["passed"])
 
+    def test_reference_scope_discloses_candidate_extras(self) -> None:
+        with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as cd:
+            write_activation_archive(rd, {"official": torch.tensor([1.0])})
+            write_activation_archive(cd, {
+                "official": torch.tensor([1.0]),
+                "candidate.only": torch.tensor([2.0]),
+            })
+            strict = compare_pairwise(rd, cd)
+            self.assertFalse(strict["passed"])
+            scoped = compare_pairwise(rd, cd, allow_candidate_extras=True)
+            self.assertTrue(scoped["passed"])
+            self.assertEqual(
+                scoped["comparison_scope"]["candidate_only_ignored"],
+                ["candidate.only"],
+            )
+
+    def test_reference_scope_never_ignores_missing_official_name(self) -> None:
+        with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as cd:
+            write_activation_archive(rd, {
+                "required": torch.tensor([1.0]),
+                "also.required": torch.tensor([2.0]),
+            })
+            write_activation_archive(cd, {"required": torch.tensor([1.0])})
+            report = compare_pairwise(rd, cd, allow_candidate_extras=True)
+            self.assertFalse(report["passed"])
+            self.assertEqual(
+                report["comparison_scope"]["reference_only_missing"],
+                ["also.required"],
+            )
+
     def test_refuses_unpaired_or_duplicate_router_entries(self) -> None:
         with self.assertRaisesRegex(ReleaseConfigError, "no paired weights"):
             canonicalize_router_pairs({"x.routed_index": torch.tensor([1])})

@@ -258,7 +258,20 @@ def main(argv: list[str] | None = None) -> int:
     ) as exc:
         ap.error(str(exc))
         return 2
-    print(json.dumps(result, indent=2, sort_keys=True))
+    summary = {
+        "format": result["format"],
+        "version": result["version"],
+        "inputs_sha256": result["inputs_sha256"],
+        "layers": {
+            layer: {
+                "selected_experts": value["selected_experts"],
+                "first_rejected_expert": value["first_rejected_expert"],
+                "positions": len(value["topk_indices"]),
+            }
+            for layer, value in result["layers"].items()
+        },
+    }
+    print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
 
 

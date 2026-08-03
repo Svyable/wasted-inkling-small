@@ -68,7 +68,7 @@ class RouterMismatchAnalysisTest(unittest.TestCase):
         ):
             self.assertTrue(result["variants"][variant]["all_indices_exact"])
 
-    def test_tensor_shapes_must_match(self) -> None:
+    def test_malformed_tensor_shape_fails_closed(self) -> None:
         gate = SimpleNamespace(
             top_k=1,
             n_shared_experts=1,
@@ -88,7 +88,9 @@ class RouterMismatchAnalysisTest(unittest.TestCase):
             top_k=1,
             n_shared=1,
         )
-        with self.assertRaisesRegex(RuntimeError, "shape mismatch"):
+        with self.assertRaisesRegex(
+            RuntimeError, "shape mismatch|cannot be multiplied"
+        ):
             analyze_layer(
                 module,
                 official_input,

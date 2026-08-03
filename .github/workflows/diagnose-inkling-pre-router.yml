@@ -129,7 +129,7 @@ jobs:
                   )
           PY
 
-      - name: Sweep grouped official stage injections
+      - name: Sweep grouped official stage counterfactuals
         shell: bash
         run: |
           set -euo pipefail
@@ -140,14 +140,14 @@ jobs:
             --inputs "${RUNNER_TEMP}/inputs.json" \
             --layers 2,5 \
             --dtype bfloat16 \
-            --out "${RUNNER_TEMP}/stage-injection.json" > /dev/null
+            --out "${RUNNER_TEMP}/stage-counterfactuals.json" > /dev/null
           python3 - <<'PY'
           import json
           import os
           from pathlib import Path
 
           diagnosis = json.loads(
-              (Path(os.environ["RUNNER_TEMP"]) / "stage-injection.json").read_text()
+              (Path(os.environ["RUNNER_TEMP"]) / "stage-counterfactuals.json").read_text()
           )
           for layer, value in sorted(
               diagnosis["layers"].items(), key=lambda item: int(item[0])
@@ -165,14 +165,17 @@ jobs:
                       f"c_rows={emitted['exact_rows']}/{emitted['total_rows']} "
                       f"official_router_rows={official['exact_rows']}/{official['total_rows']}"
                   )
-                  for row in official["rows"]:
-                      if row["exact_indices"]:
-                          continue
-                      print(
-                          "STAGE_INJECTION_MISMATCH "
-                          f"layer={layer} case={case_name} "
-                          f"position={row['position']} "
-                          f"official_ids={row['expected_ids']} "
-                          f"actual_ids={row['actual_ids']}"
-                      )
+              for case_name, case in value["quantization_cases"].items():
+                  post = case["post_attention_norm"]
+                  emitted = case["c_emitted"]
+                  official = case["official_bfloat16_router"]
+                  print(
+                      "STAGE_QUANTIZATION "
+                      f"layer={layer} case={case_name} "
+                      f"points={case['points']} "
+                      f"post_norm_exact={post['quantized_exact_fraction']:.9f} "
+                      f"post_norm_max={post['max_abs']:.9g} "
+                      f"c_rows={emitted['exact_rows']}/{emitted['total_rows']} "
+                      f"official_router_rows={official['exact_rows']}/{official['total_rows']}"
+                  )
           PY

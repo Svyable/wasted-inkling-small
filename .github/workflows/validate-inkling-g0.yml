@@ -7,6 +7,7 @@ on:
       - "docs/MVP-READINESS.md"
       - "docs/CONFIG-SCHEMA-RESOLUTION.md"
       - "docs/REMOTE-FIXTURES.md"
+      - "docs/OFFICIAL-FIXTURE-PLAN.json"
       - ".github/workflows/validate-inkling-g0.yml"
   push:
     branches: [main]
@@ -15,6 +16,7 @@ on:
       - "docs/MVP-READINESS.md"
       - "docs/CONFIG-SCHEMA-RESOLUTION.md"
       - "docs/REMOTE-FIXTURES.md"
+      - "docs/OFFICIAL-FIXTURE-PLAN.json"
       - ".github/workflows/validate-inkling-g0.yml"
   workflow_dispatch:
 
@@ -47,7 +49,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Plan layers 0, 2, and 5 from release headers
+      - name: Reproduce the committed release plan
         shell: bash
         run: |
           set -euo pipefail
@@ -63,18 +65,18 @@ jobs:
           from pathlib import Path
 
           plan = json.loads(Path("fixture-plan.json").read_text())
-          assert plan["model_id"] == "thinkingmachines/Inkling-Small", plan
-          assert plan["revision"] == "21152b5312c653be115f33a8342759064144e281", plan
-          assert plan["layers"] == [0, 2, 5], plan
-          assert plan["experts"] == {
-              "2": [4, 17, 39, 88, 143, 221],
-              "5": [1, 8, 22, 64, 150, 201],
-          }, plan
-          assert 0 < plan["entries"] < 100, plan
-          assert 0 < plan["payload_bytes"] <= 8 << 30, plan
-          assert 0 < plan["metadata_bytes_read"] < 64 << 20, plan
-          assert plan["shards"], plan
-          assert len(plan["config_sha256"]) == 64, plan
-          assert len(plan["index_sha256"]) == 64, plan
+          evidence = json.loads(Path("docs/OFFICIAL-FIXTURE-PLAN.json").read_text())
+          keys = (
+              "model_id", "revision", "config_sha256", "index_sha256",
+              "layers", "experts", "entries", "payload_bytes",
+              "metadata_bytes_read", "requests", "shards",
+          )
+          for key in keys:
+              assert plan[key] == evidence[key], (
+                  key, plan[key], evidence[key]
+              )
+          assert evidence["payload_downloaded"] is False
+          assert 0 < plan["payload_bytes"] <= 8 << 30
+          assert 0 < plan["metadata_bytes_read"] < 64 << 20
           print(json.dumps(plan, indent=2, sort_keys=True))
           PY

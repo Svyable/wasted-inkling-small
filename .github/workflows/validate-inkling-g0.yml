@@ -51,7 +51,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Plan the evidence-selected fixture
+      - name: Reproduce the evidence-selected fixture plan
         shell: bash
         run: |
           set -euo pipefail
@@ -66,22 +66,31 @@ jobs:
           import json
           from pathlib import Path
 
-          plan = json.loads(Path("fixture-plan.json").read_text())
+          actual = json.loads(Path("fixture-plan.json").read_text())
+          evidence = json.loads(Path("docs/OFFICIAL-FIXTURE-PLAN.json").read_text())
           selection = json.loads(
               Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
           )
-          assert plan["model_id"] == selection["model_id"]
-          assert plan["revision"] == selection["revision"]
-          assert plan["config_sha256"] == selection["config_sha256"]
-          assert plan["index_sha256"] == selection["index_sha256"]
-          assert plan["layers"] == [0, 2, 5]
-          assert plan["experts"] == {
+          keys = (
+              "model_id", "revision", "config_sha256", "index_sha256",
+              "layers", "experts", "entries", "payload_bytes",
+              "metadata_bytes_read", "requests", "shards",
+          )
+          for key in keys:
+              assert actual[key] == evidence[key], (
+                  key, actual[key], evidence[key]
+              )
+          assert evidence["payload_downloaded"] is False
+          assert evidence["selection_evidence"] == (
+              "docs/OFFICIAL-ROUTER-SELECTION.json"
+          )
+          assert actual["experts"] == {
               layer: value["selected_experts"]
               for layer, value in selection["layers"].items()
           }
-          assert 0 < plan["payload_bytes"] <= 8 << 30
-          assert 0 < plan["metadata_bytes_read"] < 64 << 20
-          print(json.dumps(plan, indent=2, sort_keys=True))
+          assert 0 < actual["payload_bytes"] <= 8 << 30
+          assert 0 < actual["metadata_bytes_read"] < 64 << 20
+          print(json.dumps(actual, indent=2, sort_keys=True))
           PY
 
   router-discovery:

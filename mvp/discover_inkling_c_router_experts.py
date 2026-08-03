@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Record C Inkling router choices without loading routed expert payloads.
 
-The C layer emits router logits, indices, and weights before calling
-``expert_get``. This probe rejects that lookup deliberately, then continues
-with the next externally supplied hidden state. Attention and attention-branch
-convolution state have already advanced; MLP state cannot influence a later
-router because every position receives its own layer input.
+The C layer emits post-attention normalization, router logits, indices, and
+weights before calling ``expert_get``. This probe rejects that lookup
+deliberately, then continues with the next externally supplied hidden state.
+Attention and attention-branch convolution state have already advanced; MLP
+state cannot influence a later router because every position receives its own
+layer input.
 """
 from __future__ import annotations
 
@@ -129,6 +130,7 @@ def discover_c_layer_router(
     backend = MatrixBackend()
     reject = _RejectExperts(layer)
     reject_ptr = ctypes.cast(reject.callback, ctypes.c_void_p)
+    router_inputs: list[list[float]] = []
     topk_indices: list[list[int]] = []
     topk_weights: list[list[float]] = []
     router_logits: list[list[float]] = []
@@ -164,14 +166,18 @@ def discover_c_layer_router(
                 "expert requests; expected one rejected lookup"
             )
         prefix = f"token.{position}.layer.{layer}."
+        input_name = prefix + "post_attention_norm"
         index_name = prefix + "routed_index"
         weight_name = prefix + "routed_weight"
         logits_name = prefix + "router_logits"
-        for name in (index_name, weight_name, logits_name):
+        for name in (input_name, index_name, weight_name, logits_name):
             if name not in collector.values:
                 raise CRouterDiscoveryError(
                     f"layer {layer} position {position} did not emit {name}"
                 )
+        router_inputs.append(
+            [float(value) for value in collector.values[input_name]]
+        )
         topk_indices.append(
             [int(value) for value in collector.values[index_name]]
         )
@@ -188,6 +194,7 @@ def discover_c_layer_router(
             {value for row in topk_indices for value in row}
         ),
         "first_rejected_expert": list(reject.requests),
+        "router_inputs": router_inputs,
         "topk_indices": topk_indices,
         "topk_weights": topk_weights,
         "router_logits": router_logits,
@@ -222,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
         tensor = torch.tensor(inputs, dtype=torch.float32)
         result = {
             "format": "inkling-c-router-discovery",
-            "version": 1,
+            "version": 2,
             "model_id": fixture.model_id,
             "revision": fixture.source.get("revision"),
             "config_sha256": fixture.source.get("config_sha256"),

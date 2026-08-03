@@ -6,6 +6,8 @@ on:
       - "mvp/**"
       - "docs/MVP-READINESS.md"
       - "docs/CONFIG-SCHEMA-RESOLUTION.md"
+      - "docs/REMOTE-FIXTURES.md"
+      - "docs/OFFICIAL-FIXTURE-PLAN.json"
       - ".github/workflows/validate-inkling-g0.yml"
   push:
     branches: [main]
@@ -13,6 +15,8 @@ on:
       - "mvp/**"
       - "docs/MVP-READINESS.md"
       - "docs/CONFIG-SCHEMA-RESOLUTION.md"
+      - "docs/REMOTE-FIXTURES.md"
+      - "docs/OFFICIAL-FIXTURE-PLAN.json"
       - ".github/workflows/validate-inkling-g0.yml"
   workflow_dispatch:
 
@@ -36,3 +40,43 @@ jobs:
           python3 -m compileall -q mvp
           PYTHONPATH=mvp python3 -m unittest discover \
             -s mvp -p 'test_inkling_*.py' -v
+
+  release-plan:
+    name: Plan immutable release fixture
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Reproduce the committed release plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" \
+            --layers 0,2,5 \
+            --experts '2:4,17,39,88,143,221;5:1,8,22,64,150,201' \
+            --max-total-gib 8 \
+            --plan-only > fixture-plan.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          plan = json.loads(Path("fixture-plan.json").read_text())
+          evidence = json.loads(Path("docs/OFFICIAL-FIXTURE-PLAN.json").read_text())
+          keys = (
+              "model_id", "revision", "config_sha256", "index_sha256",
+              "layers", "experts", "entries", "payload_bytes",
+              "metadata_bytes_read", "requests", "shards",
+          )
+          for key in keys:
+              assert plan[key] == evidence[key], (
+                  key, plan[key], evidence[key]
+              )
+          assert evidence["payload_downloaded"] is False
+          assert 0 < plan["payload_bytes"] <= 8 << 30
+          assert 0 < plan["metadata_bytes_read"] < 64 << 20
+          print(json.dumps(plan, indent=2, sort_keys=True))
+          PY

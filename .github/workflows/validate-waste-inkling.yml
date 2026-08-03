@@ -190,15 +190,20 @@ jobs:
 
       # Compiling proves the branch parses. Running it proves the positional
       # reads actually work, which is the part that had never been true.
+      # WINEPREFIX must sit under a directory this job owns. Wine refuses to
+      # create a configuration directory beneath one it does not — "/tmp is
+      # not owned by you" — which is invisible when you develop as root and
+      # fatal on a runner. RUNNER_TEMP is owned by the runner user.
       - name: Run the Inkling C tests under Wine
         shell: bash
         env:
           WINEDEBUG: "-all"
-          WINEPREFIX: /tmp/wineprefix
         run: |
           set -euo pipefail
           work="${RUNNER_TEMP}/waste"
-          scratch="$(mktemp -d)"
+          export WINEPREFIX="${RUNNER_TEMP}/wineprefix"
+          scratch="${RUNNER_TEMP}/winescratch"
+          mkdir -p "$scratch"
           wineboot --init >/dev/null 2>&1 || true
           (cd "$work" && wine ./test_inkling.exe | grep -q "^INKLING OK")
           (cd "$work" && wine ./test_inkling_io.exe "Z:$scratch" | grep -q "^INKLING IO OK")

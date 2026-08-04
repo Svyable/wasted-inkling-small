@@ -1,0 +1,131 @@
+name: Diagnose Inkling BF16 attention components
+
+on:
+  pull_request:
+    paths:
+      - "mvp/diagnose_inkling_bf16_attention_components.py"
+      - "mvp/test_inkling_bf16_attention_components.py"
+      - "mvp/diagnose_inkling_bf16_attention_head_norm.py"
+      - "mvp/diagnose_inkling_native_bf16_backend.py"
+      - "mvp/diagnose_inkling_pre_router.py"
+      - "mvp/discover_inkling_router_experts.py"
+      - "mvp/inkling_compact_layer_parity.py"
+      - "mvp/inkling_c_config.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "inkling/src/inkling_layer.c"
+      - "inkling/src/inkling_attention.c"
+      - "docs/OFFICIAL-ROUTER-SELECTION.json"
+      - ".github/workflows/diagnose-inkling-bf16-attention-components.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-bf16-attention-components-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    name: Probability versus value aggregation boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            torch 'transformers==5.14.1'
+
+      - name: Extract and bind the one-expert seed
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          fixture="${RUNNER_TEMP}/router-seed"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" \
+            --layers 2,5 \
+            --experts '2:0;5:0' \
+            --max-total-gib 4 \
+            --out "$fixture" > "${RUNNER_TEMP}/seed-manifest.json"
+          PYTHONPATH=mvp python3 - <<PY
+          import json
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import (
+              deterministic_hidden_states,
+              input_sha256,
+          )
+          from inkling_remote_fixture import HttpRangeSource
+
+          root = Path("${RUNNER_TEMP}")
+          source = HttpRangeSource(
+              "https://huggingface.co/thinkingmachines/Inkling-Small",
+              "$revision",
+          )
+          (root / "config.json").write_bytes(source.file("config.json"))
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          assert input_sha256(inputs, torch.bfloat16) == selection["inputs_sha256"]
+          (root / "inputs.json").write_text(
+              json.dumps(inputs.tolist()) + "\n", encoding="utf-8"
+          )
+          PY
+          PYTHONPATH=mvp python3 mvp/inkling_c_config.py \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --out "${RUNNER_TEMP}/c-config.json"
+
+      - name: Decompose probabilities and value aggregation
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=mvp python3 mvp/diagnose_inkling_bf16_attention_components.py \
+            --fixture "${RUNNER_TEMP}/router-seed" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --c-config "${RUNNER_TEMP}/c-config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --out "${RUNNER_TEMP}/attention-components.json" > /dev/null
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "attention-components.json").read_text()
+          )
+          assert result["source"]["production_source_unchanged"] is True
+          for layer, value in sorted(
+              result["layers"].items(), key=lambda item: int(item[0])
+          ):
+              print(
+                  "BF16_ATTENTION_COMPONENTS "
+                  f"layer={layer} classification={value['classification']} "
+                  f"baseline_exact={value['baseline_attention_out']['quantized_exact_fraction']:.9f} "
+                  f"probability_exact={value['probabilities']['quantized_exact_fraction']:.9f} "
+                  f"score_only_exact={value['score_softmax_only']['quantized_exact_fraction']:.9f} "
+                  f"aggregation_only_exact={value['value_aggregation_only']['quantized_exact_fraction']:.9f} "
+                  f"official_sanity={value['official_native_aggregation_sanity']['quantized_exact_fraction']:.9f} "
+                  f"c_sanity_max_abs={value['c_style_aggregation_sanity']['max_abs']:.9g}"
+              )
+              for name in (
+                  "probabilities",
+                  "score_softmax_only",
+                  "value_aggregation_only",
+              ):
+                  metrics = value[name]
+                  print(
+                      "BF16_ATTENTION_COMPONENT_METRIC "
+                      f"layer={layer} component={name} "
+                      f"exact={metrics['quantized_exact_fraction']:.9f} "
+                      f"max_abs={metrics['max_abs']:.9g} "
+                      f"mean_abs={metrics['mean_abs']:.9g}"
+                  )
+          PY

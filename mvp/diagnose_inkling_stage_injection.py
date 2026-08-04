@@ -19,6 +19,7 @@ if str(TOOLS) not in sys.path:
 
 from analyze_inkling_router_mismatch import _tensor_metrics
 from diagnose_inkling_pre_router import (
+    POINTS,
     PreRouterDiagnosisError,
     _capture_c_pre_router,
     _capture_official_pre_router,
@@ -58,6 +59,14 @@ INJECTION_CASES: dict[str, tuple[str, ...]] = {
     "attention_branch": ("attention_branch",),
     "post_attention_residual": ("post_attention_residual",),
     "post_attention_norm": ("post_attention_norm",),
+}
+
+# Replace every official stage up to a declared boundary. Standalone injection
+# answers whether one buffer is sufficient; these cumulative cases answer where
+# the first still-wrong C operation lies after all earlier drift is removed.
+CUMULATIVE_INJECTION_CASES: dict[str, tuple[str, ...]] = {
+    f"through_{point}": POINTS[: index + 1]
+    for index, point in enumerate(POINTS)
 }
 
 QUANTIZATION_CASES: dict[str, tuple[str, ...]] = {
@@ -136,6 +145,53 @@ def _case_result(
     }
 
 
+def _run_injection_cases(
+    cases: dict[str, tuple[str, ...]],
+    *,
+    lib,
+    fixture,
+    c_config: dict[str, Any],
+    layer: int,
+    input_values: list[list[float]],
+    official: dict[str, torch.Tensor],
+    gate: Any,
+    official_indices: torch.Tensor,
+    official_weights: torch.Tensor,
+    dtype: torch.dtype,
+) -> dict[str, Any]:
+    results = {}
+    for case_name, points in cases.items():
+        replacements = {point: official[point] for point in points}
+        injected, c_indices, c_weights = _capture_c_pre_router(
+            lib,
+            fixture,
+            c_config,
+            layer,
+            input_values,
+            replace_stages=replacements,
+        )
+        result = _case_result(
+            case_name,
+            official,
+            injected,
+            c_indices,
+            c_weights,
+            gate,
+            official_indices,
+            official_weights,
+            dtype=dtype,
+        )
+        result["points"] = list(points)
+        result["injected_stage_metrics"] = _validate_injection(
+            official,
+            injected,
+            points,
+            dtype=dtype,
+        )
+        results[case_name] = result
+    return results
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--fixture", required=True)
@@ -185,38 +241,32 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             gate = module.mlp.gate
-            injections = {}
-            for case_name, points in INJECTION_CASES.items():
-                replacements = {
-                    point: official[point] for point in points
-                }
-                injected, c_indices, c_weights = _capture_c_pre_router(
-                    lib,
-                    fixture,
-                    c_config,
-                    layer,
-                    input_values,
-                    replace_stages=replacements,
-                )
-                result = _case_result(
-                    case_name,
-                    official,
-                    injected,
-                    c_indices,
-                    c_weights,
-                    gate,
-                    official_indices,
-                    official_weights,
-                    dtype=dtype,
-                )
-                result["points"] = list(points)
-                result["injected_stage_metrics"] = _validate_injection(
-                    official,
-                    injected,
-                    points,
-                    dtype=dtype,
-                )
-                injections[case_name] = result
+            injections = _run_injection_cases(
+                INJECTION_CASES,
+                lib=lib,
+                fixture=fixture,
+                c_config=c_config,
+                layer=layer,
+                input_values=input_values,
+                official=official,
+                gate=gate,
+                official_indices=official_indices,
+                official_weights=official_weights,
+                dtype=dtype,
+            )
+            cumulative = _run_injection_cases(
+                CUMULATIVE_INJECTION_CASES,
+                lib=lib,
+                fixture=fixture,
+                c_config=c_config,
+                layer=layer,
+                input_values=input_values,
+                official=official,
+                gate=gate,
+                official_indices=official_indices,
+                official_weights=official_weights,
+                dtype=dtype,
+            )
 
             quantizations = {}
             for case_name, points in QUANTIZATION_CASES.items():
@@ -244,12 +294,13 @@ def main(argv: list[str] | None = None) -> int:
 
             layer_results[str(layer)] = {
                 "cases": injections,
+                "cumulative_cases": cumulative,
                 "quantization_cases": quantizations,
             }
 
         result = {
             "format": "inkling-stage-counterfactual-diagnosis",
-            "version": 2,
+            "version": 3,
             "model_id": fixture.model_id,
             "revision": fixture.source.get("revision"),
             "config_sha256": fixture.source.get("config_sha256"),
@@ -260,6 +311,10 @@ def main(argv: list[str] | None = None) -> int:
             "injection_cases": {
                 name: list(points)
                 for name, points in INJECTION_CASES.items()
+            },
+            "cumulative_injection_cases": {
+                name: list(points)
+                for name, points in CUMULATIVE_INJECTION_CASES.items()
             },
             "quantization_cases": {
                 name: list(points)

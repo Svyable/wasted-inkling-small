@@ -314,12 +314,31 @@ PYTHONPATH=mvp python3 -m unittest discover \
 ### Reproduce the official fixture plan
 
 ```sh
+experts="$({
+  python3 - <<'PY'
+import json
+
+selection = json.load(open("docs/OFFICIAL-ROUTER-SELECTION.json"))
+print(";".join(
+    f"{layer}:{','.join(map(str, data['selected_experts']))}"
+    for layer, data in sorted(
+        selection["layers"].items(), key=lambda item: int(item[0])
+    )
+))
+PY
+})"
+
 python3 mvp/inkling_remote_fixture.py \
   --revision 21152b5312c653be115f33a8342759064144e281 \
   --layers 0,2,5 \
-  --experts-from docs/OFFICIAL-ROUTER-SELECTION.json \
+  --experts "$experts" \
+  --max-total-gib 4 \
   --plan-only
 ```
+
+The resulting plan must match
+[`docs/OFFICIAL-FIXTURE-PLAN.json`](docs/OFFICIAL-FIXTURE-PLAN.json), including
+source hashes, selected entries, byte counts, requests, and shard set.
 
 ### Validate the WASTE patch bundle
 

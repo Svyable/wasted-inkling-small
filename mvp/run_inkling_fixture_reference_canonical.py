@@ -8,9 +8,10 @@ expert path, so this evidence runner substitutes the committed route pairs at
 the gate output before expert evaluation. The same pairs are supplied to the C
 canonical runner.
 
-This avoids expanding a bounded fixture to every implementation-dependent
-member of a cutoff tie while preserving a strict, independently audited routing
-boundary.
+The official gate returns only routed logits, even though its matrix also emits
+shared logits. The adapter therefore re-runs the gate's own BF16 linear operation
+from the same hidden state, verifies its routed slice against the returned
+logits, and normalizes canonical routed IDs together with the true shared slice.
 """
 from __future__ import annotations
 
@@ -51,7 +52,17 @@ class CanonicalOfficialGate(nn.Module):
         self.rows = rows
         self.applied = False
 
+    @staticmethod
+    def _hidden_states(args: tuple[Any, ...], kwargs: dict[str, Any]) -> torch.Tensor:
+        value = args[0] if args else kwargs.get("hidden_states")
+        if not isinstance(value, torch.Tensor):
+            raise CanonicalOfficialRouteError(
+                "official gate call does not expose hidden states"
+            )
+        return value
+
     def forward(self, *args: Any, **kwargs: Any):
+        hidden_states = self._hidden_states(args, kwargs)
         output = self.inner(*args, **kwargs)
         if not isinstance(output, (tuple, list)) or len(output) < 4:
             raise CanonicalOfficialRouteError(
@@ -68,16 +79,41 @@ class CanonicalOfficialGate(nn.Module):
                 f"official gate produced {tokens} rows; canonical route has {len(self.rows)}"
             )
         width = len(self.rows[0].indices)
-        if width < 1 or any(len(row.indices) != width or len(row.weights) != width for row in self.rows):
+        if width < 1 or any(
+            len(row.indices) != width or len(row.weights) != width
+            for row in self.rows
+        ):
             raise CanonicalOfficialRouteError("canonical route changes top-k width")
 
         gate = self.inner
         n_routed = int(getattr(gate, "num_experts"))
         n_shared = int(getattr(gate, "n_shared_experts"))
-        if router_logits.shape[1] != n_routed + n_shared:
+        hidden_dim = int(getattr(gate, "hidden_dim"))
+        weight = getattr(gate, "weight")
+        if not isinstance(weight, torch.Tensor):
+            raise CanonicalOfficialRouteError("official gate has no matrix weight")
+        flat = hidden_states.reshape(-1, hidden_dim)
+        full_logits = F.linear(flat, weight)
+        if full_logits.ndim != 2 or full_logits.shape != (
+            tokens,
+            n_routed + n_shared,
+        ):
             raise CanonicalOfficialRouteError(
-                f"router width {router_logits.shape[1]} != {n_routed + n_shared}"
+                f"reconstructed full router logits have shape {tuple(full_logits.shape)}"
             )
+        reconstructed_routed = full_logits[:, :n_routed]
+        if reconstructed_routed.shape != router_logits.shape or not torch.equal(
+            reconstructed_routed, router_logits
+        ):
+            delta = float(
+                (reconstructed_routed.float() - router_logits.float()).abs().max()
+            )
+            raise CanonicalOfficialRouteError(
+                "reconstructed routed logits differ from official gate output; "
+                f"max_abs={delta}"
+            )
+        shared_logits = full_logits[:, n_routed:]
+
         ids = torch.tensor(
             [row.indices for row in self.rows],
             device=router_logits.device,
@@ -88,10 +124,8 @@ class CanonicalOfficialGate(nn.Module):
         if any(len(set(row.indices)) != width for row in self.rows):
             raise CanonicalOfficialRouteError("canonical route repeats an expert")
 
-        routed_logits = router_logits[:, :n_routed]
-        shared_logits = router_logits[:, n_routed:]
         selected_logits = torch.cat(
-            (routed_logits.gather(1, ids), shared_logits), dim=1
+            (router_logits.gather(1, ids), shared_logits), dim=1
         )
         log_probs = F.logsigmoid(selected_logits)
         normalized = torch.exp(
@@ -110,7 +144,9 @@ class CanonicalOfficialGate(nn.Module):
             dtype=computed_routed.dtype,
         )
         if not torch.equal(computed_routed, committed_weights):
-            delta = float((computed_routed.float() - committed_weights.float()).abs().max())
+            delta = float(
+                (computed_routed.float() - committed_weights.float()).abs().max()
+            )
             raise CanonicalOfficialRouteError(
                 "canonical routed weights do not reproduce from official logits; "
                 f"max_abs={delta}"
@@ -190,7 +226,9 @@ def main(argv: list[str] | None = None) -> int:
         config = build_transformers_text_config(config_json)
         inputs = json.loads(Path(args.inputs).read_text(encoding="utf-8"))
         if not isinstance(inputs, list) or not inputs:
-            raise CanonicalOfficialRouteError("--inputs must contain a nonempty JSON list")
+            raise CanonicalOfficialRouteError(
+                "--inputs must contain a nonempty JSON list"
+            )
         layers = [int(value) for value in args.layers.split(",") if value]
         if not layers:
             raise CanonicalOfficialRouteError("--layers must be nonempty")

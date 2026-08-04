@@ -3,8 +3,8 @@ name: Diagnose Inkling portable BF16 attention
 on:
   pull_request:
     paths:
-      - "mvp/diagnose_inkling_portable_bf16_attention.py"
-      - "mvp/test_inkling_portable_bf16_attention.py"
+      - "experiments/inkling/diagnose_inkling_portable_bf16_attention.py"
+      - "experiments/inkling/test_inkling_portable_bf16_attention.py"
       - "mvp/diagnose_inkling_bf16_attention_reductions.py"
       - "mvp/diagnose_inkling_native_bf16_backend.py"
       - "mvp/diagnose_inkling_pre_router.py"
@@ -39,8 +39,10 @@ jobs:
 
       - name: Run focused source and compile contracts
         run: |
-          PYTHONPATH=mvp python3 -m unittest \
-            mvp/test_inkling_portable_bf16_attention.py -v
+          python3 -m compileall -q experiments/inkling
+          PYTHONPATH=mvp:experiments/inkling python3 -m unittest discover \
+            -s experiments/inkling \
+            -p 'test_inkling_portable_bf16_attention.py' -v
 
       - name: Extract and bind the one-expert seed
         shell: bash
@@ -119,7 +121,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PYTHONPATH=mvp python3 mvp/diagnose_inkling_portable_bf16_attention.py \
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/diagnose_inkling_portable_bf16_attention.py \
             --fixture "${RUNNER_TEMP}/router-seed" \
             --model-config "${RUNNER_TEMP}/config.json" \
             --c-config "${RUNNER_TEMP}/c-config.json" \

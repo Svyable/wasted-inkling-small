@@ -2,16 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Classify the post-attention residual dtype boundary.
 
-The portable attention candidate is BF16-exact through the FP32 attention short
+The portable attention candidate is BF16-exact through the attention short
 convolution trace, but the next residual is not. This diagnostic distinguishes
 three materially different explanations:
 
 * the residual addition needs BF16 operand/result boundaries;
-* the branch is only BF16-visible exact while its FP32 values still differ;
+* the branch is only BF16-visible exact while its hidden FP32 values differ;
 * the trace alignment or input reconstruction is wrong.
 
-Both the actual C residual and the official residual are reconstructed before
-counterfactuals are interpreted. Production source remains unchanged.
+Both the actual C residual and the official BF16 residual are reconstructed
+before counterfactuals are interpreted. Production source remains unchanged.
 """
 from __future__ import annotations
 
@@ -86,6 +86,16 @@ def metrics(reference: torch.Tensor, candidate: torch.Tensor) -> dict[str, Any]:
     }
 
 
+def official_residual_reconstruction(
+    inputs: torch.Tensor,
+    branch: torch.Tensor,
+) -> torch.Tensor:
+    """Reproduce the official decoder's BF16 residual addition exactly."""
+    input_bf16 = inputs.detach().to(torch.bfloat16)
+    branch_bf16 = branch.detach().to(torch.bfloat16)
+    return (input_bf16 + branch_bf16).float().cpu().contiguous()
+
+
 def residual_variants(
     inputs: torch.Tensor,
     branch: torch.Tensor,
@@ -101,7 +111,10 @@ def residual_variants(
         "bfloat16_result_bfloat16_branch": bf16(
             input_bf16.float() + branch_bf16.float()
         ),
-        "native_bfloat16_add": (input_bf16 + branch_bf16).float().cpu(),
+        "native_bfloat16_add": official_residual_reconstruction(
+            input_bf16,
+            branch_bf16,
+        ),
     }
 
 
@@ -185,7 +198,10 @@ def analyze_layer(
 
     source_inputs = inputs.detach().to(dtype=dtype).float().cpu()
     candidate_anchor_tensor = source_inputs + candidate["attention_branch"].float()
-    official_anchor_tensor = source_inputs + official["attention_branch"].float()
+    official_anchor_tensor = official_residual_reconstruction(
+        source_inputs,
+        official["attention_branch"],
+    )
     candidate_anchor = metrics(
         candidate["post_attention_residual"],
         candidate_anchor_tensor,
@@ -197,6 +213,10 @@ def analyze_layer(
     if candidate_anchor["raw_exact_fraction"] != 1.0:
         raise ResidualBoundaryError(
             f"layer {layer} C residual reconstruction is not raw-exact"
+        )
+    if official_anchor["raw_exact_fraction"] != 1.0:
+        raise ResidualBoundaryError(
+            f"layer {layer} official BF16 residual reconstruction is not raw-exact"
         )
 
     branch_metrics = metrics(
@@ -240,7 +260,7 @@ def analyze_layer(
         },
         "anchors": {
             "candidate_c_reconstruction": candidate_anchor,
-            "official_float32_reconstruction": official_anchor,
+            "official_native_bfloat16_reconstruction": official_anchor,
         },
         "attention_branch": branch_metrics,
         "official_branch_variants": official_variants,
@@ -298,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         result = {
             "format": "inkling-bfloat16-residual-boundary-probe",
-            "version": 1,
+            "version": 2,
             "model_id": fixture.model_id,
             "revision": fixture.source.get("revision"),
             "config_sha256": fixture.source.get("config_sha256"),

@@ -261,7 +261,7 @@ The finish line is intentionally ordinary:
 waste plan model.waste
 waste run model.waste
 waste chat model.waste
-waste serve model.waste
+OpenAI-compatible server
 ```
 
 No Inkling-only executable, no hidden memory budget, and no separate serving
@@ -314,8 +314,8 @@ PYTHONPATH=mvp python3 -m unittest discover \
 ### Reproduce the official fixture plan
 
 ```sh
-experts="$({
-  python3 - <<'PY'
+experts="$(
+python3 - <<'PY'
 import json
 
 selection = json.load(open("docs/OFFICIAL-ROUTER-SELECTION.json"))
@@ -326,7 +326,7 @@ print(";".join(
     )
 ))
 PY
-})"
+)"
 
 python3 mvp/inkling_remote_fixture.py \
   --revision 21152b5312c653be115f33a8342759064144e281 \

@@ -43,7 +43,10 @@ class SyntheticGate(nn.Module):
 class OfficialCanonicalRouteTest(unittest.TestCase):
     @staticmethod
     def rows(logits: torch.Tensor) -> list[RouteRow]:
-        ids = torch.tensor([[0, 2], [1, 2]], dtype=torch.int64)
+        templates = [[0, 2], [1, 2]]
+        if logits.shape[0] > len(templates):
+            raise AssertionError("synthetic route template is too short")
+        ids = torch.tensor(templates[: logits.shape[0]], dtype=torch.int64)
         selected = torch.cat(
             (logits[:, :3].gather(1, ids), logits[:, 3:]), dim=1
         )

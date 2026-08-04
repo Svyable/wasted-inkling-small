@@ -5,6 +5,8 @@ on:
     paths:
       - "mvp/diagnose_inkling_bf16_layer_probe.py"
       - "mvp/test_inkling_bf16_layer_probe.py"
+      - "mvp/diagnose_inkling_bf16_projection_edges.py"
+      - "mvp/test_inkling_bf16_projection_edges.py"
       - "mvp/diagnose_inkling_pre_router.py"
       - "mvp/discover_inkling_router_experts.py"
       - "mvp/inkling_c_config.py"
@@ -115,5 +117,50 @@ jobs:
                       f"exact={metrics['quantized_exact_fraction']:.9f} "
                       f"max_abs={metrics['max_abs']:.9g} "
                       f"mean_abs={metrics['mean_abs']:.9g}"
+                  )
+          PY
+
+      - name: Classify the rare full-projection threshold cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=mvp python3 mvp/diagnose_inkling_bf16_projection_edges.py \
+            --fixture "${RUNNER_TEMP}/router-seed" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --c-config "${RUNNER_TEMP}/c-config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --out "${RUNNER_TEMP}/bf16-projection-edges.json" > /dev/null
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "bf16-projection-edges.json").read_text()
+          )
+          assert result["source"]["production_source_unchanged"] is True
+          for layer, value in sorted(
+              result["layers"].items(), key=lambda item: int(item[0])
+          ):
+              print(
+                  "BF16_PROJECTION_EDGES "
+                  f"layer={layer} classification={value['classification']} "
+                  f"candidate_mismatches={value['candidate_mismatches']} "
+                  f"resolved={value['float32_resolved_mismatches']} "
+                  f"introduced={value['float32_introduced_mismatches']} "
+                  f"resolution_fraction={value['float32_resolution_fraction']:.9f}"
+              )
+              for example in value["examples"]:
+                  print(
+                      "BF16_PROJECTION_EDGE "
+                      f"layer={layer} position={example['position']} "
+                      f"row={example['row']} "
+                      f"official={example['official_bfloat16']:.9g} "
+                      f"candidate={example['candidate_bfloat16']:.9g} "
+                      f"float32_rounded={example['float32_rounded_bfloat16']:.9g} "
+                      f"float32_unrounded={example['float32_unrounded']:.9g} "
+                      f"resolved={example['float32_resolves']}"
                   )
           PY

@@ -1,0 +1,163 @@
+name: Diagnose Inkling BF16 attention reductions
+
+on:
+  pull_request:
+    paths:
+      - "mvp/diagnose_inkling_bf16_attention_reductions.py"
+      - "mvp/test_inkling_bf16_attention_reductions.py"
+      - "mvp/diagnose_inkling_bf16_attention_lattice.py"
+      - "mvp/diagnose_inkling_pre_router.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "docs/OFFICIAL-ROUTER-SELECTION.json"
+      - ".github/workflows/diagnose-inkling-bf16-attention-reductions.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-attention-reductions-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  attention-reductions:
+    name: Native versus scalar BF16 attention reductions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            torch 'transformers==5.14.1'
+
+      - name: Run focused reduction contracts
+        run: |
+          PYTHONPATH=mvp python3 -m unittest \
+            mvp/test_inkling_bf16_attention_reductions.py -v
+
+      - name: Extract and bind the one-expert seed
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          fixture="${RUNNER_TEMP}/router-seed"
+          manifest="${RUNNER_TEMP}/seed-manifest.json"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            rm -f "$manifest"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" \
+              --layers 2,5 \
+              --experts '2:0;5:0' \
+              --max-total-gib 4 \
+              --out "$fixture" > "$manifest"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -eq 4 ]; then
+              break
+            fi
+            delay=$((10 << (attempt - 1)))
+            echo "seed attempt ${attempt} failed; retrying after ${delay}s" >&2
+            sleep "$delay"
+          done
+          if [ "$extracted" != true ]; then
+            echo "seed acquisition exhausted four bounded attempts" >&2
+            exit 2
+          fi
+
+          PYTHONPATH=mvp python3 - <<PY
+          import json
+          import time
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import (
+              deterministic_hidden_states,
+              input_sha256,
+          )
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+
+          root = Path("${RUNNER_TEMP}")
+          config = None
+          for attempt in range(4):
+              try:
+                  source = HttpRangeSource(
+                      "https://huggingface.co/thinkingmachines/Inkling-Small",
+                      "$revision",
+                  )
+                  config = source.file("config.json")
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3:
+                      raise
+                  time.sleep(10 * (2**attempt))
+          assert config is not None
+          (root / "config.json").write_bytes(config)
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          assert input_sha256(inputs, torch.bfloat16) == selection["inputs_sha256"]
+          (root / "inputs.json").write_text(
+              json.dumps(inputs.tolist()) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Compare native and scalar attention reductions
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=mvp python3 mvp/diagnose_inkling_bf16_attention_reductions.py \
+            --fixture "${RUNNER_TEMP}/router-seed" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --out "${RUNNER_TEMP}/attention-reductions.json" > /dev/null
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "attention-reductions.json").read_text()
+          )
+          for layer, value in sorted(
+              result["layers"].items(), key=lambda item: int(item[0])
+          ):
+              geometry = value["geometry"]
+              print(
+                  "ATTENTION_REDUCTION_SCOPE "
+                  f"layer={layer} head_dim={geometry['head_dim']} "
+                  f"d_rel={geometry['d_rel']} max_kv={geometry['maximum_kv_length']} "
+                  f"log_scaling_exercised={geometry['log_scaling_exercised']}"
+              )
+              for operation, analysis in value["operations"].items():
+                  print(
+                      "ATTENTION_REDUCTION_DECISION "
+                      f"layer={layer} operation={operation} "
+                      f"classification={analysis['classification']}"
+                  )
+                  for mode, metrics in analysis["variants"].items():
+                      print(
+                          "ATTENTION_REDUCTION_VARIANT "
+                          f"layer={layer} operation={operation} mode={mode} "
+                          f"exact={metrics['quantized_exact_fraction']:.9f} "
+                          f"max_abs={metrics['max_abs']:.9g} "
+                          f"mean_abs={metrics['mean_abs']:.9g} "
+                          f"mismatch_positions={metrics['mismatch_positions']} "
+                          f"mismatch_rows={metrics['mismatch_row_count']}"
+                      )
+              decision = value["decision"]
+              print(
+                  "ATTENTION_REDUCTION_SUMMARY "
+                  f"layer={layer} native_required={decision['native_bf16_required']} "
+                  f"portable={decision['portable_scalar_reduction']}"
+              )
+          PY

@@ -17,6 +17,7 @@ from diagnose_inkling_pre_router import (
     capture_official_pre_router,
     compare_pre_router,
 )
+from diagnose_inkling_stage_injection import CUMULATIVE_INJECTION_CASES
 from inkling_fixture import load_fixture
 from inkling_layer_parity import build_library, configure_library
 from inkling_release_config import build_transformers_text_config
@@ -159,6 +160,15 @@ class PreRouterDiagnosisTest(unittest.TestCase):
                 self.assertTrue(torch.equal(captured[point], expected))
         self.assertEqual(tuple(indices.shape), (len(inputs), TOPK))
         self.assertEqual(tuple(weights.shape), (len(inputs), TOPK))
+
+    def test_cumulative_cases_are_exact_declared_prefixes(self) -> None:
+        self.assertEqual(len(CUMULATIVE_INJECTION_CASES), len(POINTS))
+        for index, point in enumerate(POINTS):
+            with self.subTest(point=point):
+                self.assertEqual(
+                    CUMULATIVE_INJECTION_CASES[f"through_{point}"],
+                    POINTS[: index + 1],
+                )
 
     def test_first_nonexact_stage_uses_declared_trace_order(self) -> None:
         official = {

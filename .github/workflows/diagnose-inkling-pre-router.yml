@@ -165,6 +165,29 @@ jobs:
                       f"c_rows={emitted['exact_rows']}/{emitted['total_rows']} "
                       f"official_router_rows={official['exact_rows']}/{official['total_rows']}"
                   )
+              first_full_route = None
+              for case_name, case in value["cumulative_cases"].items():
+                  post = case["post_attention_norm"]
+                  emitted = case["c_emitted"]
+                  official = case["official_bfloat16_router"]
+                  if (
+                      first_full_route is None
+                      and official["exact_rows"] == official["total_rows"]
+                  ):
+                      first_full_route = case_name
+                  print(
+                      "STAGE_CUMULATIVE "
+                      f"layer={layer} case={case_name} "
+                      f"last_point={case['points'][-1]} "
+                      f"post_norm_exact={post['quantized_exact_fraction']:.9f} "
+                      f"post_norm_max={post['max_abs']:.9g} "
+                      f"c_rows={emitted['exact_rows']}/{emitted['total_rows']} "
+                      f"official_router_rows={official['exact_rows']}/{official['total_rows']}"
+                  )
+              print(
+                  "STAGE_CUMULATIVE_FIRST_FULL_ROUTE "
+                  f"layer={layer} case={first_full_route}"
+              )
               for case_name, case in value["quantization_cases"].items():
                   post = case["post_attention_norm"]
                   emitted = case["c_emitted"]

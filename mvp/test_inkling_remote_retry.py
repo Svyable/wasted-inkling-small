@@ -62,6 +62,36 @@ class RemoteRetryTest(unittest.TestCase):
         source.opener = _Opener(outcomes)
         return source, delays
 
+    def test_huggingface_metadata_uses_raw_but_shards_use_resolve(self):
+        source = HttpRangeSource(
+            "https://huggingface.co/thinkingmachines/Inkling-Small",
+            "abcdef0",
+            retries=1,
+        )
+        self.assertEqual(
+            source.url("config.json"),
+            "https://huggingface.co/thinkingmachines/Inkling-Small/raw/abcdef0/config.json",
+        )
+        self.assertEqual(
+            source.url("model.safetensors.index.json"),
+            "https://huggingface.co/thinkingmachines/Inkling-Small/raw/abcdef0/model.safetensors.index.json",
+        )
+        self.assertEqual(
+            source.url("model-00001-of-00002.safetensors"),
+            "https://huggingface.co/thinkingmachines/Inkling-Small/resolve/abcdef0/model-00001-of-00002.safetensors",
+        )
+
+    def test_custom_source_keeps_resolve_metadata_route(self):
+        source = HttpRangeSource(
+            "http://127.0.0.1:1234/model",
+            "abcdef0",
+            retries=1,
+        )
+        self.assertEqual(
+            source.url("config.json"),
+            "http://127.0.0.1:1234/model/resolve/abcdef0/config.json",
+        )
+
     def test_honors_retry_after_then_succeeds(self):
         response = _Response()
         source, delays = self.source([_http_error(429, "3"), response])

@@ -1,0 +1,115 @@
+{
+  "format": "inkling-official-weight-parity-evidence",
+  "version": 1,
+  "model_id": "thinkingmachines/Inkling-Small",
+  "revision": "21152b5312c653be115f33a8342759064144e281",
+  "config_sha256": "dcb5b1d587bce2f1e6b29833d739a724d05b4bfaa2dc1164fbe679330478ba53",
+  "index_sha256": "68b1ab9dade825da1d9d162303f7356167ba2b90fd2c5fdf519e898d45adb0d9",
+  "inputs_sha256": "53102b39703fcec1ea4593c4a149e168169d0062769f7bac7944c1afe9831b7f",
+  "input_dtype": "bfloat16",
+  "tokens": 8,
+  "fixture": {
+    "entries": 175,
+    "payload_bytes": 3842395658,
+    "verified_bytes": 3842395658,
+    "remote_bytes_read": 3842575055,
+    "remote_requests": 227,
+    "all_crcs_match": true
+  },
+  "workflow": {
+    "run_id": 30875257466,
+    "job_id": 91885940769,
+    "head_sha": "2a97a3d6bdbe8eda4aebefaa04bd3e1dad72ad40",
+    "transformers": "5.14.1"
+  },
+  "comparison": {
+    "atol": 0.001,
+    "rtol": 0.001,
+    "canonical_official_route_override": true,
+    "candidate_routes_audited_separately": true
+  },
+  "layers": {
+    "0": {
+      "class": "dense-local",
+      "execution_completed": true,
+      "routing": null,
+      "activations_passed": false,
+      "max_output_abs_across_positions": 8.54443359375,
+      "final_position": {
+        "input_norm": 0.002427220344543457,
+        "q_proj": 0.01181340217590332,
+        "k_proj": 0.007042050361633301,
+        "v_proj": 0.00587153434753418,
+        "relative_proj_input": 0.0050917863845825195,
+        "k_sconv": 0.018388748168945312,
+        "v_sconv": 0.002022653818130493,
+        "attention_out": 1.624899983406067,
+        "attention_branch": 0.1104593276977539,
+        "post_attention_norm": 0.01497340202331543,
+        "dense_mlp_out": 0.6354598999023438,
+        "mlp_branch": 10.525146484375,
+        "output": 8.3299560546875
+      }
+    },
+    "2": {
+      "class": "sparse-local",
+      "execution_completed": true,
+      "routing": {
+        "passed": true,
+        "exact_indices": true,
+        "max_abs_weight": 0.0,
+        "positions": 8
+      },
+      "activations_passed": false,
+      "max_output_abs_across_positions": 6.3294677734375,
+      "final_position": {
+        "input_norm": 0.007079958915710449,
+        "q_proj": 0.0734100341796875,
+        "k_proj": 0.035597801208496094,
+        "v_proj": 0.04301929473876953,
+        "relative_proj_input": 0.02024555206298828,
+        "k_sconv": 0.11257362365722656,
+        "v_sconv": 0.014020919799804688,
+        "attention_out": 20.09930419921875,
+        "attention_branch": 0.20136547088623047,
+        "post_attention_norm": 0.03352928161621094,
+        "router_logits": 0.06717264652252197,
+        "shared_weight": 1.891818828880787e-05,
+        "moe_out": 0.36288881301879883,
+        "mlp_branch": 3.619873046875,
+        "output": 3.00653076171875
+      }
+    },
+    "5": {
+      "class": "sparse-global",
+      "execution_completed": true,
+      "routing": {
+        "passed": true,
+        "exact_indices": true,
+        "max_abs_weight": 0.0,
+        "positions": 8
+      },
+      "activations_passed": false,
+      "max_output_abs_across_positions": 15.08935546875,
+      "final_position": {
+        "input_norm": 0.010048627853393555,
+        "q_proj": 0.07513427734375,
+        "k_proj": 0.03581809997558594,
+        "v_proj": 0.034210205078125,
+        "relative_proj_input": 0.022835254669189453,
+        "k_sconv": 0.10263252258300781,
+        "v_sconv": 0.03712034225463867,
+        "attention_out": 41.671051025390625,
+        "attention_branch": 0.6504440307617188,
+        "post_attention_norm": 0.023967266082763672,
+        "router_logits": 0.1300668716430664,
+        "shared_weight": 0.00013408251106739044,
+        "moe_out": 0.7090034484863281,
+        "mlp_branch": 2.3050689697265625,
+        "output": 2.4498443603515625
+      }
+    }
+  },
+  "passed": false,
+  "conclusion": "The bounded fixture, source binding, compact expert path, canonical routes, and all three layer executions succeeded. Numerical BF16 activation parity failed in dense and sparse layers; the first recorded mismatch is input_norm and the largest amplification is attention_out. Public loading and inference remain unsupported."
+}

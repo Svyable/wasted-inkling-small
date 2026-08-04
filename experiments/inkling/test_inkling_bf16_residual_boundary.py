@@ -10,6 +10,7 @@ from diagnose_inkling_bf16_residual_boundary import (
     ResidualBoundaryError,
     classify_boundary,
     metrics,
+    official_residual_reconstruction,
     residual_variants,
 )
 
@@ -30,6 +31,19 @@ class ResidualBoundaryTest(unittest.TestCase):
         self.assertEqual(result["bfloat16_exact_fraction"], 0.5)
         with self.assertRaisesRegex(ResidualBoundaryError, "shape mismatch"):
             metrics(reference, torch.ones(3))
+
+    def test_official_reconstruction_uses_native_bfloat16_add(self):
+        inputs = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
+        branch = torch.tensor([[0.0039, -0.0079]], dtype=torch.float32)
+        actual = official_residual_reconstruction(inputs, branch)
+        expected = (
+            inputs.to(torch.bfloat16) + branch.to(torch.bfloat16)
+        ).float()
+        self.assertTrue(torch.equal(actual, expected))
+        float32_add = inputs.to(torch.bfloat16).float() + branch.to(
+            torch.bfloat16
+        ).float()
+        self.assertFalse(torch.equal(actual, float32_add))
 
     def test_variants_keep_distinct_branch_and_result_policies(self):
         inputs = torch.tensor([[1.0, 2.0]], dtype=torch.float32)

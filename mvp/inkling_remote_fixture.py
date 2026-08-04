@@ -3,8 +3,9 @@
 """Build bounded Inkling fixtures with strict ranges and bounded retries.
 
 The validated extraction implementation lives in ``inkling_remote_fixture_core``.
-This compatibility wrapper changes only transient HTTP retry behavior: permanent
-errors and malformed range responses still fail closed in the core reader.
+This compatibility wrapper changes only transient HTTP retry behavior and the
+Hugging Face endpoint used for small immutable metadata. Permanent errors and
+malformed range responses still fail closed in the core reader.
 """
 from __future__ import annotations
 
@@ -14,8 +15,10 @@ import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 import inkling_remote_fixture_core as _core
@@ -23,6 +26,7 @@ from inkling_remote_fixture_core import *  # noqa: F401,F403
 
 _required_layer_names = _core._required_layer_names
 _RETRYABLE_HTTP = frozenset((408, 425, 429, 500, 502, 503, 504))
+_RAW_METADATA = frozenset(("config.json", "model.safetensors.index.json"))
 
 
 def _retry_after_seconds(
@@ -77,6 +81,22 @@ class HttpRanges(_core.HttpRanges):
         self.retry_backoff = float(retry_backoff)
         self.max_retry_delay = float(max_retry_delay)
         self._sleep = sleep
+        parsed = urllib.parse.urlparse(self.base)
+        self._raw_metadata = (
+            parsed.scheme == "https" and parsed.netloc == "huggingface.co"
+        )
+
+    def url(self, name: str) -> str:
+        """Use `/raw/` for small Git metadata, `/resolve/` for LFS ranges."""
+        _core.require(
+            Path(name).name == name and name not in (".", ".."),
+            f"unsafe remote path {name!r}",
+        )
+        if self._raw_metadata and name in _RAW_METADATA:
+            revision = urllib.parse.quote(self.revision, safe="")
+            filename = urllib.parse.quote(name, safe="")
+            return f"{self.base}/raw/{revision}/{filename}"
+        return super().url(name)
 
     def _delay(self, attempt: int, retry_after: str | None = None) -> float:
         exponential = self.retry_backoff * (2**attempt)

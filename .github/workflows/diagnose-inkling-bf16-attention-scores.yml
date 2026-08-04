@@ -102,7 +102,8 @@ jobs:
           result = json.loads(
               (Path(os.environ["RUNNER_TEMP"]) / "attention-scores.json").read_text()
           )
-          assert result["source"]["production_source_unchanged"] is True
+          assert result["baseline_source"]["production_source_unchanged"] is True
+          assert result["observed_source"]["production_source_unchanged"] is True
           for layer, value in sorted(
               result["layers"].items(), key=lambda item: int(item[0])
           ):
@@ -113,7 +114,8 @@ jobs:
                   f"score_only_exact={value['score_construction_only']['quantized_exact_fraction']:.9f} "
                   f"softmax_only_exact={value['softmax_only']['quantized_exact_fraction']:.9f} "
                   f"official_sanity={value['official_score_sanity']['quantized_exact_fraction']:.9f} "
-                  f"c_sanity_max_abs={value['c_score_sanity']['max_abs']:.9g}"
+                  f"c_sanity_max_abs={value['c_score_sanity']['max_abs']:.9g} "
+                  f"instrumentation_max_abs={value['instrumentation_sanity']['max_abs']:.9g}"
               )
               for name in (
                   "logits",

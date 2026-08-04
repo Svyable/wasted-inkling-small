@@ -1,0 +1,192 @@
+name: Diagnose Inkling BF16 residual boundary
+
+on:
+  pull_request:
+    paths:
+      - "experiments/inkling/diagnose_inkling_bf16_residual_boundary.py"
+      - "experiments/inkling/test_inkling_bf16_residual_boundary.py"
+      - "experiments/inkling/diagnose_inkling_portable_bf16_attention.py"
+      - "mvp/diagnose_inkling_native_bf16_backend.py"
+      - "mvp/diagnose_inkling_pre_router.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "mvp/inkling_c_config.py"
+      - "inkling/src/inkling_attention.c"
+      - "inkling/src/inkling_layer.c"
+      - "docs/OFFICIAL-ROUTER-SELECTION.json"
+      - ".github/workflows/diagnose-inkling-bf16-residual-boundary.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-residual-boundary-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  residual-boundary:
+    name: BF16 post-attention residual boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            torch 'transformers==5.14.1'
+
+      - name: Run focused residual contracts
+        run: |
+          python3 -m compileall -q experiments/inkling
+          PYTHONPATH=mvp:experiments/inkling python3 -m unittest discover \
+            -s experiments/inkling \
+            -p 'test_inkling_bf16_residual_boundary.py' -v
+
+      - name: Extract and bind the one-expert seed
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          fixture="${RUNNER_TEMP}/router-seed"
+          manifest="${RUNNER_TEMP}/seed-manifest.json"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            rm -f "$manifest"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" \
+              --layers 2,5 \
+              --experts '2:0;5:0' \
+              --max-total-gib 4 \
+              --out "$fixture" > "$manifest"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -eq 4 ]; then
+              break
+            fi
+            delay=$((10 << (attempt - 1)))
+            echo "seed attempt ${attempt} failed; retrying after ${delay}s" >&2
+            sleep "$delay"
+          done
+          if [ "$extracted" != true ]; then
+            echo "seed acquisition exhausted four bounded attempts" >&2
+            exit 2
+          fi
+
+          PYTHONPATH=mvp python3 - <<PY
+          import json
+          import time
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import (
+              deterministic_hidden_states,
+              input_sha256,
+          )
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+
+          root = Path("${RUNNER_TEMP}")
+          config = None
+          for attempt in range(4):
+              try:
+                  source = HttpRangeSource(
+                      "https://huggingface.co/thinkingmachines/Inkling-Small",
+                      "$revision",
+                  )
+                  config = source.file("config.json")
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3:
+                      raise
+                  time.sleep(10 * (2**attempt))
+          assert config is not None
+          (root / "config.json").write_bytes(config)
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          assert input_sha256(inputs, torch.bfloat16) == selection["inputs_sha256"]
+          (root / "inputs.json").write_text(
+              json.dumps(inputs.tolist()) + "\n", encoding="utf-8"
+          )
+          PY
+
+          PYTHONPATH=mvp python3 mvp/inkling_c_config.py \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --out "${RUNNER_TEMP}/c-config.json"
+
+      - name: Reconstruct and classify the residual boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/diagnose_inkling_bf16_residual_boundary.py \
+            --fixture "${RUNNER_TEMP}/router-seed" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --c-config "${RUNNER_TEMP}/c-config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --out "${RUNNER_TEMP}/residual-boundary.json" > /dev/null
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "residual-boundary.json").read_text()
+          )
+          assert result["source"]["production_source_unchanged"] is True
+          for layer, value in sorted(
+              result["layers"].items(), key=lambda item: int(item[0])
+          ):
+              dtypes = value["dtypes"]
+              print(
+                  "RESIDUAL_BOUNDARY_DTYPES "
+                  f"layer={layer} input={dtypes['input']} "
+                  f"official_branch={dtypes['official_attention_branch']} "
+                  f"official_residual={dtypes['official_post_attention_residual']} "
+                  f"candidate_branch={dtypes['candidate_attention_branch']} "
+                  f"candidate_residual={dtypes['candidate_post_attention_residual']}"
+              )
+              for name, anchor in value["anchors"].items():
+                  print(
+                      "RESIDUAL_BOUNDARY_ANCHOR "
+                      f"layer={layer} name={name} "
+                      f"raw_exact={anchor['raw_exact_fraction']:.9f} "
+                      f"bf16_exact={anchor['bfloat16_exact_fraction']:.9f} "
+                      f"raw_max_abs={anchor['raw_max_abs']:.9g}"
+                  )
+              branch = value["attention_branch"]
+              print(
+                  "RESIDUAL_BOUNDARY_BRANCH "
+                  f"layer={layer} raw_exact={branch['raw_exact_fraction']:.9f} "
+                  f"bf16_exact={branch['bfloat16_exact_fraction']:.9f} "
+                  f"raw_max_abs={branch['raw_max_abs']:.9g} "
+                  f"raw_mean_abs={branch['raw_mean_abs']:.9g}"
+              )
+              for family in (
+                  "official_branch_variants",
+                  "candidate_branch_variants",
+              ):
+                  for name, metric in value[family].items():
+                      print(
+                          "RESIDUAL_BOUNDARY_VARIANT "
+                          f"layer={layer} family={family} name={name} "
+                          f"raw_exact={metric['raw_exact_fraction']:.9f} "
+                          f"bf16_exact={metric['bfloat16_exact_fraction']:.9f} "
+                          f"raw_max_abs={metric['raw_max_abs']:.9g} "
+                          f"bf16_max_abs={metric['bfloat16_max_abs']:.9g}"
+                      )
+              decision = value["decision"]
+              print(
+                  "RESIDUAL_BOUNDARY_DECISION "
+                  f"layer={layer} classification={decision['classification']} "
+                  f"policy={decision['sufficient_candidate_policy']} "
+                  f"backend_calls={len(value['backend_calls'])}"
+              )
+          PY

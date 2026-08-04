@@ -140,12 +140,31 @@ jobs:
           set -euo pipefail
           revision=21152b5312c653be115f33a8342759064144e281
           fixture="${RUNNER_TEMP}/official-fixture"
-          python3 mvp/inkling_remote_fixture.py \
-            --revision "$revision" \
-            --layers 0,2,5 \
-            --experts '2:13,19,25,26,27,30,33,39,60,67,69,81,90,91,92,95,96,112,116,117,126,131,133,140,146,150,152,166,175,217,238,247,254;5:6,21,32,44,45,56,60,63,66,91,105,110,120,145,152,156,163,166,179,180,219,233,236,238,250,252' \
-            --max-total-gib 8 \
-            --out "$fixture" > "${RUNNER_TEMP}/fixture-manifest.json"
+          manifest="${RUNNER_TEMP}/fixture-manifest.json"
+          extracted=false
+          for attempt in 1 2 3 4 5; do
+            rm -rf "$fixture"
+            rm -f "$manifest"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" \
+              --layers 0,2,5 \
+              --experts '2:13,19,25,26,27,30,33,39,60,67,69,81,90,91,92,95,96,112,116,117,126,131,133,140,146,150,152,166,175,217,238,247,254;5:6,21,32,44,45,56,60,63,66,91,105,110,120,145,152,156,163,166,179,180,219,233,236,238,250,252' \
+              --max-total-gib 8 \
+              --out "$fixture" > "$manifest"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              break
+            fi
+            delay=$((15 << (attempt - 1)))
+            echo "fixture acquisition attempt ${attempt} failed; retrying after ${delay}s" >&2
+            sleep "$delay"
+          done
+          if [ "$extracted" != true ]; then
+            echo "fixture acquisition exhausted five bounded attempts" >&2
+            exit 2
+          fi
           python3 inkling/tools/inkling_fixture.py \
             --fixture "$fixture" --verify
           python3 - <<'PY'
@@ -177,19 +196,35 @@ jobs:
           revision=21152b5312c653be115f33a8342759064144e281
           PYTHONPATH=mvp python3 - <<PY
           import json
+          import time
           from pathlib import Path
           from discover_inkling_router_experts import (
               deterministic_hidden_states,
               input_sha256,
           )
-          from inkling_remote_fixture import HttpRangeSource
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
 
           root = Path("${RUNNER_TEMP}")
-          source = HttpRangeSource(
-              "https://huggingface.co/thinkingmachines/Inkling-Small",
-              "$revision",
-          )
-          config = source.file("config.json")
+          config = None
+          for attempt in range(5):
+              try:
+                  source = HttpRangeSource(
+                      "https://huggingface.co/thinkingmachines/Inkling-Small",
+                      "$revision",
+                  )
+                  config = source.file("config.json")
+                  break
+              except RemoteFixtureError:
+                  if attempt == 4:
+                      raise
+                  delay = 15 * (2**attempt)
+                  print(
+                      f"config acquisition attempt {attempt + 1} failed; "
+                      f"retrying after {delay}s",
+                      flush=True,
+                  )
+                  time.sleep(delay)
+          assert config is not None
           (root / "config.json").write_bytes(config)
           inputs = deterministic_hidden_states(8, 4096, 19)
           selection = json.loads(

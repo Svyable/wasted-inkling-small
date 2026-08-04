@@ -5,7 +5,9 @@ on:
     paths:
       - "mvp/diagnose_inkling_pre_router.py"
       - "mvp/diagnose_inkling_stage_injection.py"
+      - "mvp/diagnose_inkling_bf16_primitives.py"
       - "mvp/test_inkling_pre_router_diagnosis.py"
+      - "mvp/test_inkling_bf16_primitives.py"
       - "mvp/analyze_inkling_router_mismatch.py"
       - "mvp/discover_inkling_c_router_experts.py"
       - "mvp/discover_inkling_router_experts.py"
@@ -149,6 +151,7 @@ jobs:
           diagnosis = json.loads(
               (Path(os.environ["RUNNER_TEMP"]) / "stage-counterfactuals.json").read_text()
           )
+          cumulative_order = list(diagnosis["cumulative_injection_cases"])
           for layer, value in sorted(
               diagnosis["layers"].items(), key=lambda item: int(item[0])
           ):
@@ -165,16 +168,17 @@ jobs:
                       f"c_rows={emitted['exact_rows']}/{emitted['total_rows']} "
                       f"official_router_rows={official['exact_rows']}/{official['total_rows']}"
                   )
-              first_full_route = None
-              for case_name, case in value["cumulative_cases"].items():
+              first_raw_exact_route = None
+              for case_name in cumulative_order:
+                  case = value["cumulative_cases"][case_name]
                   post = case["post_attention_norm"]
                   emitted = case["c_emitted"]
                   official = case["official_bfloat16_router"]
                   if (
-                      first_full_route is None
+                      first_raw_exact_route is None
                       and official["exact_rows"] == official["total_rows"]
                   ):
-                      first_full_route = case_name
+                      first_raw_exact_route = case_name
                   print(
                       "STAGE_CUMULATIVE "
                       f"layer={layer} case={case_name} "
@@ -185,8 +189,9 @@ jobs:
                       f"official_router_rows={official['exact_rows']}/{official['total_rows']}"
                   )
               print(
-                  "STAGE_CUMULATIVE_FIRST_FULL_ROUTE "
-                  f"layer={layer} case={first_full_route}"
+                  "STAGE_CUMULATIVE_FIRST_RAW_EXACT_ROUTE "
+                  f"layer={layer} case={first_raw_exact_route} "
+                  "note=cutoff-tie-sensitive-not-a-correctness-gate"
               )
               for case_name, case in value["quantization_cases"].items():
                   post = case["post_attention_norm"]
@@ -201,4 +206,49 @@ jobs:
                       f"c_rows={emitted['exact_rows']}/{emitted['total_rows']} "
                       f"official_router_rows={official['exact_rows']}/{official['total_rows']}"
                   )
+          PY
+
+      - name: Compare RMSNorm and linear primitive semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=mvp python3 mvp/diagnose_inkling_bf16_primitives.py \
+            --fixture "${RUNNER_TEMP}/router-seed" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --c-config "${RUNNER_TEMP}/c-config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --out "${RUNNER_TEMP}/bf16-primitives.json" > /dev/null
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "bf16-primitives.json").read_text()
+          )
+          for layer, value in sorted(
+              result["layers"].items(), key=lambda item: int(item[0])
+          ):
+              print(
+                  "BF16_PRIMITIVE "
+                  f"layer={layer} "
+                  f"rmsnorm={value['rmsnorm_classification']} "
+                  f"linear={value['linear_classification']}"
+              )
+              for group_name, group in (
+                  ("rmsnorm", value["rmsnorm"]),
+                  ("q_projection", value["q_projection"]),
+              ):
+                  for variant, metrics in group.items():
+                      if variant == "sampled_rows":
+                          continue
+                      print(
+                          "BF16_PRIMITIVE_VARIANT "
+                          f"layer={layer} group={group_name} variant={variant} "
+                          f"exact={metrics['quantized_exact_fraction']:.9f} "
+                          f"max_abs={metrics['max_abs']:.9g} "
+                          f"mean_abs={metrics['mean_abs']:.9g}"
+                      )
           PY

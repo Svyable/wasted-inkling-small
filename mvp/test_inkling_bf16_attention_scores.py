@@ -2,21 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-import math
 import unittest
 
 import torch
 
 from diagnose_inkling_bf16_attention_scores import (
     AttentionScoreError,
-    bf16,
-    c_head_rmsnorm,
-    c_log_tau,
     c_softmax,
     causal_valid,
     classify_score_softmax,
-    f32,
+    finite_logit_metrics,
     official_softmax,
+    transform_attention_preserve_logits,
 )
 
 
@@ -29,30 +26,41 @@ class AttentionScoreSoftmaxTest(unittest.TestCase):
             "mean_abs": maximum / 2.0,
         }
 
-    def test_c_head_rmsnorm_applies_bfloat16_before_weight(self):
-        values = torch.tensor([0.5, -1.25, 0.75], dtype=torch.float32)
-        weight = torch.tensor([1.0, 0.5, -0.75], dtype=torch.bfloat16).float()
-        got = c_head_rmsnorm(values, weight, eps=1e-6)
-        squared = sum(float(value) ** 2 for value in values.tolist())
-        scale = f32(1.0 / math.sqrt(f32(f32(squared / 3) + f32(1e-6))))
-        expected = torch.tensor(
-            [
-                bf16(f32(bf16(f32(float(value) * scale)) * float(factor)))
-                for value, factor in zip(values.tolist(), weight.tolist())
-            ]
-        )
-        self.assertTrue(torch.equal(got, expected))
+    @staticmethod
+    def source() -> str:
+        return """        double sum = 0.0;
+        for (int j = 0; j < kv_len; j++) {
+            row[j] = expf(row[j] - max_score);
+            sum += row[j];
+        }
+        if (!(sum > 0.0) || !isfinite(sum)) return -1;
+        const float inv_sum = (float)(1.0 / sum);
+        float *oh = out + (size_t)h * D;
+        for (int d = 0; d < D; d++) oh[d] = 0.0f;
+        for (int j = 0; j < kv_len; j++) {
+            const float weight = row[j] * inv_sum;
+            for (int d = 0; d < D; d++) oh[d] += weight * vc[d];
+        }
+"""
 
-    def test_c_head_rmsnorm_rejects_geometry(self):
-        with self.assertRaisesRegex(AttentionScoreError, "shapes disagree"):
-            c_head_rmsnorm(torch.zeros(2), torch.zeros(3), eps=1e-6)
+    def test_score_observation_preserves_rows_and_uses_probability_vla(self):
+        transformed = transform_attention_preserve_logits(self.source())
+        self.assertIn("float probability[kv_len]", transformed)
+        self.assertIn("probability[j] = expf(row[j] - max_score)", transformed)
+        self.assertIn("const float weight = probability[j] * inv_sum", transformed)
+        self.assertNotIn("row[j] = expf", transformed)
 
-    def test_log_tau_respects_floor(self):
-        self.assertEqual(c_log_tau(0, 16, 0.5), 1.0)
-        self.assertEqual(c_log_tau(15, 16, 0.5), 1.0)
-        self.assertGreater(c_log_tau(31, 16, 0.5), 1.0)
-        with self.assertRaisesRegex(AttentionScoreError, "geometry"):
-            c_log_tau(0, 0, 0.5)
+    def test_score_observation_fails_closed_on_reapply_or_drift(self):
+        transformed = transform_attention_preserve_logits(self.source())
+        with self.assertRaisesRegex(AttentionScoreError, "probability loop"):
+            transform_attention_preserve_logits(transformed)
+        with self.assertRaisesRegex(AttentionScoreError, "value weight"):
+            transform_attention_preserve_logits(
+                self.source().replace(
+                    "const float weight = row[j] * inv_sum;",
+                    "const float weight = inv_sum;",
+                )
+            )
 
     def test_c_softmax_matches_exp_double_sum_order(self):
         logits = torch.tensor(
@@ -79,35 +87,59 @@ class AttentionScoreSoftmaxTest(unittest.TestCase):
         self.assertTrue(causal_valid(3, 2, is_local=True, window=2))
         self.assertFalse(causal_valid(3, 1, is_local=True, window=2))
 
+    def test_finite_logit_metrics_ignore_shared_mask(self):
+        reference = torch.tensor([[1.0, -torch.inf, 2.0]])
+        candidate = torch.tensor([[1.0, -torch.inf, 2.03125]])
+        metrics = finite_logit_metrics(
+            reference,
+            candidate,
+            compare_dtype=torch.bfloat16,
+        )
+        self.assertEqual(metrics["finite_values"], 2)
+        self.assertEqual(metrics["masked_values"], 1)
+        self.assertEqual(metrics["quantized_exact_fraction"], 0.5)
+
+    def test_finite_logit_metrics_reject_mask_drift(self):
+        with self.assertRaisesRegex(AttentionScoreError, "masks differ"):
+            finite_logit_metrics(
+                torch.tensor([[1.0, -torch.inf]]),
+                torch.tensor([[1.0, 0.0]]),
+                compare_dtype=torch.bfloat16,
+            )
+
     def test_classifies_score_boundary(self):
         result = classify_score_softmax(
             official_sanity=self.metric(1.0),
             c_sanity=self.metric(1.0, 0.0),
+            instrumentation_sanity=self.metric(1.0, 0.0),
             score_only=self.metric(0.8),
             softmax_only=self.metric(1.0),
         )
         self.assertEqual(result, "score_construction_is_the_remaining_boundary")
 
-    def test_classifies_softmax_boundary(self):
-        result = classify_score_softmax(
+    def test_classifies_softmax_boundary_and_both(self):
+        softmax = classify_score_softmax(
             official_sanity=self.metric(1.0),
             c_sanity=self.metric(1.0, 0.0),
+            instrumentation_sanity=self.metric(1.0, 0.0),
             score_only=self.metric(1.0),
             softmax_only=self.metric(0.8),
         )
-        self.assertEqual(result, "softmax_is_the_remaining_boundary")
-
-    def test_classifies_both_and_sanity_failures(self):
+        self.assertEqual(softmax, "softmax_is_the_remaining_boundary")
         both = classify_score_softmax(
             official_sanity=self.metric(1.0),
             c_sanity=self.metric(1.0, 0.0),
+            instrumentation_sanity=self.metric(1.0, 0.0),
             score_only=self.metric(0.8),
             softmax_only=self.metric(0.9),
         )
         self.assertEqual(both, "score_construction_and_softmax_both_contribute")
+
+    def test_classifies_all_sanity_failures(self):
         official_fail = classify_score_softmax(
             official_sanity=self.metric(0.99),
             c_sanity=self.metric(1.0, 0.0),
+            instrumentation_sanity=self.metric(1.0, 0.0),
             score_only=self.metric(1.0),
             softmax_only=self.metric(1.0),
         )
@@ -115,10 +147,22 @@ class AttentionScoreSoftmaxTest(unittest.TestCase):
         c_fail = classify_score_softmax(
             official_sanity=self.metric(1.0),
             c_sanity=self.metric(1.0, 1e-4),
+            instrumentation_sanity=self.metric(1.0, 0.0),
             score_only=self.metric(1.0),
             softmax_only=self.metric(1.0),
         )
-        self.assertEqual(c_fail, "c_score_reconstruction_failed")
+        self.assertEqual(c_fail, "c_score_observation_failed")
+        instrumentation_fail = classify_score_softmax(
+            official_sanity=self.metric(1.0),
+            c_sanity=self.metric(1.0, 0.0),
+            instrumentation_sanity=self.metric(1.0, 1e-4),
+            score_only=self.metric(1.0),
+            softmax_only=self.metric(1.0),
+        )
+        self.assertEqual(
+            instrumentation_fail,
+            "score_instrumentation_changed_attention",
+        )
 
     def test_c_softmax_rejects_empty_finite_row(self):
         with self.assertRaisesRegex(AttentionScoreError, "no finite"):

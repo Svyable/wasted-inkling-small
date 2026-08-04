@@ -184,9 +184,13 @@ def diagnose_layer(
     torch_f32_on_official = F.linear(
         official_input.float(), sampled_weight.float()
     )
-    official_bf16 = F.linear(
-        official_input.to(dtype), sampled_weight.to(dtype)
-    )
+    # Re-run the same full module shape used by the hook. Sampling the weight
+    # first can select a different BF16 GEMM kernel and alter reduction order.
+    with torch.no_grad():
+        official_bf16_full = module.self_attn.q_proj(
+            official_input.to(device=device, dtype=dtype)
+        ).detach().cpu()
+    official_bf16 = official_bf16_full[:, row_ids]
     linear = {
         "sampled_rows": row_ids,
         "official_bfloat16_formula_vs_hook": _metrics(

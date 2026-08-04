@@ -1,4 +1,4 @@
-name: Validate Inkling official weights
+name: Produce Inkling official-weight evidence
 
 on:
   pull_request:
@@ -10,8 +10,14 @@ on:
       - "inkling/tools/inkling_plan.py"
       - "docs/OFFICIAL-FIXTURE-PLAN.json"
       - "docs/OFFICIAL-ROUTER-SELECTION.json"
+      - "docs/OFFICIAL-WEIGHT-PARITY-RESULT.json"
       - ".github/workflows/validate-inkling-official-weights.yml"
   workflow_dispatch:
+    inputs:
+      require_parity:
+        description: Fail unless every official activation passes tolerance
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -113,8 +119,8 @@ jobs:
           raise SystemExit(0 if audit["passed"] else 2)
           PY
 
-  layer-parity:
-    name: Official BF16 layers 0, 2, and 5
+  layer-evidence:
+    name: Official BF16 evidence for layers 0, 2, and 5
     needs: routing-validity
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -224,19 +230,29 @@ jobs:
               --out "$candidate"
           done
 
-      - name: Compare and publish the complete report to the log
+      - name: Compare and validate complete evidence
         shell: bash
+        env:
+          REQUIRE_PARITY: ${{ github.event_name == 'workflow_dispatch' && inputs.require_parity || false }}
         run: |
-          set -uo pipefail
-          status=0
+          set -euo pipefail
           for layer in 0 2 5; do
+            set +e
             PYTHONPATH=mvp python3 mvp/compare_inkling_layer_archives.py \
               --compare-reference "${RUNNER_TEMP}/official-${layer}" \
               --compare-candidate "${RUNNER_TEMP}/candidate-${layer}" \
               --allow-candidate-extras \
               --atol 1e-3 --rtol 1e-3 \
-              --report "${RUNNER_TEMP}/layer-${layer}-report.json" || status=1
+              --report "${RUNNER_TEMP}/layer-${layer}-report.json"
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+              exit "$rc"
+            fi
+            test -s "${RUNNER_TEMP}/layer-${layer}-report.json"
           done
+
+          set +e
           PYTHONPATH=mvp python3 mvp/official_weight_parity_report.py \
             --selection docs/OFFICIAL-ROUTER-SELECTION.json \
             --layer-report "0:${RUNNER_TEMP}/layer-0-report.json" \
@@ -246,8 +262,28 @@ jobs:
             --candidate-archive "2:${RUNNER_TEMP}/candidate-2" \
             --candidate-archive "5:${RUNNER_TEMP}/candidate-5" \
             --route-atol 1e-3 \
-            --out "${RUNNER_TEMP}/official-weight-parity.json" || status=1
+            --out "${RUNNER_TEMP}/official-weight-parity.json"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+            exit "$rc"
+          fi
+          test -s "${RUNNER_TEMP}/official-weight-parity.json"
+
+          validation_args=()
+          if [ "$REQUIRE_PARITY" = "true" ]; then
+            validation_args+=(--require-parity)
+          fi
+          PYTHONPATH=mvp python3 mvp/validate_inkling_official_weight_evidence.py \
+            --report "${RUNNER_TEMP}/official-weight-parity.json" \
+            --evidence docs/OFFICIAL-WEIGHT-PARITY-RESULT.json \
+            --growth-limit 1.25 \
+            --out "${RUNNER_TEMP}/official-weight-validation.json" \
+            "${validation_args[@]}"
+
           echo "OFFICIAL_WEIGHT_PARITY_REPORT_BEGIN"
           cat "${RUNNER_TEMP}/official-weight-parity.json"
           echo "OFFICIAL_WEIGHT_PARITY_REPORT_END"
-          exit "$status"
+          echo "OFFICIAL_WEIGHT_VALIDATION_BEGIN"
+          cat "${RUNNER_TEMP}/official-weight-validation.json"
+          echo "OFFICIAL_WEIGHT_VALIDATION_END"

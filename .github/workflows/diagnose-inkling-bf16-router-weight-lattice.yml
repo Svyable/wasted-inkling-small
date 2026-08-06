@@ -1,0 +1,222 @@
+name: Diagnose Inkling BF16 router-weight lattice
+
+on:
+  pull_request:
+    paths:
+      - "experiments/inkling/diagnose_inkling_bf16_router_weight_lattice.py"
+      - "experiments/inkling/test_inkling_bf16_router_weight_lattice.py"
+      - "mvp/diagnose_inkling_pre_router.py"
+      - "mvp/inkling_canonical_route_layer_parity.py"
+      - "mvp/run_inkling_fixture_reference_canonical.py"
+      - "mvp/inkling_fixture_reference.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "inkling/src/inkling.c"
+      - "docs/OFFICIAL-ROUTER-SELECTION.json"
+      - ".github/workflows/diagnose-inkling-bf16-router-weight-lattice.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-router-weight-lattice-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  router-weight-lattice:
+    name: BF16 fixed-ID router-weight normalization lattice
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            torch 'transformers==5.14.1'
+
+      - name: Run focused fixed-ID contracts
+        run: |
+          python3 -m compileall -q experiments/inkling
+          PYTHONPATH=mvp:experiments/inkling python3 -m unittest discover \
+            -s experiments/inkling \
+            -p 'test_inkling_bf16_router_weight_lattice.py' -v
+
+      - name: Reproduce the one-expert construction plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          plan="${RUNNER_TEMP}/router-weight-plan.json"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" \
+            --layers 2,5 \
+            --experts '2:150;5:56' \
+            --max-total-gib 1 \
+            --plan-only > "$plan"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          plan = json.loads((root / "router-weight-plan.json").read_text())
+          selection = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          assert plan["experts"] == {"2": [150], "5": [56]}
+          assert plan["entries"] == 44
+          assert plan["payload_bytes"] == 482642952
+          assert plan["revision"] == selection["revision"]
+          assert plan["config_sha256"] == selection["config_sha256"]
+          assert plan["index_sha256"] == selection["index_sha256"]
+          print(
+              "ROUTER_WEIGHT_PLAN "
+              f"entries={plan['entries']} "
+              f"payload_bytes={plan['payload_bytes']} "
+              f"requests={plan['requests']} "
+              f"shards={plan['shards']}"
+          )
+          PY
+
+      - name: Extract and bind the router construction fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          fixture="${RUNNER_TEMP}/router-weight-fixture"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" \
+              --layers 2,5 \
+              --experts '2:150;5:56' \
+              --max-total-gib 1 \
+              --out "$fixture" > "${RUNNER_TEMP}/router-weight-manifest.json"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((10 << (attempt - 1)))
+              echo "fixture attempt ${attempt} failed; retrying after ${delay}s" >&2
+              sleep "$delay"
+            fi
+          done
+          if [ "$extracted" != true ]; then
+            echo "router fixture extraction exhausted four attempts" >&2
+            exit 2
+          fi
+          python3 inkling/tools/inkling_fixture.py \
+            --fixture "$fixture" --verify
+
+          PYTHONPATH=mvp python3 - <<PY
+          import json
+          import time
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import (
+              deterministic_hidden_states,
+              input_sha256,
+          )
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+
+          root = Path("${RUNNER_TEMP}")
+          config = None
+          for attempt in range(4):
+              try:
+                  source = HttpRangeSource(
+                      "https://huggingface.co/thinkingmachines/Inkling-Small",
+                      "$revision",
+                  )
+                  config = source.file("config.json")
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3:
+                      raise
+                  time.sleep(10 * (2**attempt))
+          assert config is not None
+          (root / "config.json").write_bytes(config)
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          assert input_sha256(inputs, torch.bfloat16) == selection["inputs_sha256"]
+          (root / "inputs.json").write_text(
+              json.dumps(inputs.tolist()) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Run the fixed-ID router-weight lattice
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/diagnose_inkling_bf16_router_weight_lattice.py \
+            --fixture "${RUNNER_TEMP}/router-weight-fixture" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --out "${RUNNER_TEMP}/router-weight-lattice.json" > /dev/null
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "router-weight-lattice.json").read_text()
+          )
+          assert result["production_source_modified"] is False
+          for layer, value in sorted(
+              result["layers"].items(), key=lambda item: int(item[0])
+          ):
+              decision = value["decision"]
+              actual = value["actual_c_vs_official"]
+              fixed = value["fixed_canonical_current_c"]
+              preferred = value["preferred_policy_metrics"]
+              print(
+                  "ROUTER_WEIGHT_DECISION "
+                  f"layer={layer} classification={decision['classification']} "
+                  f"actual_ids={value['actual_c_indices']} "
+                  f"canonical_ids={value['canonical_indices']} "
+                  f"exact_policy_count={value['exact_policy_count']} "
+                  f"preferred={decision['preferred_policy']}"
+              )
+              print(
+                  "ROUTER_WEIGHT_ACTUAL "
+                  f"layer={layer} all_bf16={actual['all']['bfloat16_exact_fraction']:.9f} "
+                  f"routed_bf16={actual['routed']['bfloat16_exact_fraction']:.9f} "
+                  f"shared_bf16={actual['shared']['bfloat16_exact_fraction']:.9f} "
+                  f"shared_max={actual['shared']['bfloat16_max_abs']:.9g}"
+              )
+              print(
+                  "ROUTER_WEIGHT_FIXED_CURRENT "
+                  f"layer={layer} all_raw={fixed['all']['raw_exact_fraction']:.9f} "
+                  f"all_bf16={fixed['all']['bfloat16_exact_fraction']:.9f} "
+                  f"routed_bf16={fixed['routed']['bfloat16_exact_fraction']:.9f} "
+                  f"shared_bf16={fixed['shared']['bfloat16_exact_fraction']:.9f} "
+                  f"shared_max={fixed['shared']['bfloat16_max_abs']:.9g}"
+              )
+              if preferred is not None:
+                  print(
+                      "ROUTER_WEIGHT_PREFERRED "
+                      f"layer={layer} all_raw={preferred['all']['raw_exact_fraction']:.9f} "
+                      f"routed_raw={preferred['routed']['raw_exact_fraction']:.9f} "
+                      f"shared_raw={preferred['shared']['raw_exact_fraction']:.9f}"
+                  )
+              for record in value["top_policies"][:6]:
+                  metric = record["metrics"]
+                  print(
+                      "ROUTER_WEIGHT_POLICY "
+                      f"layer={layer} key={record['key']} "
+                      f"boundaries={record['boundaries']} "
+                      f"raw_exact={metric['raw_exact_fraction']:.9f} "
+                      f"bf16_exact={metric['bfloat16_exact_fraction']:.9f} "
+                      f"raw_max={metric['raw_max_abs']:.9g}"
+                  )
+          PY

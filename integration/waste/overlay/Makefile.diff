@@ -1,8 +1,8 @@
 diff --git a/Makefile b/Makefile
-index a70fe0c..2ba4ecc 100644
+index 34a282c..2ba4ecc 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -89,9 +89,12 @@ CFLAGS  += -DVQ_SUPER=$(VQ_SUPER)
+@@ -100,9 +100,12 @@ CFLAGS  += -DVQ_SUPER=$(VQ_SUPER)
  # and then corrupts memory at run time.
  CFLAGS  += -MMD -MP
  
@@ -18,15 +18,15 @@ index a70fe0c..2ba4ecc 100644
  # Match what backend.c tests for. Linux/aarch64 reports "aarch64", which
  # does not contain "arm" — the old findstring left kda_neon.c out of the
  # build while backend.c still emitted the call to it, so the link failed
-@@ -216,12 +219,20 @@ waste$(EXE): cli/main.o libwaste.a
+@@ -227,12 +230,20 @@ waste$(EXE): cli/main.o libwaste.a
  # One list, used by both `test` and `clean`. A stale test binary is one of
  # the two failures tests/run.sh was written to catch, so a binary that
  # `test` builds and `clean` forgets defeats the check meant to notice it.
 -TESTNAMES := test_kda test_container test_forward test_tokenizer test_k3parts \
--             test_state test_vision test_image test_memory sweep
+-             test_state test_vision test_image test_memory test_cpus sweep
 +TESTNAMES := test_inkling test_inkling_io test_kda test_container test_forward \
 +             test_tokenizer test_k3parts test_state test_vision test_image \
-+             test_memory sweep
++             test_memory test_cpus sweep
  TESTBINS  := $(addsuffix $(EXE),$(TESTNAMES))
  
  test: $(TESTBINS)

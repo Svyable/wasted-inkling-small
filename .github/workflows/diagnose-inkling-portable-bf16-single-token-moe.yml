@@ -1,0 +1,238 @@
+name: Diagnose Inkling portable BF16 single-token MoE
+
+on:
+  pull_request:
+    paths:
+      - "experiments/inkling/diagnose_inkling_portable_bf16_single_token_moe.py"
+      - "experiments/inkling/test_inkling_portable_bf16_single_token_moe.py"
+      - "experiments/inkling/diagnose_inkling_portable_bf16_preexpert.py"
+      - "experiments/inkling/diagnose_inkling_portable_bf16_attention.py"
+      - "mvp/audit_inkling_router_cutoff_ties.py"
+      - "mvp/diagnose_inkling_native_bf16_backend.py"
+      - "mvp/diagnose_inkling_pre_router.py"
+      - "mvp/inkling_canonical_route_layer_parity.py"
+      - "mvp/run_inkling_fixture_reference_canonical.py"
+      - "mvp/inkling_fixture_reference.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "mvp/inkling_c_config.py"
+      - "inkling/src/inkling_attention.c"
+      - "inkling/src/inkling_layer.c"
+      - "docs/OFFICIAL-ROUTER-SELECTION.json"
+      - ".github/workflows/diagnose-inkling-portable-bf16-single-token-moe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-single-token-moe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  single-token-moe:
+    name: Portable BF16 single-token sparse MoE
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            torch 'transformers==5.14.1'
+
+      - name: Run focused source and classifier contracts
+        run: |
+          python3 -m compileall -q experiments/inkling
+          PYTHONPATH=mvp:experiments/inkling python3 -m unittest discover \
+            -s experiments/inkling \
+            -p 'test_inkling_portable_bf16_single_token_moe.py' -v
+
+      - name: Plan the exact position-zero expert fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          experts='2:13,67,69,90,150,238;5:56,63,66,105,180,238'
+          plan="${RUNNER_TEMP}/single-token-moe-plan.json"
+          planned=false
+          for attempt in 1 2 3 4; do
+            rm -f "$plan"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" \
+              --layers 2,5 \
+              --experts "$experts" \
+              --max-total-gib 2 \
+              --plan-only > "$plan"; then
+              planned=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((10 << (attempt - 1)))
+              echo "fixture plan attempt ${attempt} failed; retrying after ${delay}s" >&2
+              sleep "$delay"
+            fi
+          done
+          if [ "$planned" != true ]; then
+            echo "fixture planning exhausted four bounded attempts" >&2
+            exit 2
+          fi
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          plan = json.loads((root / "single-token-moe-plan.json").read_text())
+          selection = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          expected = {
+              "2": sorted(selection["layers"]["2"]["topk_indices"][0]),
+              "5": sorted(selection["layers"]["5"]["topk_indices"][0]),
+          }
+          actual = {
+              layer: sorted(values)
+              for layer, values in plan["experts"].items()
+          }
+          assert actual == expected, (actual, expected)
+          assert plan["revision"] == selection["revision"]
+          assert plan["config_sha256"] == selection["config_sha256"]
+          assert plan["index_sha256"] == selection["index_sha256"]
+          assert 0 < plan["payload_bytes"] < 2 << 30
+          print(
+              "SINGLE_TOKEN_MOE_PLAN "
+              f"entries={plan['entries']} "
+              f"payload_bytes={plan['payload_bytes']} "
+              f"metadata_bytes={plan['metadata_bytes_read']} "
+              f"requests={plan['requests']} "
+              f"shards={plan['shards']} "
+              f"experts={actual}"
+          )
+          PY
+
+      - name: Extract and bind the position-zero fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          experts='2:13,67,69,90,150,238;5:56,63,66,105,180,238'
+          fixture="${RUNNER_TEMP}/single-token-moe-fixture"
+          manifest="${RUNNER_TEMP}/single-token-moe-manifest.json"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            rm -f "$manifest"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" \
+              --layers 2,5 \
+              --experts "$experts" \
+              --max-total-gib 2 \
+              --out "$fixture" > "$manifest"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((10 << (attempt - 1)))
+              echo "fixture extraction attempt ${attempt} failed; retrying after ${delay}s" >&2
+              sleep "$delay"
+            fi
+          done
+          if [ "$extracted" != true ]; then
+            echo "fixture extraction exhausted four bounded attempts" >&2
+            exit 2
+          fi
+          python3 inkling/tools/inkling_fixture.py \
+            --fixture "$fixture" --verify
+
+          PYTHONPATH=mvp python3 - <<PY
+          import json
+          import time
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import (
+              deterministic_hidden_states,
+              input_sha256,
+          )
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+
+          root = Path("${RUNNER_TEMP}")
+          config = None
+          for attempt in range(4):
+              try:
+                  source = HttpRangeSource(
+                      "https://huggingface.co/thinkingmachines/Inkling-Small",
+                      "$revision",
+                  )
+                  config = source.file("config.json")
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3:
+                      raise
+                  time.sleep(10 * (2**attempt))
+          assert config is not None
+          (root / "config.json").write_bytes(config)
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          assert input_sha256(inputs, torch.bfloat16) == selection["inputs_sha256"]
+          (root / "inputs.json").write_text(
+              json.dumps(inputs.tolist()) + "\n", encoding="utf-8"
+          )
+          PY
+
+          PYTHONPATH=mvp python3 mvp/inkling_c_config.py \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --out "${RUNNER_TEMP}/c-config.json"
+
+      - name: Execute and classify the single-token sparse MoE
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/diagnose_inkling_portable_bf16_single_token_moe.py \
+            --fixture "${RUNNER_TEMP}/single-token-moe-fixture" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --c-config "${RUNNER_TEMP}/c-config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --out "${RUNNER_TEMP}/single-token-moe.json" > /dev/null
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "single-token-moe.json").read_text()
+          )
+          assert result["source"]["production_source_unchanged"] is True
+          for layer, value in sorted(
+              result["layers"].items(), key=lambda item: int(item[0])
+          ):
+              decision = value["decision"]
+              print(
+                  "SINGLE_TOKEN_MOE "
+                  f"layer={layer} classification={decision['classification']} "
+                  f"prefix={decision['exact_bfloat16_prefix']} "
+                  f"first_nonexact={decision['first_nonexact_stage']} "
+                  f"candidate_route={value['candidate_routed_index']} "
+                  f"canonical_route={value['canonical_routed_index']} "
+                  f"backend_calls={len(value['backend_calls'])}"
+              )
+              for stage, metric in value["stages"].items():
+                  print(
+                      "SINGLE_TOKEN_MOE_STAGE "
+                      f"layer={layer} stage={stage} "
+                      f"raw_exact={metric['raw_exact_fraction']:.9f} "
+                      f"bf16_exact={metric['bfloat16_exact_fraction']:.9f} "
+                      f"raw_max_abs={metric['raw_max_abs']:.9g} "
+                      f"bf16_max_abs={metric['bfloat16_max_abs']:.9g}"
+                  )
+          PY

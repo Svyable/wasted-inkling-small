@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   probe:
-    name: Apply overlay and probe ABI
+    name: Verify and package the rebased integration
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -28,97 +28,42 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Apply the complete overlay to WASTE 0.6.6
-        id: generate
+      - name: Generate the reviewed tree and run every permanent gate
         shell: bash
         run: |
           set -euo pipefail
-          work="${RUNNER_TEMP}/waste-v066"
-          tree=$(integration/waste/generate.sh "$work")
+          integration/waste/verify.sh "${RUNNER_TEMP}/waste-v066"
+
+      - name: Generate the deterministic patch artifact
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . integration/waste/baseline.env
+          work="${RUNNER_TEMP}/waste-v066-patch-tree"
+          out="${RUNNER_TEMP}/waste-v066-patches"
+          tree=$(integration/waste/generate.sh "$work" "$out")
+          test "$tree" = "$EXPECTED_APPLIED_TREE"
+          patch=$(find "$out" -maxdepth 1 -type f -name '*.patch' -print -quit)
+          test -n "$patch"
+          sha=$(sha256sum "$patch" | awk '{print $1}')
           echo "tree=$tree" >> "$GITHUB_OUTPUT"
-          echo "generated WASTE 0.6.6 integration tree: $tree"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "patch=$(basename "$patch")" >> "$GITHUB_OUTPUT"
+          echo "generated $(basename "$patch") sha256=$sha tree=$tree"
 
-      - name: Compile every Inkling translation unit strictly
+      - name: Upload the generated patch
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: waste-inkling-df54209-patch
+          path: ${{ runner.temp }}/waste-v066-patches/*.patch
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Summarize the immutable outputs
         shell: bash
         run: |
-          set -euo pipefail
-          work="${RUNNER_TEMP}/waste-v066"
-          objects="$(mktemp -d)"
-          units=0
-          for source in "$work"/src/arch.c "$work"/src/inkling*.c; do
-            cc -std=gnu11 -Wall -Wextra -Werror -I"$work/src" \
-              -c "$source" -o "$objects/$(basename "${source%.c}").o"
-            units=$((units + 1))
-          done
-          test "$units" -eq 12
-          echo "compiled $units Inkling translation units"
-
-      - name: Build the integrated static library
-        shell: bash
-        run: |
-          set -euo pipefail
-          PATH=/usr/bin:/bin make -C "${RUNNER_TEMP}/waste-v066" libwaste.a
-
-      - name: Prove the 64-bit waste_cfg layout and defaults
-        shell: bash
-        run: |
-          set -euo pipefail
-          work="${RUNNER_TEMP}/waste-v066"
-          cat > "${RUNNER_TEMP}/waste_cfg_abi.c" <<'EOF'
-          #include <stddef.h>
-          #include <stdint.h>
-          #include <stdio.h>
-          #include "waste.h"
-
-          #if UINTPTR_MAX != UINT64_MAX
-          #error "this probe records the supported 64-bit host ABI"
-          #endif
-
-          _Static_assert(WASTE_API_VERSION == 1, "unexpected API version");
-          _Static_assert(WASTE_VERSION_NUMBER == 606, "unexpected engine version");
-          _Static_assert(offsetof(waste_cfg, ram_budget_bytes) == 0, "ram budget offset");
-          _Static_assert(offsetof(waste_cfg, ctx_tokens) == 8, "ctx offset");
-          _Static_assert(offsetof(waste_cfg, n_threads) == 12, "thread offset");
-          _Static_assert(offsetof(waste_cfg, cpu_list) == 16, "cpu list offset");
-          _Static_assert(offsetof(waste_cfg, cache_policy) == 24, "cache policy offset");
-          _Static_assert(offsetof(waste_cfg, use_direct_io) == 28, "direct I/O offset");
-          _Static_assert(offsetof(waste_cfg, vision) == 32, "vision offset");
-          _Static_assert(offsetof(waste_cfg, verify_records) == 36, "verify offset");
-          _Static_assert(offsetof(waste_cfg, usage_path) == 40, "usage path offset");
-          _Static_assert(sizeof(waste_cfg) == 48, "waste_cfg size");
-
-          int main(void) {
-              waste_cfg cfg;
-              waste_cfg_init(&cfg);
-              if (cfg.ram_budget_bytes != 0 || cfg.ctx_tokens != 4096 ||
-                  cfg.n_threads != 0 || cfg.cpu_list != NULL ||
-                  cfg.cache_policy != WASTE_CACHE_LFRU ||
-                  cfg.use_direct_io != 1 || cfg.vision != 0 ||
-                  cfg.verify_records != 0 || cfg.usage_path != NULL) {
-                  fputs("waste_cfg_init defaults changed\n", stderr);
-                  return 2;
-              }
-              printf("WASTE_CFG_ABI version=%s size=%zu cpu_list=%zu cache_policy=%zu usage_path=%zu\n",
-                     WASTE_VERSION_STRING, sizeof(cfg),
-                     offsetof(waste_cfg, cpu_list),
-                     offsetof(waste_cfg, cache_policy),
-                     offsetof(waste_cfg, usage_path));
-              return 0;
-          }
-          EOF
-          cc -std=gnu11 -Wall -Wextra -Werror -I"$work/src" \
-            "${RUNNER_TEMP}/waste_cfg_abi.c" "$work/libwaste.a" \
-            -o "${RUNNER_TEMP}/waste_cfg_abi" -pthread -lm
-          "${RUNNER_TEMP}/waste_cfg_abi"
-
-      - name: Run the complete upstream check suite
-        shell: bash
-        run: |
-          set -euo pipefail
-          PATH=/usr/bin:/bin make -C "${RUNNER_TEMP}/waste-v066" check
-
-      - name: Record the provisional applied tree
-        shell: bash
-        run: |
-          echo "provisional_applied_tree=${{ steps.generate.outputs.tree }}"
-          echo "Do not update EXPECTED_APPLIED_TREE until overlay review and full validation pass."
+          echo "applied_tree=${{ steps.patch.outputs.tree }}"
+          echo "patch=${{ steps.patch.outputs.patch }}"
+          echo "patch_sha256=${{ steps.patch.outputs.sha256 }}"

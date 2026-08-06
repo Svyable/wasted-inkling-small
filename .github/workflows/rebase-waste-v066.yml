@@ -200,26 +200,17 @@ jobs:
           applied=$(git -C "$consumer" rev-parse 'HEAD^{tree}')
           test "$applied" = "$EXPECTED_APPLIED_TREE"
 
-          sed -i 's/waste-inkling-6931570/waste-inkling-df54209/g' \
-            .github/workflows/validate-waste-inkling.yml
-
-          rm .github/workflows/rebase-waste-v066.yml
-
-      - name: Commit the immutable bundle and standard validation target
+      - name: Commit only the immutable distribution files
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "WASTE Inkling integration"
           git config user.email "inkling@waste.invalid"
-          git add \
-            dist/waste-inkling-df54209 \
-            .github/workflows/validate-waste-inkling.yml \
-            .github/workflows/rebase-waste-v066.yml
+          git add dist/waste-inkling-df54209
           # The generated email patch intentionally preserves upstream/source
           # whitespace and is protected by both its SHA-256 and applied tree.
           # Apply whitespace hygiene only to the metadata authored here.
           git diff --cached --check -- \
-            .github/workflows/validate-waste-inkling.yml \
             dist/waste-inkling-df54209/BASELINE \
             dist/waste-inkling-df54209/README.md \
             dist/waste-inkling-df54209/SHA256SUMS \

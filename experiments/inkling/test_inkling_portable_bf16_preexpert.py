@@ -54,13 +54,13 @@ static void rmsnorm(float *out, const float *x, const float *weight,
     for (int i = 0; i < n; i++) out[i] = x[i] * scale * weight[i];
 }
 
-void step(float *x, float *branch, int hidden)
+void step(float *x, int hidden)
 {
-    for (int i = 0; i < hidden; i++) x[i] += branch[i];
+    for (int i = 0; i < hidden; i++) x[i] += s->branch[i];
 }
 """
         transformed = transform_residual_source(transform_rms_source(source))
-        self.assertIn("bf16_round_probe(s->branch[i])", transformed.replace("branch[i]", "s->branch[i]"))
+        self.assertIn("bf16_round_probe(s->branch[i])", transformed)
         self.assertIn("x[i] = bf16_round_probe(residual + branch);", transformed)
         with self.assertRaisesRegex(
             PortableBfloat16PreExpertError,

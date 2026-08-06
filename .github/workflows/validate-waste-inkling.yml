@@ -54,13 +54,13 @@ jobs:
           set -euo pipefail
           # shellcheck source=/dev/null
           . integration/waste/baseline.env
-          (cd dist/waste-inkling-6931570 && sha256sum -c SHA256SUMS)
+          (cd dist/waste-inkling-df54209 && sha256sum -c SHA256SUMS)
           work="${RUNNER_TEMP}/waste-bundle"
           git clone --quiet "$UPSTREAM_REPOSITORY" "$work"
           git -C "$work" -c advice.detachedHead=false checkout --quiet --detach "$UPSTREAM_COMMIT"
           git -C "$work" \
             -c user.name="bundle check" -c user.email="ci@waste.invalid" \
-            am "${GITHUB_WORKSPACE}"/dist/waste-inkling-6931570/patches/*.patch
+            am "${GITHUB_WORKSPACE}"/dist/waste-inkling-df54209/patches/*.patch
           applied=$(git -C "$work" rev-parse 'HEAD^{tree}')
           if [ "$applied" != "$EXPECTED_APPLIED_TREE" ]; then
             echo "dist/ is stale: applies to $applied, sources produce $EXPECTED_APPLIED_TREE" >&2

@@ -54,13 +54,13 @@ jobs:
           set -euo pipefail
           # shellcheck source=/dev/null
           . integration/waste/baseline.env
-          (cd dist/waste-inkling-6931570 && sha256sum -c SHA256SUMS)
+          (cd dist/waste-inkling-df54209 && sha256sum -c SHA256SUMS)
           work="${RUNNER_TEMP}/waste-bundle"
           git clone --quiet "$UPSTREAM_REPOSITORY" "$work"
           git -C "$work" -c advice.detachedHead=false checkout --quiet --detach "$UPSTREAM_COMMIT"
           git -C "$work" \
             -c user.name="bundle check" -c user.email="ci@waste.invalid" \
-            am "${GITHUB_WORKSPACE}"/dist/waste-inkling-6931570/patches/*.patch
+            am "${GITHUB_WORKSPACE}"/dist/waste-inkling-df54209/patches/*.patch
           applied=$(git -C "$work" rev-parse 'HEAD^{tree}')
           if [ "$applied" != "$EXPECTED_APPLIED_TREE" ]; then
             echo "dist/ is stale: applies to $applied, sources produce $EXPECTED_APPLIED_TREE" >&2
@@ -181,11 +181,16 @@ jobs:
           test "$units" -eq 12
           echo "cross-compiled $units Inkling translation units"
 
-      - name: Build the Windows binaries
+      - name: Build the Windows binaries from a clean target tree
         shell: bash
         run: |
           set -euo pipefail
-          PATH=/usr/bin:/bin make -C "${RUNNER_TEMP}/waste" \
+          work="${RUNNER_TEMP}/waste"
+          # check_upstream_contracts.py intentionally builds a native
+          # libwaste.a. Make cannot infer that the existing archive has the
+          # wrong target ABI, so remove all native products before MinGW.
+          PATH=/usr/bin:/bin make -C "$work" clean
+          PATH=/usr/bin:/bin make -C "$work" \
             CC=x86_64-w64-mingw32-gcc-posix test_inkling.exe test_inkling_io.exe
 
       # Compiling proves the branch parses. Running it proves the positional

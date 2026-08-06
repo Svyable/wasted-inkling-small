@@ -215,6 +215,14 @@ jobs:
             dist/waste-inkling-df54209 \
             .github/workflows/validate-waste-inkling.yml \
             .github/workflows/rebase-waste-v066.yml
-          git diff --cached --check
+          # The generated email patch intentionally preserves upstream/source
+          # whitespace and is protected by both its SHA-256 and applied tree.
+          # Apply whitespace hygiene only to the metadata authored here.
+          git diff --cached --check -- \
+            .github/workflows/validate-waste-inkling.yml \
+            dist/waste-inkling-df54209/BASELINE \
+            dist/waste-inkling-df54209/README.md \
+            dist/waste-inkling-df54209/SHA256SUMS \
+            dist/waste-inkling-df54209/TEST-RESULTS.txt
           git commit -m "Package the WASTE 0.6.6 integration"
           git push origin HEAD:agent/waste-v066-integration

@@ -21,7 +21,7 @@ jobs:
   probe:
     name: Apply overlay and probe ABI
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,7 +53,13 @@ jobs:
           test "$units" -eq 12
           echo "compiled $units Inkling translation units"
 
-      - name: Prove the 64-bit waste_cfg layout
+      - name: Build the integrated static library
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATH=/usr/bin:/bin make -C "${RUNNER_TEMP}/waste-v066" libwaste.a
+
+      - name: Prove the 64-bit waste_cfg layout and defaults
         shell: bash
         run: |
           set -euo pipefail
@@ -84,6 +90,14 @@ jobs:
           int main(void) {
               waste_cfg cfg;
               waste_cfg_init(&cfg);
+              if (cfg.ram_budget_bytes != 0 || cfg.ctx_tokens != 4096 ||
+                  cfg.n_threads != 0 || cfg.cpu_list != NULL ||
+                  cfg.cache_policy != WASTE_CACHE_LFRU ||
+                  cfg.use_direct_io != 1 || cfg.vision != 0 ||
+                  cfg.verify_records != 0 || cfg.usage_path != NULL) {
+                  fputs("waste_cfg_init defaults changed\n", stderr);
+                  return 2;
+              }
               printf("WASTE_CFG_ABI version=%s size=%zu cpu_list=%zu cache_policy=%zu usage_path=%zu\n",
                      WASTE_VERSION_STRING, sizeof(cfg),
                      offsetof(waste_cfg, cpu_list),
@@ -92,10 +106,16 @@ jobs:
               return 0;
           }
           EOF
-          cc -std=c11 -Wall -Wextra -Werror -I"$work/src" \
-            "${RUNNER_TEMP}/waste_cfg_abi.c" "$work/src/waste.c" \
+          cc -std=gnu11 -Wall -Wextra -Werror -I"$work/src" \
+            "${RUNNER_TEMP}/waste_cfg_abi.c" "$work/libwaste.a" \
             -o "${RUNNER_TEMP}/waste_cfg_abi" -pthread -lm
           "${RUNNER_TEMP}/waste_cfg_abi"
+
+      - name: Run the complete upstream check suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATH=/usr/bin:/bin make -C "${RUNNER_TEMP}/waste-v066" check
 
       - name: Record the provisional applied tree
         shell: bash

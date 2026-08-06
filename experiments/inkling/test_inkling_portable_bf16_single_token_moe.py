@@ -32,7 +32,10 @@ class SingleTokenMoeTest(unittest.TestCase):
         }
 
     def test_private_matrix_kinds_do_not_overlap_public_abi(self):
-        self.assertEqual((MAT_ROUTED_GATE, MAT_ROUTED_UP, MAT_ROUTED_DOWN), (12, 13, 14))
+        self.assertEqual(
+            (MAT_ROUTED_GATE, MAT_ROUTED_UP, MAT_ROUTED_DOWN),
+            (12, 13, 14),
+        )
         self.assertGreater(MAT_ROUTED_GATE, 11)
 
     def test_metrics_separates_raw_and_bfloat16_exactness(self):
@@ -80,7 +83,7 @@ class SingleTokenMoeTest(unittest.TestCase):
         self.assertIn("WASTE_IK_MAT_ROUTED_GATE_PROBE", transformed)
         self.assertIn('"routed_gated0"', transformed)
         self.assertIn('"shared_down0"', transformed)
-        with self.assertRaisesRegex(SingleTokenMoeError, "private kind anchor"):
+        with self.assertRaisesRegex(SingleTokenMoeError, "routed expert block"):
             transform_moe_source(transformed)
 
     def test_temporary_candidate_compiles_and_preserves_production(self):

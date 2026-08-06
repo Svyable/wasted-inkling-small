@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Run the composed MoE diagnostic with a fail-closed ctypes collector.
+"""Run the composed MoE diagnostic with fail-closed experiment adapters.
 
-The main diagnostic is intentionally kept focused on arithmetic composition.
-This small entrypoint replaces its collector callback with an exception-safe
-implementation that preserves raw candidate weights and injects only the exact
-fixed-ID weights computed by the committed portable router policy.
+The arithmetic implementation stays focused on policy composition. This small
+entrypoint replaces two experiment-only adapters:
+
+* a scratch transform that reuses the inactive post-attention output buffer as
+  the shared FP32 accumulator, guarded by ``qdim >= hidden``;
+* an exception-safe collector that preserves raw candidate weights and injects
+  only exact fixed-ID weights from the committed portable router policy.
 """
 from __future__ import annotations
 
@@ -13,6 +16,39 @@ from typing import Any
 
 import diagnose_inkling_portable_bf16_composed_moe as implementation
 from inkling_layer_parity import TraceCollector
+
+
+_original_transform_aggregation_source = implementation.transform_aggregation_source
+
+
+def transform_aggregation_source(source: str) -> str:
+    """Reuse ``attn_out`` only after proving it can hold one hidden row."""
+    transformed = _original_transform_aggregation_source(source)
+    replacements = (
+        (
+            "        for (int i = 0; i < hidden; i++) s->attn[i] = 0.0f;\n",
+            "        if (qdim < hidden) return -1;\n"
+            "        for (int i = 0; i < hidden; i++) s->attn_out[i] = 0.0f;\n",
+        ),
+        (
+            "            for (int i = 0; i < hidden; i++) s->attn[i] += s->branch[i];\n",
+            "            for (int i = 0; i < hidden; i++) "
+            "s->attn_out[i] += s->branch[i];\n",
+        ),
+        (
+            "            const float shared = bf16_round_probe(s->attn[i]);\n",
+            "            const float shared = "
+            "bf16_round_probe(s->attn_out[i]);\n",
+        ),
+    )
+    for old, new in replacements:
+        count = transformed.count(old)
+        if count != 1:
+            raise implementation.ComposedMoeError(
+                f"expected exactly one shared scratch adapter anchor; found {count}"
+            )
+        transformed = transformed.replace(old, new, 1)
+    return transformed
 
 
 class ExactWeightCollector(implementation.ExactWeightCollector):
@@ -79,6 +115,7 @@ class ExactWeightCollector(implementation.ExactWeightCollector):
             return 1
 
 
+implementation.transform_aggregation_source = transform_aggregation_source
 implementation.ExactWeightCollector = ExactWeightCollector
 
 

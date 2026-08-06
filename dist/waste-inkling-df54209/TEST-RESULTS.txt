@@ -1,0 +1,44 @@
+WASTE 0.6.6 INTEGRATION REBASE EVIDENCE
+=======================================
+
+Upstream pin
+------------
+commit: df542092e1c17bc8a403ad25d3112d6f06e157ea
+tree: 6e65b764be9d9c9bdd79625714992ef1937bf5ec
+version: 0.6.6
+API version: 1
+container format version: 0
+
+Generated integration
+---------------------
+applied tree: b74b3e5f4dc30016aa566202345f6bec68709cc5
+patch: 0001-Add-the-Inkling-Small-runtime-foundation-to-WASTE.patch
+patch SHA-256: 9476373bb7ed0817963f8aeaf8422f8a008494e2b532c807f6772ca1958b3719
+
+Permanent contract gate
+-----------------------
+PASS 12 Inkling translation units compiled with -Werror
+PASS waste_cfg ABI: version=0.6.6, size=48
+PASS waste_cfg offsets: cpu_list=16, cache_policy=24, usage_path=40
+PASS waste_cfg_init safe defaults
+PASS WQ_VQ4P format 8 remains available
+PASS WASTE_XPAR and WASTE_XPAR_BATCH remain available and opt-in
+PASS converter exposes --entries, --index-bits, --stages, --reclaim
+PASS Inkling remains refused by the Kimi converter
+PASS diskbench contains Linux cache-bypass probing
+PASS diskbench requires an explicit model-specific GB/token argument
+
+Upstream make check
+-------------------
+33 passed, 0 failed, 13 skipped
+PASS cpu-list parsing and compute-pool affinity execution
+PASS Inkling architecture seam and scalar primitives
+PASS Inkling staged tensor and expert-bank readers
+PASS container, engine, RAM-budget, converter, tokenizer and image checks
+PASS serve suite: 168 checks
+
+Scope
+-----
+This is integration and packaging evidence only. It does not establish
+official-weight full-model parity and does not enable Inkling loading,
+generation, chat, serving, or a quantized public container.

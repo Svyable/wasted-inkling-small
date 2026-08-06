@@ -8,9 +8,10 @@
 # Checks, in order:
 #   1. the generated tree hash equals EXPECTED_APPLIED_TREE;
 #   2. every Inkling translation unit compiles with -Werror;
-#   3. the upstream suite passes (make check).
+#   3. the pinned WASTE ABI, conversion and storage-measurement contracts hold;
+#   4. the upstream suite passes (make check).
 #
-# Set WASTE_VERIFY_SKIP_CHECK=1 to stop after the compile step.
+# Set WASTE_VERIFY_SKIP_CHECK=1 to stop after the contract step.
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -38,6 +39,9 @@ for source in "$work"/src/arch.c "$work"/src/inkling*.c; do
 done
 rm -rf "$objects"
 printf 'verify.sh: PASS %d Inkling translation units compiled with -Werror\n' "$units"
+
+python3 "$here/check_upstream_contracts.py" "$work"
+printf 'verify.sh: PASS WASTE 0.6.6 upstream contracts\n'
 
 if [ "${WASTE_VERIFY_SKIP_CHECK:-0}" = "1" ]; then
     printf 'verify.sh: skipping make check (WASTE_VERIFY_SKIP_CHECK=1)\n'

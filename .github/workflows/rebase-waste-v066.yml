@@ -1,0 +1,104 @@
+name: Rebase WASTE v0.6.6
+
+on:
+  push:
+    branches:
+      - agent/waste-v066-integration
+    paths:
+      - "inkling/**"
+      - "integration/waste/**"
+      - ".github/workflows/rebase-waste-v066.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: waste-v066-rebase-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: Apply overlay and probe ABI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Apply the complete overlay to WASTE 0.6.6
+        id: generate
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/waste-v066"
+          tree=$(integration/waste/generate.sh "$work")
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+          echo "generated WASTE 0.6.6 integration tree: $tree"
+
+      - name: Compile every Inkling translation unit strictly
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/waste-v066"
+          objects="$(mktemp -d)"
+          units=0
+          for source in "$work"/src/arch.c "$work"/src/inkling*.c; do
+            cc -std=gnu11 -Wall -Wextra -Werror -I"$work/src" \
+              -c "$source" -o "$objects/$(basename "${source%.c}").o"
+            units=$((units + 1))
+          done
+          test "$units" -eq 12
+          echo "compiled $units Inkling translation units"
+
+      - name: Prove the 64-bit waste_cfg layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/waste-v066"
+          cat > "${RUNNER_TEMP}/waste_cfg_abi.c" <<'EOF'
+          #include <stddef.h>
+          #include <stdint.h>
+          #include <stdio.h>
+          #include "waste.h"
+
+          #if UINTPTR_MAX != UINT64_MAX
+          #error "this probe records the supported 64-bit host ABI"
+          #endif
+
+          _Static_assert(WASTE_API_VERSION == 1, "unexpected API version");
+          _Static_assert(WASTE_VERSION_NUMBER == 606, "unexpected engine version");
+          _Static_assert(offsetof(waste_cfg, ram_budget_bytes) == 0, "ram budget offset");
+          _Static_assert(offsetof(waste_cfg, ctx_tokens) == 8, "ctx offset");
+          _Static_assert(offsetof(waste_cfg, n_threads) == 12, "thread offset");
+          _Static_assert(offsetof(waste_cfg, cpu_list) == 16, "cpu list offset");
+          _Static_assert(offsetof(waste_cfg, cache_policy) == 24, "cache policy offset");
+          _Static_assert(offsetof(waste_cfg, use_direct_io) == 28, "direct I/O offset");
+          _Static_assert(offsetof(waste_cfg, vision) == 32, "vision offset");
+          _Static_assert(offsetof(waste_cfg, verify_records) == 36, "verify offset");
+          _Static_assert(offsetof(waste_cfg, usage_path) == 40, "usage path offset");
+          _Static_assert(sizeof(waste_cfg) == 48, "waste_cfg size");
+
+          int main(void) {
+              waste_cfg cfg;
+              waste_cfg_init(&cfg);
+              printf("WASTE_CFG_ABI version=%s size=%zu cpu_list=%zu cache_policy=%zu usage_path=%zu\n",
+                     WASTE_VERSION_STRING, sizeof(cfg),
+                     offsetof(waste_cfg, cpu_list),
+                     offsetof(waste_cfg, cache_policy),
+                     offsetof(waste_cfg, usage_path));
+              return 0;
+          }
+          EOF
+          cc -std=c11 -Wall -Wextra -Werror -I"$work/src" \
+            "${RUNNER_TEMP}/waste_cfg_abi.c" "$work/src/waste.c" \
+            -o "${RUNNER_TEMP}/waste_cfg_abi" -pthread -lm
+          "${RUNNER_TEMP}/waste_cfg_abi"
+
+      - name: Record the provisional applied tree
+        shell: bash
+        run: |
+          echo "provisional_applied_tree=${{ steps.generate.outputs.tree }}"
+          echo "Do not update EXPECTED_APPLIED_TREE until overlay review and full validation pass."

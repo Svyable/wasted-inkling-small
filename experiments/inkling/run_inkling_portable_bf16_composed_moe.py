@@ -3,22 +3,28 @@
 """Run the composed MoE diagnostic with fail-closed experiment adapters.
 
 The arithmetic implementation stays focused on policy composition. This small
-entrypoint replaces two experiment-only adapters:
+entrypoint replaces experiment-only adapters:
 
 * a scratch transform that reuses the inactive post-attention output buffer as
   the shared FP32 accumulator, guarded by ``qdim >= hidden``;
 * an exception-safe collector that preserves raw candidate weights and injects
-  only exact fixed-ID weights from the committed portable router policy.
+  only exact fixed-ID weights from the committed portable router policy;
+* a mandatory ``post_attention_norm`` anchor ahead of every expert-local stage,
+  so composition regressions cannot be misclassified as sparse-MoE arithmetic.
 """
 from __future__ import annotations
 
 from typing import Any
+
+import torch
 
 import diagnose_inkling_portable_bf16_composed_moe as implementation
 from inkling_layer_parity import TraceCollector
 
 
 _original_transform_aggregation_source = implementation.transform_aggregation_source
+_original_official_stages = implementation.official_stages
+PROBE_STAGES = ("post_attention_norm",) + implementation.STAGES
 
 
 def transform_aggregation_source(source: str) -> str:
@@ -49,6 +55,13 @@ def transform_aggregation_source(source: str) -> str:
             )
         transformed = transformed.replace(old, new, 1)
     return transformed
+
+
+def official_stages(module, normalized, residual, row):
+    """Prepend the already-proven pre-expert row as a mandatory anchor."""
+    anchor = normalized.detach().to(torch.bfloat16).float().reshape(-1)
+    stages, route = _original_official_stages(module, normalized, residual, row)
+    return {"post_attention_norm": anchor, **stages}, route
 
 
 class ExactWeightCollector(implementation.ExactWeightCollector):
@@ -116,7 +129,9 @@ class ExactWeightCollector(implementation.ExactWeightCollector):
 
 
 implementation.transform_aggregation_source = transform_aggregation_source
+implementation.official_stages = official_stages
 implementation.ExactWeightCollector = ExactWeightCollector
+implementation.STAGES = PROBE_STAGES
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -29,6 +29,8 @@ jobs:
     name: Export source-bound BF16 choice bits
     runs-on: ubuntu-24.04
     timeout-minutes: 55
+    env:
+      ATEN_CPU_CAPABILITY: avx2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -42,10 +44,12 @@ jobs:
           python - <<'PY'
           import torch
           assert torch.__version__.split('+', 1)[0] == "2.13.0"
+          dispatch = torch.backends.cpu.get_cpu_capability()
+          assert dispatch == "AVX2", dispatch
           print(
               "TOPK_SOURCE_BACKEND "
-              f"torch={torch.__version__} "
-              f"dispatch={torch.backends.cpu.get_cpu_capability()}"
+              f"torch={torch.__version__} dispatch={dispatch} "
+              "forced_by=ATEN_CPU_CAPABILITY"
           )
           PY
       - name: Run focused bit-archive contracts
@@ -204,8 +208,7 @@ jobs:
         run: |
           set -euo pipefail
           result="${RUNNER_TEMP}/router-topk-${{ matrix.slug }}.json"
-          PYTHONPATH=mvp:experiments/inkling python \
-            experiments/inkling/audit_inkling_bf16_router_choice_archive.py \
+          python experiments/inkling/audit_inkling_bf16_router_choice_archive.py \
             --archive "${RUNNER_TEMP}/choice-archive/inkling-router-choice-bits.json" \
             --platform-label '${{ matrix.label }}' \
             --repeat-topk 64 \

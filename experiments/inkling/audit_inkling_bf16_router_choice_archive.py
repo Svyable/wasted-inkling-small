@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Run pinned Torch top-k on an exact source-bound BF16 choice-bit archive."""
+"""Run pinned Torch top-k on an exact source-bound BF16 choice-bit archive.
+
+This platform-side auditor is deliberately self-contained: after the Linux
+source-reference job emits the archive, no model-side modules or ``mvp`` import
+paths are required.  That keeps Windows/macOS results about the pinned Torch
+``topk`` primitive itself rather than repository path conventions.
+"""
 from __future__ import annotations
 
 import argparse
@@ -11,8 +17,6 @@ from pathlib import Path
 from typing import Any
 
 import torch
-
-from diagnose_inkling_bf16_router_tie_resolution import cutoff_partition, valid_under_partition
 
 
 class ChoiceAuditError(RuntimeError):
@@ -33,6 +37,50 @@ def verify_archive_hash(archive: dict[str, Any]) -> str:
     if actual != expected:
         raise ChoiceAuditError(f"choice archive SHA {actual} != {expected}")
     return actual
+
+
+def cutoff_partition(choice: torch.Tensor, top_k: int) -> dict[str, Any]:
+    """Describe the exact BF16 equivalence class at the top-k cutoff."""
+    if choice.ndim != 1:
+        raise ChoiceAuditError("choice row must be one-dimensional")
+    if top_k < 1 or top_k > choice.numel():
+        raise ChoiceAuditError("top_k is outside the choice row")
+    values = torch.topk(choice, top_k, dim=-1, sorted=False).values
+    cutoff = values.min()
+    above = torch.nonzero(choice > cutoff, as_tuple=False).flatten().to(torch.int64)
+    tied = torch.nonzero(choice == cutoff, as_tuple=False).flatten().to(torch.int64)
+    slots = top_k - int(above.numel())
+    if slots < 1 or slots > int(tied.numel()):
+        raise ChoiceAuditError(
+            f"invalid cutoff partition: above={above.numel()} tied={tied.numel()} slots={slots}"
+        )
+    return {
+        "cutoff": cutoff,
+        "above": above,
+        "tied": tied,
+        "slots": slots,
+        "ambiguous": int(tied.numel()) > slots,
+    }
+
+
+def valid_under_partition(
+    selected: list[int] | tuple[int, ...] | torch.Tensor,
+    partition: dict[str, Any],
+    top_k: int,
+) -> bool:
+    """Require a selected set to differ only inside the exact cutoff tie."""
+    if isinstance(selected, torch.Tensor):
+        actual = {int(value) for value in selected.reshape(-1).tolist()}
+    else:
+        actual = {int(value) for value in selected}
+    above = {int(value) for value in partition["above"].reshape(-1).tolist()}
+    tied = {int(value) for value in partition["tied"].reshape(-1).tolist()}
+    return (
+        len(actual) == top_k
+        and above.issubset(actual)
+        and actual.issubset(above | tied)
+        and len(actual & tied) == int(partition["slots"])
+    )
 
 
 def platform_fingerprint() -> dict[str, Any]:

@@ -1,0 +1,221 @@
+name: Diagnose Inkling BF16 router tie resolution
+
+on:
+  pull_request:
+    paths:
+      - "experiments/inkling/diagnose_inkling_bf16_router_tie_resolution.py"
+      - "experiments/inkling/test_inkling_bf16_router_tie_resolution.py"
+      - "mvp/analyze_inkling_router_mismatch.py"
+      - "mvp/discover_inkling_router_experts.py"
+      - "mvp/inkling_fixture_reference.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "mvp/inkling_release_config.py"
+      - "docs/OFFICIAL-ROUTER-SELECTION.json"
+      - ".github/workflows/diagnose-inkling-bf16-router-tie-resolution.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-router-ties-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  OPENBLAS_NUM_THREADS: "1"
+
+jobs:
+  router-ties:
+    name: Official BF16 router cutoff-tie behavior
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install and fingerprint the pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            'torch==2.13.0' 'transformers==5.14.1'
+          python3 - <<'PY'
+          import json
+          import torch
+
+          assert torch.__version__.split('+', 1)[0] == "2.13.0"
+          caps = dict(torch.cpu.get_capabilities())
+          interesting = {
+              key: caps.get(key)
+              for key in (
+                  "architecture",
+                  "avx2",
+                  "avx512_f",
+                  "avx512_bf16",
+                  "amx_bf16",
+                  "amx_tile",
+              )
+              if key in caps
+          }
+          print(
+              "ROUTER_TIE_BACKEND "
+              f"torch={torch.__version__} "
+              f"dispatch={torch.backends.cpu.get_cpu_capability()} "
+              f"threads={torch.get_num_threads()} "
+              f"interop={torch.get_num_interop_threads()} "
+              f"caps={json.dumps(interesting, sort_keys=True)}"
+          )
+          PY
+
+      - name: Run focused tie-resolution contracts
+        run: |
+          python3 -m compileall -q experiments/inkling
+          PYTHONPATH=mvp:experiments/inkling python3 -m unittest discover \
+            -s experiments/inkling \
+            -p 'test_inkling_bf16_router_tie_resolution.py' -v
+
+      - name: Extract and bind the one-expert router seed
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          fixture="${RUNNER_TEMP}/router-tie-seed"
+          manifest="${RUNNER_TEMP}/router-tie-seed-manifest.json"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            rm -f "$manifest"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" \
+              --layers 2,5 \
+              --experts '2:0;5:0' \
+              --max-total-gib 4 \
+              --out "$fixture" > "$manifest"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((10 << (attempt - 1)))
+              echo "seed attempt ${attempt} failed; retrying after ${delay}s" >&2
+              sleep "$delay"
+            fi
+          done
+          if [ "$extracted" != true ]; then
+            echo "router tie seed acquisition exhausted four attempts" >&2
+            exit 2
+          fi
+          python3 inkling/tools/inkling_fixture.py --fixture "$fixture" --verify
+
+          PYTHONPATH=mvp python3 - <<PY
+          import json
+          import time
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import (
+              deterministic_hidden_states,
+              input_sha256,
+          )
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+
+          root = Path("${RUNNER_TEMP}")
+          config = None
+          for attempt in range(4):
+              try:
+                  source = HttpRangeSource(
+                      "https://huggingface.co/thinkingmachines/Inkling-Small",
+                      "$revision",
+                  )
+                  config = source.file("config.json")
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3:
+                      raise
+                  time.sleep(10 * (2**attempt))
+          assert config is not None
+          (root / "config.json").write_bytes(config)
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          assert input_sha256(inputs, torch.bfloat16) == selection["inputs_sha256"]
+          (root / "inputs.json").write_text(
+              json.dumps(inputs.tolist()) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Characterize exact BF16 cutoff-tie selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/diagnose_inkling_bf16_router_tie_resolution.py \
+            --fixture "${RUNNER_TEMP}/router-tie-seed" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2,5 \
+            --repeat-topk 64 \
+            --dtype bfloat16 \
+            --out "${RUNNER_TEMP}/router-ties.json" > /dev/null
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "router-ties.json").read_text()
+          )
+          assert result["format"] == "inkling-bfloat16-router-tie-resolution-probe"
+          assert result["repeat_topk"] == 64
+          backend = result["backend"]
+          print(
+              "ROUTER_TIE_RESULT_BACKEND "
+              f"torch={backend['torch_version']} dispatch={backend['cpu_dispatch']} "
+              f"threads={backend['num_threads']} caps={backend['cpu_capabilities']}"
+          )
+          total_ambiguous = 0
+          for layer, value in sorted(
+              result["layers"].items(), key=lambda item: int(item[0])
+          ):
+              assert value["all_repeated_topk_stable"] is True
+              assert value["all_sorted_true_same_set"] is True
+              decision = value["decision"]
+              total_ambiguous += int(decision["ambiguous_rows"])
+              assert decision["classification"] in {
+                  "official_topk_tie_subset_is_order_sensitive",
+                  "official_cutoff_ties_follow_low_id_rule",
+                  "official_cutoff_ties_follow_high_id_rule",
+                  "official_topk_tie_subset_is_not_simple_id_rule",
+                  "no_ambiguous_bfloat16_cutoff_rows",
+              }
+              print(
+                  "ROUTER_TIE_DECISION "
+                  f"layer={layer} classification={decision['classification']} "
+                  f"ambiguous={decision['ambiguous_rows']} "
+                  f"original_rule={decision['original_id_rule']} "
+                  f"permutation_sensitive={decision['permutation_sensitive']} "
+                  f"low_matches={decision.get('lowest_id_matches')} "
+                  f"high_matches={decision.get('highest_id_matches')}"
+              )
+              for row in value["rows"]:
+                  for permutation in row["permutations"].values():
+                      assert permutation["valid_under_cutoff"] is True
+                  if row["ambiguous_cutoff"]:
+                      print(
+                          "ROUTER_TIE_ROW "
+                          f"layer={layer} position={row['position']} "
+                          f"cutoff={row['cutoff']:.9g} "
+                          f"above={row['above_ids']} ties={row['cutoff_tie_ids']} "
+                          f"slots={row['slots_from_cutoff_tie']} "
+                          f"official_ties={row['official_tie_ids']} "
+                          f"low={row['lowest_id_rule_ids']} "
+                          f"high={row['highest_id_rule_ids']} "
+                          f"low_match={row['lowest_id_rule_matches']} "
+                          f"high_match={row['highest_id_rule_matches']} "
+                          f"permutation_changed={row['permutation_changed_subset']} "
+                          f"permutations={row['permutations']}"
+                      )
+          assert total_ambiguous > 0
+          PY

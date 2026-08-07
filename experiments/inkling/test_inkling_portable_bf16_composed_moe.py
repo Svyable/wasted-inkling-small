@@ -9,16 +9,15 @@ from pathlib import Path
 
 import torch
 
+import diagnose_inkling_portable_bf16_composed_moe as implementation
 from diagnose_inkling_portable_bf16_composed_moe import (
     ComposedMoeError,
     ROUTER_POLICY_FLAGS,
-    STAGES,
     build_composed_library,
-    classify_stages,
     transform_aggregation_source,
 )
 from inkling_canonical_route_layer_parity import RouteRow
-from run_inkling_portable_bf16_composed_moe import ExactWeightCollector
+from run_inkling_portable_bf16_composed_moe import ExactWeightCollector, PROBE_STAGES
 
 
 class _Provider:
@@ -47,20 +46,24 @@ class ComposedMoeTest(unittest.TestCase):
             stage: {
                 "bfloat16_exact_fraction": 1.0 if index < exact else 0.5
             }
-            for index, stage in enumerate(STAGES)
+            for index, stage in enumerate(PROBE_STAGES)
         }
 
     def test_router_policy_is_the_shared_exact_policy(self):
         self.assertEqual(ROUTER_POLICY_FLAGS, 0x7E1)
 
+    def test_preexpert_anchor_precedes_sparse_moe_stages(self):
+        self.assertEqual(PROBE_STAGES[0], "post_attention_norm")
+        self.assertEqual(PROBE_STAGES[1], "routed_gate0")
+
     def test_stage_classifier_advances_through_the_complete_layer(self):
-        partial = classify_stages(self.stage_metrics(9))
+        partial = implementation.classify_stages(self.stage_metrics(10))
         self.assertEqual(
             partial["classification"],
             "composed_moe_mismatch_isolated",
         )
         self.assertEqual(partial["first_nonexact_stage"], "mlp_branch")
-        complete = classify_stages(self.stage_metrics(len(STAGES)))
+        complete = implementation.classify_stages(self.stage_metrics(len(PROBE_STAGES)))
         self.assertEqual(
             complete["classification"],
             "single_token_sparse_layer_is_bfloat16_exact",

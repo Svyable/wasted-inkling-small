@@ -1,170 +1,209 @@
 # MVP readiness handoff
 
-## Where the previous work stopped
+## Public boundary remains unchanged
 
 The public memory planner is live for valid Inkling manifests. Public loading,
-step execution, chat, and serving remain deliberately refused. The next hard
-gate is official-weight layer parity, not another loader branch.
+step execution, generation, chat, and serving remain deliberately refused.
+Nothing in the current BF16 evidence stack relaxes that boundary.
 
-The repository has bounded checkpoint fixtures, a fixture-backed C decoder
-layer runner, and an official `InklingDecoderLayer` harness that avoids
-materializing the complete checkpoint or 256-expert bank.
+The next hard gate is no longer “obtain the first official fixture.” The
+repository now has bounded official-weight evidence deep enough to separate
+three different questions that previously looked like one parity problem:
 
-The real release `config.json` confirms the recorded Small geometry: dense
-width 16384 and routed-expert width 2048. The apparent 3072 width came from
-passing the release schema directly into Transformers 5.14.1, whose field names
-have different meanings. See `docs/CONFIG-SCHEMA-RESOLUTION.md`.
+1. sparse-layer arithmetic with routed expert IDs held equal;
+2. router tie semantics at exact BF16 top-k cutoffs;
+3. stateful, multi-position decoder behavior.
 
-PR #13 established an independent synthetic oracle: the C decoder layer and
-official Transformers layer compute the same dense/local and sparse/global
-functions to float32 epsilon. Official-weight parity is still not established.
+Those questions must remain separate in both CI and readiness claims.
 
-## Evidence harness
+## Current evidence frontier
 
-`mvp/inkling_fixture_reference.py` contains the bounded official layer
-implementation. It:
+The stacked evidence through PRs #39–#42 establishes the following bounded
+results. These are evidence-branch results and do not enable the public runtime.
 
-- verifies `config.json` against the SHA-256 recorded in `fixture.json`;
-- instantiates the official `InklingDecoderLayer` on the meta device;
-- removes the full routed-expert bank before materializing the layer;
-- loads provider-raw attention, convolution, dense/shared MLP, and router
-  tensors into the official module;
-- materializes only expert slices selected by the bounded fixture;
-- fails closed, naming any expert selected by the router but absent from the
-  fixture;
-- emits the existing CRC-protected activation archive format.
+### Position-zero sparse-layer arithmetic
 
-Use `mvp/run_inkling_fixture_reference.py` as the entry point. It applies the
-release-to-Transformers schema translation before constructing the layer and
-canonicalizes routed `(expert_id, weight)` pairs. Invoking the implementation
-file directly bypasses that compatibility boundary.
+PR #39 composes the proven BF16 attention, residual, router-weight,
+expert-local, aggregation, MLP, and final-residual policies in a copied
+temporary source. With canonical routed IDs supplied, both sparse layer classes
+used in the bounded probe reproduce the official position-zero decoder-layer
+output exactly:
 
-`mvp/compare_inkling_layer_archives.py` canonicalizes router pairs in both
-archives before calling the existing activation comparator. This matters
-because the official router uses `topk(sorted=False)` while the C side emits a
-different slot order.
+- layer 2: final `layer_out` raw exact and BF16 exact;
+- layer 5: final `layer_out` raw exact and BF16 exact;
+- every traced stage from `post_attention_norm` through `layer_out` is BF16
+  exact;
+- the result reproduced on two hosted AVX2 executions of the exact same head.
 
-These tools intentionally remain outside the generated WASTE patch until they
-have run against an official fixture. Promotion into `inkling/tools/` should be
-the commit that records the run and regenerates the bundle.
+The hidden FP32 `mlp_branch` need not be raw-exact. Its BF16-completed value is
+exact, and the proven final residual boundary prevents the hidden FP32
+remainder from affecting `layer_out`.
 
-## Routed expert coverage is now evidence-driven
+This is **position-zero, same-route arithmetic parity**. It is not full-model
+parity.
 
-The original remote plan used six speculative routed experts per sparse layer.
-Before downloading that fixture, the official router was probed over eight
-deterministic BF16 positions.
+### Exact BF16 router cutoff ties are not a portable official ID rule
 
-The probe constructs each official sparse layer from a bounded one-expert seed,
-replaces the expert bank before forward, captures the exact unsorted expert IDs
-and attached weights, and stops before expert computation. The seed expert
-values cannot influence routing.
+PR #40 reconstructs the official BF16 router choice values and audits every
+committed eight-token route row. Unchanged `torch.topk(sorted=False)` is stable
+on one pinned host, but value-preserving permutations change which expert IDs
+are selected from exact BF16 cutoff ties while remaining inside the same valid
+cutoff equivalence class.
 
-The immutable release selected:
+The observed official tied subset does not follow a consistent lowest-ID or
+highest-ID rule. Therefore the C router must not be changed merely to imitate
+one observed PyTorch partition result.
 
-- layer 2: 33 unique experts;
-- layer 5: 26 unique experts.
+### Cutoff-equivalent routes are not output-equivalent
 
-The full per-position choices, weights, input SHA-256, release revision, config
-hash, and index hash are committed in
-`docs/OFFICIAL-ROUTER-SELECTION.json`. CI reproduces that JSON exactly.
+PR #41 enumerates every valid position-zero cutoff-equivalent route for the two
+sparse layer classes and executes the complete official layer for each route.
+The alternatives materially change final `layer_out`:
 
-## Acquire the bounded official fixture
+- layer 2: worst observed absolute change `90.4375`;
+- layer 5: worst observed absolute change `112`.
 
-A local 532 GB checkpoint mount is no longer required. The remote extractor
-reads only release metadata, safetensors headers, selected layer tensors, and
-selected expert slices from immutable release commit
-`21152b5312c653be115f33a8342759064144e281`.
+The deterministic C low-ID route, however, is raw-exact to an official
+counterfactual using that same low-ID route for both layers. This isolates the
+large divergence to route choice rather than sparse-layer arithmetic.
 
-The evidence-selected fixture plan is committed in
-`docs/OFFICIAL-FIXTURE-PLAN.json`:
+Consequently, the strict evidence gate must **not** treat “same BF16 cutoff
+class” as activation or generation parity.
+
+### Official tied route IDs are cross-platform variant
+
+PR #42 exports the exact source-bound 8×256 BF16 router-choice bit patterns and
+runs only Torch 2.13 CPU `topk` over those identical bits on Linux, Windows,
+and macOS.
+
+The source profile is Linux x86_64, Torch 2.13.0, Transformers 5.14.1, forced
+AVX2. The exact archive SHA-256 is:
+
+`686877d38f441df16ba6f89ef0dcbf5a1c84a2f65c3389aac4b3a86c7cafa766`
+
+The result reproduced end-to-end on the exact same head:
+
+- Linux reference: all 16 route sets match the source archive;
+- Windows: tied subsets change on 5/5 ambiguous layer-2 rows and 4/6
+  ambiguous layer-5 rows;
+- macOS: tied subsets change on 2/5 ambiguous layer-2 rows and 5/6 ambiguous
+  layer-5 rows;
+- no platform changes any unambiguous route row.
+
+This means a platform-independent claim of exact official tied-route IDs is not
+well-defined. Exact official claims at ambiguous BF16 cutoffs must be attached
+to a named reference profile.
+
+See `docs/INKLING-REFERENCE-PROFILES.md` and
+`docs/OFFICIAL-REFERENCE-PROFILE-LINUX-AVX2.json`.
+
+## Routing contracts from here
+
+Two contracts now coexist and must not be silently substituted for one another.
+
+### Portable deterministic WASTE routing
+
+The current C router uses an explicit deterministic lower-expert-ID tie policy
+for equal choice scores. That is the portable WASTE behavior unless a future
+review changes it.
+
+A WASTE route selected under that rule may differ from a pinned official
+reference at an ambiguous BF16 cutoff. Such a difference must be reported as a
+routing-semantic difference, not hidden behind an activation tolerance.
+
+### Pinned official-reference profile
+
+An exact official route/output claim must name enough environment information
+to reproduce the official selection primitive: model hashes, input hash, Torch
+and Transformers versions, OS/runtime, CPU dispatch, thread controls, route
+archive, and the BF16 choice-archive identity where applicable.
+
+The first machine-readable profile is
+`docs/OFFICIAL-REFERENCE-PROFILE-LINUX-AVX2.json`.
+
+This profile is evidence metadata only. It is not a runtime configuration and
+must not be used to auto-enable loading or inference.
+
+## Existing bounded fixture infrastructure
+
+The remote extractor still provides the larger evidence-selected fixture plan
+for layers 0, 2, and 5 at immutable model revision
+`21152b5312c653be115f33a8342759064144e281`:
 
 - 175 entries;
 - 3,842,395,658 payload bytes, approximately 3.58 GiB;
 - 179,397 metadata bytes and 52 requests to plan;
-- 25 of 32 shards touched by header ranges.
+- 25 of 32 checkpoint shards touched by header ranges.
 
-Plan first; this downloads no tensor payloads. Use the exact command stored in
-`docs/OFFICIAL-FIXTURE-PLAN.json`, which contains the 59 discovered expert IDs.
-Then run the same command without `--plan-only` and add:
+The per-position official route selection, weights, deterministic BF16 input
+SHA-256, release revision, config hash, and index hash remain committed in
+`docs/OFFICIAL-ROUTER-SELECTION.json`.
 
-```sh
---out /parity/fixture-L0-L2-L5
-```
+The remote extractor fails closed on mutable revisions, unsafe paths, invalid
+safetensors geometry, missing tensors, incomplete requested expert selections,
+and servers that ignore HTTP `Range`. Every evidence workflow CRC-verifies the
+payload it executes.
 
-Verify every payload and CRC:
+## Next numerical gate: multi-position and stateful parity
 
-```sh
-python inkling/tools/inkling_fixture.py \
-  --fixture /parity/fixture-L0-L2-L5 --verify
-```
+The next hard numerical work should not chase a platform-specific `topk`
+artifact. It should validate stateful execution while keeping routing semantics
+explicit.
 
-The extractor refuses mutable revisions, unsafe index paths, missing tensors,
-invalid safetensors geometry, incomplete sparse expert selections, and any
-server that ignores HTTP `Range`. See `docs/REMOTE-FIXTURES.md`.
+Recommended sequence:
 
-## Run the G0 loop
+1. Extend the current complete temporary BF16 candidate from position zero to a
+   bounded multi-position sequence.
+2. Preserve real attention and short-convolution state across positions rather
+   than rebuilding fresh state per token.
+3. At each audited position, run the deterministic WASTE route policy and force
+   the official counterfactual to the same routed expert IDs.
+4. Recompute official routed/shared weights from those fixed IDs using the
+   pinned BF16 reference arithmetic.
+5. Require exact or explicitly justified BF16 parity at each state boundary and
+   final `layer_out` before advancing to the next position.
+6. In parallel, retain a separate profile-bound official-reference check that
+   records exact official route IDs for a named profile. Never mix this with
+   the portable deterministic-route result.
+7. Expand expert coverage only from source-bound observed routes; never silently
+   widen fixtures after a missing expert.
 
-Generate the same deterministic BF16 input sequence recorded by the router
-selection artifact:
+The first multi-position experiment should remain evidence-only in
+`experiments/inkling/`. Do not promote the temporary BF16 source into production
+as part of that probe.
 
-```sh
-PYTHONPATH=mvp python - <<'PY'
-import json
-from pathlib import Path
-from discover_inkling_router_experts import deterministic_hidden_states
+## Remaining gates before an MVP
 
-values = deterministic_hidden_states(8, 4096, 19)
-Path('/parity/inputs.json').write_text(json.dumps(values.tolist()) + '\n')
-PY
-```
+Even successful multi-position layer evidence is not sufficient for public
+inference. The remaining sequence is:
 
-Then run both sides:
+1. Establish stateful multi-position decoder parity across the relevant layer
+   classes under explicit routing semantics.
+2. Extend from bounded layer evidence to a full decoder-stack/reference pass
+   with a named official profile and deterministic WASTE contract kept
+   separate.
+3. Establish tokenizer and chat-template parity.
+4. Validate the intended quantized container rather than extrapolating from the
+   approximately 532 GB BF16 checkpoint.
+5. Measure RAM, mmap/cache behavior, direct-I/O/storage throughput, expert-cache
+   behavior, and token latency on the intended laptop class.
+6. Regenerate and review the WASTE integration bundle only when production
+   arithmetic/runtime code is intentionally promoted.
+7. Perform an explicit public-boundary review before enabling loading, stepping,
+   generation, chat, or serving.
 
-```sh
-python -m pip install 'transformers==5.14.1' torch
-
-python mvp/run_inkling_fixture_reference.py \
-  --fixture /parity/fixture-L0-L2-L5 \
-  --model-config /models/Inkling-Small/config.json \
-  --inputs /parity/inputs.json \
-  --layers 0,2,5 \
-  --dtype bfloat16 \
-  --out /parity/python
-
-python inkling/tools/inkling_layer_parity.py \
-  --fixture /parity/fixture-L0-L2-L5 \
-  --config /parity/normalized-config.json \
-  --inputs /parity/inputs.json \
-  --layers 0,2,5 \
-  --out /parity/waste
-
-python mvp/compare_inkling_layer_archives.py \
-  --compare-reference /parity/python \
-  --compare-candidate /parity/waste \
-  --atol 1e-3 --rtol 1e-3 \
-  --report /parity/report.json
-```
-
-The committed expert set covers this exact eight-position input sequence.
-Different hidden states may route differently and require a separately recorded
-selection artifact rather than silent fixture expansion.
-
-## MVP sequence from here
-
-1. Extract and CRC-verify the 3.58 GiB official fixture.
-2. Run the official and C archives over the committed deterministic hidden
-   states and commit the first comparison report, whatever it says.
-3. Require exact routing-index agreement first; then fix the first activation
-   mismatch until every recorded activation is within the G1 `1e-3` bound.
-4. Promote the evidence tools into `inkling/tools/`, regenerate the distribution
-   patch, and update the applied-tree hash.
-5. Establish tokenizer and chat-template parity in parallel.
-6. Only after BF16 and text-interface evidence is green, promote public loading
-   and stepping. Keep unsupported behavior for every unverified variant.
+Unsupported variants must continue to fail closed.
 
 ## Definition of an MVP
 
-The first usable MVP is a normal WASTE text flow, not a special parity binary:
-`waste plan`, `waste run`, and the OpenAI-compatible server against one verified
-Inkling-Small container. Chat can follow once template parity is recorded.
-Multimodal execution and speculative decoding remain outside that boundary.
+The first usable MVP remains a normal WASTE text flow, not a special parity
+binary: `waste plan`, `waste run`, and the OpenAI-compatible server against one
+verified Inkling-Small container and one documented runtime contract.
+
+That milestone requires more than the current position-zero arithmetic result.
+It requires stateful decoder evidence, tokenizer/chat parity, a validated
+container and resource envelope, and a deliberate decision about which routing
+contract public execution promises.
+
+Multimodal execution and speculative decoding remain outside that first MVP
+boundary.

@@ -3,8 +3,8 @@
 """Classify the final sparse-layer residual after the exact composed MoE path.
 
 PR #36 establishes a source-bound position-zero prefix that is BF16-exact
-through sparse ``moe_out`` and the causal one-token ``mlp_branch``.  The next
-trace, ``layer_out``, is not BF16-exact.  This evidence-only diagnostic keeps
+through sparse ``moe_out`` and the causal one-token ``mlp_branch``. The next
+trace, ``layer_out``, is not BF16-exact. This evidence-only diagnostic keeps
 the composed candidate unchanged and asks whether that remaining mismatch is
 explained by the final residual operand/result dtype policy.
 
@@ -94,9 +94,7 @@ def residual_variants(
     branch_bf16 = branch.detach().to(torch.bfloat16)
     return {
         "float32_add_raw_branch": residual_bf16.float() + branch_float,
-        "float32_add_bfloat16_branch": (
-            residual_bf16.float() + branch_bf16.float()
-        ),
+        "float32_add_bfloat16_branch": residual_bf16.float() + branch_bf16.float(),
         "bfloat16_result_raw_branch": bf16(
             residual_bf16.float() + branch_float
         ),
@@ -225,11 +223,18 @@ def analyze_layer(
     device: torch.device,
     dtype: torch.dtype,
 ) -> dict[str, Any]:
-    pre, module, _, _ = _capture_official_pre_router(
+    pre, _, _, _ = _capture_official_pre_router(
         fixture,
         config,
         layer,
         inputs,
+        device=device,
+        dtype=dtype,
+    )
+    module = composed.build_layer_from_fixture(
+        fixture,
+        config,
+        layer,
         device=device,
         dtype=dtype,
     )
@@ -244,21 +249,9 @@ def analyze_layer(
         route,
         provider,
         helper,
-        n_routed=int(cfg["n_routed_experts"]),
-        route_scale=float(cfg["route_scale"]),
-        global_scale=float(module.mlp.gate.gate_score_correction_bias.new_tensor(
-            1.0
-        ).item()) if False else float(cfg.get("router_global_scale", 1.0)),
-    )
-    # The composed probe obtains the exact global scale from the bound fixture;
-    # use the same helper constructor path rather than trusting the fallback above.
-    collector = composed_runner.ExactWeightCollector(
-        route,
-        provider,
-        helper,
-        n_routed=int(cfg["n_routed_experts"]),
-        route_scale=float(cfg["route_scale"]),
-        global_scale=float(composed._router_global_scale(module)),
+        int(module.mlp.gate.num_experts),
+        float(module.mlp.gate.route_scale),
+        float(module.mlp.gate.global_scale.detach().float().cpu().reshape(-1)[0]),
     )
     candidate = composed.run_c_layer(
         lib,
@@ -388,16 +381,16 @@ def main(argv: list[str] | None = None) -> int:
         if device.type != "cpu":
             raise LayerResidualBoundaryError("the residual probe requires CPU")
 
+        helper = composed.FixedWeightHelper(
+            composed.build_helper(Path(args.out).with_suffix(".weights.so"))
+        )
         library, source = composed.build_composed_library(
-            Path(args.out).with_suffix(".so")
+            Path(args.out).with_suffix(".runtime.so")
         )
         if not source["production_source_unchanged"]:
             raise LayerResidualBoundaryError("production source changed")
         lib = ctypes.CDLL(str(library))
         configure_library(lib)
-        helper = composed.FixedWeightHelper(
-            composed.build_helper(Path(args.out).with_suffix(".router-helper.so"))
-        )
         analyses = {
             str(layer): analyze_layer(
                 lib,

@@ -8,6 +8,12 @@ probe compares the official eight-row BF16 router projection against the exact
 one-row BF16 ``F.linear`` kernel used by the C matrix backend. It then evaluates
 all existing portable normalization policies on both logit sources.
 
+A projection-shape difference is diagnostic, not automatically a blocker. A
+normalization policy may be promoted by this probe only if the same policy is
+raw-exact for all eight positions on both the official batched logits and the C
+backend's row-wise logits. If no such joint policy exists, projection shape (or
+otherwise unmodeled arithmetic) remains a hard evidence boundary.
+
 Expert values are never executed. Production source and public APIs remain
 unchanged.
 """
@@ -37,6 +43,7 @@ from diagnose_inkling_bf16_router_weight_lattice import (
     official_manual_weights,
     policy_description,
     selected_logits,
+    semantic_penalty,
     split_metrics,
 )
 from diagnose_inkling_native_bf16_backend import native_bfloat16_linear
@@ -68,19 +75,52 @@ def _policy_key(record: dict[str, Any]) -> tuple[int, int]:
     return (0 if record["family"] == "ratio" else 1, int(record["flags"]))
 
 
-def _intersection(exact_by_position: list[list[dict[str, Any]]]) -> list[tuple[int, int]]:
+def _policy_sort_key(policy: tuple[int, int]) -> tuple[Any, ...]:
+    family, flags = policy
+    return (
+        semantic_penalty(family, flags),
+        int(flags).bit_count(),
+        policy_description(family, flags)["key"],
+    )
+
+
+def _intersection(
+    exact_by_position: list[list[dict[str, Any]]],
+) -> list[tuple[int, int]]:
     if not exact_by_position:
         return []
     common = {_policy_key(record) for record in exact_by_position[0]}
     for records in exact_by_position[1:]:
         common.intersection_update(_policy_key(record) for record in records)
-    return sorted(common)
+    return sorted(common, key=_policy_sort_key)
+
+
+def _joint_intersection(
+    rowwise: list[tuple[int, int]],
+    batched: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    return sorted(set(rowwise).intersection(batched), key=_policy_sort_key)
+
+
+def _first_metric_mismatch(
+    positions: list[dict[str, Any]],
+    field: str,
+) -> int | None:
+    return next(
+        (
+            item["position"]
+            for item in positions
+            if item[field]["all"]["raw_exact_fraction"] != 1.0
+        ),
+        None,
+    )
 
 
 def classify(
     positions: list[dict[str, Any]],
     rowwise_intersection: list[tuple[int, int]],
     batched_intersection: list[tuple[int, int]],
+    joint_intersection: list[tuple[int, int]],
 ) -> dict[str, Any]:
     first_selected_logit_mismatch = next(
         (
@@ -90,38 +130,52 @@ def classify(
         ),
         None,
     )
-    first_legacy_rowwise_weight_mismatch = next(
-        (
-            item["position"]
-            for item in positions
-            if item["legacy_rowwise_weights"]["all"]["raw_exact_fraction"] != 1.0
-        ),
-        None,
+    first_legacy_batched_weight_mismatch = _first_metric_mismatch(
+        positions, "legacy_batched_weights"
+    )
+    first_legacy_rowwise_weight_mismatch = _first_metric_mismatch(
+        positions, "legacy_rowwise_weights"
     )
     legacy_key = (1, LEGACY_FLAGS)
-    if first_selected_logit_mismatch is not None:
-        classification = "router_prefill_projection_shape_mismatch"
-        preferred = None
-    elif first_legacy_rowwise_weight_mismatch is None:
+    legacy_batched_exact = legacy_key in batched_intersection
+    legacy_rowwise_exact = legacy_key in rowwise_intersection
+
+    if legacy_batched_exact and legacy_rowwise_exact:
         classification = "legacy_router_weight_policy_generalizes"
         preferred = policy_description(*legacy_key)
-    elif rowwise_intersection:
-        classification = "router_normalization_policy_generalized"
-        family, flags = rowwise_intersection[0]
-        preferred = policy_description(family, flags)
+    elif joint_intersection:
+        classification = "router_prefill_policy_generalized_across_shapes"
+        preferred = policy_description(*joint_intersection[0])
+    elif (
+        legacy_batched_exact
+        and not legacy_rowwise_exact
+        and first_selected_logit_mismatch is not None
+    ):
+        classification = "router_prefill_projection_shape_mismatch"
+        preferred = None
+    elif batched_intersection and not joint_intersection:
+        classification = "router_prefill_projection_shape_requires_portable_backend"
+        preferred = None
     else:
         classification = "router_normalization_requires_unmodeled_arithmetic"
         preferred = None
+
     return {
         "classification": classification,
         "first_selected_logit_mismatch_position": first_selected_logit_mismatch,
-        "first_legacy_rowwise_weight_mismatch_position": first_legacy_rowwise_weight_mismatch,
+        "first_legacy_batched_weight_mismatch_position": (
+            first_legacy_batched_weight_mismatch
+        ),
+        "first_legacy_rowwise_weight_mismatch_position": (
+            first_legacy_rowwise_weight_mismatch
+        ),
         "legacy_policy": policy_description(*legacy_key),
-        "legacy_exact_on_all_rowwise_positions": legacy_key in rowwise_intersection,
-        "legacy_exact_on_all_batched_positions": legacy_key in batched_intersection,
+        "legacy_exact_on_all_rowwise_positions": legacy_rowwise_exact,
+        "legacy_exact_on_all_batched_positions": legacy_batched_exact,
         "preferred_policy": preferred,
         "rowwise_exact_policy_intersection_count": len(rowwise_intersection),
         "batched_exact_policy_intersection_count": len(batched_intersection),
+        "joint_exact_policy_intersection_count": len(joint_intersection),
     }
 
 
@@ -247,7 +301,15 @@ def analyze_layer(
 
     rowwise_intersection = _intersection(rowwise_exact)
     batched_intersection = _intersection(batched_exact)
-    decision = classify(positions, rowwise_intersection, batched_intersection)
+    joint_intersection = _joint_intersection(
+        rowwise_intersection, batched_intersection
+    )
+    decision = classify(
+        positions,
+        rowwise_intersection,
+        batched_intersection,
+        joint_intersection,
+    )
     return {
         "decision": decision,
         "positions": positions,
@@ -258,6 +320,10 @@ def analyze_layer(
         "batched_exact_policy_intersection": [
             policy_description(family, flags)
             for family, flags in batched_intersection[:32]
+        ],
+        "joint_exact_policy_intersection": [
+            policy_description(family, flags)
+            for family, flags in joint_intersection[:32]
         ],
     }
 
@@ -311,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         result = {
             "format": "inkling-bfloat16-router-prefill-lattice",
-            "version": 1,
+            "version": 2,
             "model_id": fixture.model_id,
             "revision": fixture.source.get("revision"),
             "config_sha256": fixture.source.get("config_sha256"),

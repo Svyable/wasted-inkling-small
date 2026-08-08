@@ -9,7 +9,7 @@ probe instruments the logsumexp-family scalar helper and tracks prefix-exact
 policies through the official normalization stages:
 
 selected logits -> logsigmoid -> logsumexp -> normalized -> route scale ->
-global scale -> final completion.
+final global-scaled weights.
 
 The first stage where every policy that was exact through the previous stage
 fails is the next arithmetic primitive to investigate. Experts are never
@@ -76,7 +76,6 @@ STAGES = (
     "logsumexp",
     "normalized",
     "after_route_scale",
-    "after_global_scale",
     "final",
 )
 
@@ -271,9 +270,6 @@ class StageHelper:
             "after_route_scale": torch.tensor(
                 [float(route[i]) for i in range(n)], dtype=torch.float32
             ),
-            "after_global_scale": torch.tensor(
-                [float(global_out[i]) for i in range(n)], dtype=torch.float32
-            ),
             "final": torch.tensor(
                 [float(final[i]) for i in range(n)], dtype=torch.float32
             ),
@@ -286,9 +282,6 @@ def _official_stages(manual: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]
         "logsumexp": manual["logsumexp"].detach().float().reshape(-1),
         "normalized": manual["normalized"].detach().float().reshape(-1),
         "after_route_scale": manual["after_route_scale"].detach().float().reshape(-1),
-        # The official global-scale multiply itself completes in BF16, so its
-        # observable result is the same tensor used as the final weight anchor.
-        "after_global_scale": manual["final"].detach().float().reshape(-1),
         "final": manual["final"].detach().float().reshape(-1),
     }
 
@@ -390,8 +383,7 @@ def classify_positions(positions: list[dict[str, Any]]) -> dict[str, Any]:
         "logsumexp": "router_logsumexp_reduction_mismatch",
         "normalized": "router_normalized_exp_primitive_mismatch",
         "after_route_scale": "router_route_scale_mismatch",
-        "after_global_scale": "router_global_scale_mismatch",
-        "final": "router_final_completion_mismatch",
+        "final": "router_global_scale_or_final_completion_mismatch",
     }
     return {
         "classification": mapping.get(
@@ -531,7 +523,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         result = {
             "format": "inkling-bfloat16-router-normalization-stage-lattice",
-            "version": 1,
+            "version": 2,
             "model_id": fixture.model_id,
             "revision": fixture.source.get("revision"),
             "config_sha256": fixture.source.get("config_sha256"),

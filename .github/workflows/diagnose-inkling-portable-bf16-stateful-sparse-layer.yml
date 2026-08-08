@@ -1,0 +1,207 @@
+name: Diagnose Inkling stateful BF16 sparse layer
+
+on:
+  pull_request:
+    paths:
+      - "experiments/inkling/diagnose_inkling_portable_bf16_stateful_sparse_layer.py"
+      - "experiments/inkling/test_inkling_portable_bf16_stateful_sparse_layer.py"
+      - "experiments/inkling/run_inkling_portable_bf16_complete_sparse_layer.py"
+      - "experiments/inkling/run_inkling_portable_bf16_composed_moe.py"
+      - "experiments/inkling/diagnose_inkling_portable_bf16_composed_moe.py"
+      - "mvp/diagnose_inkling_pre_router.py"
+      - "mvp/run_inkling_fixture_reference_canonical.py"
+      - "mvp/inkling_canonical_route_layer_parity.py"
+      - "mvp/inkling_fixture_reference.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "mvp/inkling_c_config.py"
+      - "inkling/src/inkling_attention.c"
+      - "inkling/src/inkling_layer.c"
+      - "docs/OFFICIAL-ROUTER-SELECTION.json"
+      - ".github/workflows/diagnose-inkling-portable-bf16-stateful-sparse-layer.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-stateful-sparse-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stateful-sparse-layer:
+    name: Stateful BF16 sparse layer sequence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      OMP_NUM_THREADS: 1
+      MKL_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install and fingerprint the pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            'torch==2.13.0' 'transformers==5.14.1'
+          python3 - <<'PY'
+          import torch
+          assert torch.__version__.split('+', 1)[0] == "2.13.0"
+          print(
+              "STATEFUL_SPARSE_BACKEND "
+              f"torch={torch.__version__} "
+              f"dispatch={torch.backends.cpu.get_cpu_capability()} "
+              f"threads={torch.get_num_threads()}"
+          )
+          PY
+
+      - name: Run focused stateful contracts
+        run: |
+          python3 -m compileall -q experiments/inkling
+          PYTHONPATH=mvp:experiments/inkling python3 -m unittest discover \
+            -s experiments/inkling \
+            -p 'test_inkling_portable_bf16_stateful_sparse_layer.py' -v
+
+      - name: Reproduce the eight-token fixture plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          experts='2:13,19,25,26,27,30,33,39,60,67,69,81,90,91,92,95,96,112,116,117,126,131,133,140,146,150,152,166,175,217,238,247,254;5:6,21,32,44,45,56,60,63,66,91,105,110,120,145,152,156,163,166,179,180,219,233,236,238,250,252'
+          plan="${RUNNER_TEMP}/stateful-sparse-plan.json"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" \
+            --layers 2,5 \
+            --experts "$experts" \
+            --max-total-gib 4 \
+            --plan-only > "$plan"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"])
+          plan = json.loads((root / "stateful-sparse-plan.json").read_text())
+          selection = json.loads(Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text())
+          expected = {
+              layer: sorted({expert for row in selection["layers"][layer]["topk_indices"] for expert in row})
+              for layer in ("2", "5")
+          }
+          actual = {layer: sorted(values) for layer, values in plan["experts"].items()}
+          assert actual == expected
+          assert plan["entries"] == 175
+          assert plan["payload_bytes"] == 3842395658
+          assert plan["revision"] == selection["revision"]
+          assert plan["config_sha256"] == selection["config_sha256"]
+          assert plan["index_sha256"] == selection["index_sha256"]
+          print(
+              "STATEFUL_SPARSE_PLAN "
+              f"entries={plan['entries']} payload_bytes={plan['payload_bytes']} "
+              f"requests={plan['requests']} experts2={len(actual['2'])} experts5={len(actual['5'])}"
+          )
+          PY
+
+      - name: Extract and bind the eight-token fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          experts='2:13,19,25,26,27,30,33,39,60,67,69,81,90,91,92,95,96,112,116,117,126,131,133,140,146,150,152,166,175,217,238,247,254;5:6,21,32,44,45,56,60,63,66,91,105,110,120,145,152,156,163,166,179,180,219,233,236,238,250,252'
+          fixture="${RUNNER_TEMP}/stateful-sparse-fixture"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" \
+              --layers 2,5 \
+              --experts "$experts" \
+              --max-total-gib 4 \
+              --out "$fixture" > "${RUNNER_TEMP}/stateful-sparse-manifest.json"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((10 << (attempt - 1)))
+              echo "fixture attempt ${attempt} failed; retrying after ${delay}s" >&2
+              sleep "$delay"
+            fi
+          done
+          if [ "$extracted" != true ]; then
+            echo "stateful sparse fixture extraction exhausted four attempts" >&2
+            exit 2
+          fi
+          python3 inkling/tools/inkling_fixture.py --fixture "$fixture" --verify
+
+          PYTHONPATH=mvp python3 - <<PY
+          import json, time
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import deterministic_hidden_states, input_sha256
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+          root = Path("${RUNNER_TEMP}")
+          config = None
+          for attempt in range(4):
+              try:
+                  source = HttpRangeSource("https://huggingface.co/thinkingmachines/Inkling-Small", "$revision")
+                  config = source.file("config.json")
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3:
+                      raise
+                  time.sleep(10 * (2**attempt))
+          assert config is not None
+          (root / "config.json").write_bytes(config)
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text())
+          assert input_sha256(inputs, torch.bfloat16) == selection["inputs_sha256"]
+          (root / "inputs.json").write_text(json.dumps(inputs.tolist()) + "\n", encoding="utf-8")
+          PY
+
+          PYTHONPATH=mvp python3 mvp/inkling_c_config.py \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --out "${RUNNER_TEMP}/c-config.json"
+
+      - name: Execute the stateful sparse layer sequence
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/diagnose_inkling_portable_bf16_stateful_sparse_layer.py \
+            --fixture "${RUNNER_TEMP}/stateful-sparse-fixture" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --c-config "${RUNNER_TEMP}/c-config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --out "${RUNNER_TEMP}/stateful-sparse.json" > /dev/null
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = json.loads((Path(os.environ["RUNNER_TEMP"]) / "stateful-sparse.json").read_text())
+          assert result["source"]["production_source_unchanged"] is True
+          assert result["positions"] == 8
+          for layer, value in sorted(result["layers"].items(), key=lambda item: int(item[0])):
+              # #44 is a hard regression anchor for position zero.
+              assert value["post_attention_norm"][0]["bfloat16_exact_fraction"] == 1.0
+              assert value["outputs"][0]["raw_exact_fraction"] == 1.0
+              decision = value["decision"]
+              print(
+                  "STATEFUL_SPARSE_DECISION "
+                  f"layer={layer} classification={decision['classification']} "
+                  f"first_pre={decision['first_preexpert_nonexact_position']} "
+                  f"first_raw_output={decision['first_output_raw_nonexact_position']} "
+                  f"first_bf16_output={decision['first_output_bfloat16_nonexact_position']} "
+                  f"backend_calls={len(value['backend_calls'])}"
+              )
+              for position, (pre, out) in enumerate(zip(value["post_attention_norm"], value["outputs"])):
+                  print(
+                      "STATEFUL_SPARSE_POSITION "
+                      f"layer={layer} position={position} "
+                      f"pre_bf16_exact={pre['bfloat16_exact_fraction']:.9f} "
+                      f"pre_bf16_max_abs={pre['bfloat16_max_abs']:.9g} "
+                      f"output_raw_exact={out['raw_exact_fraction']:.9f} "
+                      f"output_bf16_exact={out['bfloat16_exact_fraction']:.9f} "
+                      f"output_bf16_max_abs={out['bfloat16_max_abs']:.9g}"
+                  )
+          PY

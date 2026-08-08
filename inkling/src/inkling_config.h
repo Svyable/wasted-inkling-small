@@ -119,6 +119,15 @@ int waste_inkling_plan_decode_memory(const waste_inkling_config *cfg,
                                      uint32_t ctx_tokens,
                                      waste_inkling_memory *out);
 
+/* How many logits a caller must provide room for, and how many the model
+ * writes. Exposed as a function rather than left to the caller reading the
+ * struct, because every out-of-process consumer that wants one integer would
+ * otherwise redeclare waste_inkling_config in its own binding — and a partial
+ * redeclaration of a C struct is exactly what silently overran a buffer in
+ * tools/inkling_layer_parity.py while every test still passed. Returns 0 for
+ * a NULL config. */
+int waste_inkling_config_unpadded_vocab(const waste_inkling_config *cfg);
+
 #ifdef __cplusplus
 }
 #endif

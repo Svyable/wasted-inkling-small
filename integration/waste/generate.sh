@@ -42,6 +42,9 @@ fi
 mkdir -p "$work/src" "$work/tools" "$work/tests/data" "$work/docs"
 cp "$repo"/inkling/src/*.c "$repo"/inkling/src/*.h "$work/src/"
 cp "$repo"/inkling/tools/*.py "$work/tools/"
+# tools/ is not Python-only: inkling_cache_sim.c links upstream's ecache.c to
+# measure the real cache rather than a second model of it.
+cp "$repo"/inkling/tools/*.c "$work/tools/"
 cp "$repo"/inkling/tests/*.py "$repo"/inkling/tests/*.c "$work/tests/"
 cp "$repo"/inkling/tests/data/*.json "$work/tests/data/"
 cp "$repo"/inkling/docs/*.md "$work/docs/"

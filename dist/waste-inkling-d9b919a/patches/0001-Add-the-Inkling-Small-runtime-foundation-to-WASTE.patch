@@ -1,4 +1,4 @@
-From 188f483771fd1b61a25cb44d1a702c74a3a24290 Mon Sep 17 00:00:00 2001
+From e89522029084b822ab62419763d1957467f21a8b Mon Sep 17 00:00:00 2001
 From: WASTE Inkling integration <inkling@waste.invalid>
 Date: Sun, 2 Aug 2026 00:00:00 +0000
 Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
@@ -16,8 +16,8 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  src/inkling_attention.h               |  63 ++
  src/inkling_bind.c                    | 135 ++++
  src/inkling_bind.h                    |  56 ++
- src/inkling_config.c                  | 185 +++++
- src/inkling_config.h                  | 125 ++++
+ src/inkling_config.c                  | 190 ++++++
+ src/inkling_config.h                  | 134 ++++
  src/inkling_layer.c                   | 341 ++++++++++
  src/inkling_layer.h                   | 174 +++++
  src/inkling_model.c                   | 282 ++++++++
@@ -42,7 +42,10 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tests/test_inkling_attention_c.py     | 252 +++++++
  tests/test_inkling_bind_c.py          |  61 ++
  tests/test_inkling_c_math.py          | 158 +++++
+ tests/test_inkling_cache_bench.py     | 243 +++++++
+ tests/test_inkling_cache_trace.py     | 214 ++++++
  tests/test_inkling_config_c.py        | 259 +++++++
+ tests/test_inkling_expert_bench.py    | 116 ++++
  tests/test_inkling_fixture.py         | 401 +++++++++++
  tests/test_inkling_io.c               | 256 +++++++
  tests/test_inkling_layer_c.py         | 450 +++++++++++++
@@ -54,7 +57,9 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tests/test_inkling_qtrunk.py          | 114 ++++
  tests/test_inkling_release.py         |  85 +++
  tests/test_inkling_runtime_stage.py   | 153 +++++
+ tests/test_inkling_serve.py           | 470 +++++++++++++
  tests/test_inkling_stage.py           | 158 +++++
+ tests/test_inkling_throughput.py      | 399 +++++++++++
  tests/test_inkling_trace_tools.py     | 107 +++
  tests/test_inkling_trunk.py           | 172 +++++
  tests/test_inkling_vq.py              | 209 ++++++
@@ -63,6 +68,10 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tests/test_inspect_inkling.py         | 332 +++++++++
  tools/convert.py                      |  13 +-
  tools/convert_inkling.py              | 306 +++++++++
+ tools/inkling_cache_bench.py          | 251 +++++++
+ tools/inkling_cache_sim.c             | 179 +++++
+ tools/inkling_cache_trace.py          | 271 ++++++++
+ tools/inkling_expert_bench.c          | 260 ++++++++
  tools/inkling_fixture.py              | 388 +++++++++++
  tools/inkling_layer_parity.py         | 597 +++++++++++++++++
  tools/inkling_parity.py               | 416 ++++++++++++
@@ -71,14 +80,16 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/inkling_reference.py            | 163 +++++
  tools/inkling_release.py              | 287 ++++++++
  tools/inkling_runtime_stage.py        | 748 +++++++++++++++++++++
+ tools/inkling_serve.py                | 648 ++++++++++++++++++
  tools/inkling_source.py               |  36 +
  tools/inkling_stage.py                | 381 +++++++++++
+ tools/inkling_throughput.py           | 621 +++++++++++++++++
  tools/inkling_trace.py                | 147 ++++
  tools/inkling_trunk.py                | 557 ++++++++++++++++
  tools/inkling_vq.py                   | 927 ++++++++++++++++++++++++++
  tools/inkling_weights.py              | 369 ++++++++++
  tools/inspect_inkling.py              | 799 ++++++++++++++++++++++
- 74 files changed, 17625 insertions(+), 7 deletions(-)
+ 85 files changed, 21311 insertions(+), 7 deletions(-)
  create mode 100644 PATCH18-HANDOFF.md
  create mode 100644 TEST-RESULTS-P18.txt
  create mode 100644 docs/INKLING.md
@@ -113,7 +124,10 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100644 tests/test_inkling_attention_c.py
  create mode 100644 tests/test_inkling_bind_c.py
  create mode 100644 tests/test_inkling_c_math.py
+ create mode 100644 tests/test_inkling_cache_bench.py
+ create mode 100644 tests/test_inkling_cache_trace.py
  create mode 100644 tests/test_inkling_config_c.py
+ create mode 100644 tests/test_inkling_expert_bench.py
  create mode 100644 tests/test_inkling_fixture.py
  create mode 100644 tests/test_inkling_io.c
  create mode 100644 tests/test_inkling_layer_c.py
@@ -125,7 +139,9 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100755 tests/test_inkling_qtrunk.py
  create mode 100755 tests/test_inkling_release.py
  create mode 100644 tests/test_inkling_runtime_stage.py
+ create mode 100644 tests/test_inkling_serve.py
  create mode 100644 tests/test_inkling_stage.py
+ create mode 100644 tests/test_inkling_throughput.py
  create mode 100644 tests/test_inkling_trace_tools.py
  create mode 100644 tests/test_inkling_trunk.py
  create mode 100644 tests/test_inkling_vq.py
@@ -133,6 +149,10 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100644 tests/test_inkling_wexp_c.py
  create mode 100755 tests/test_inspect_inkling.py
  create mode 100644 tools/convert_inkling.py
+ create mode 100644 tools/inkling_cache_bench.py
+ create mode 100644 tools/inkling_cache_sim.c
+ create mode 100644 tools/inkling_cache_trace.py
+ create mode 100644 tools/inkling_expert_bench.c
  create mode 100644 tools/inkling_fixture.py
  create mode 100644 tools/inkling_layer_parity.py
  create mode 100644 tools/inkling_parity.py
@@ -141,8 +161,10 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100644 tools/inkling_reference.py
  create mode 100755 tools/inkling_release.py
  create mode 100755 tools/inkling_runtime_stage.py
+ create mode 100644 tools/inkling_serve.py
  create mode 100644 tools/inkling_source.py
  create mode 100644 tools/inkling_stage.py
+ create mode 100644 tools/inkling_throughput.py
  create mode 100644 tools/inkling_trace.py
  create mode 100755 tools/inkling_trunk.py
  create mode 100755 tools/inkling_vq.py
@@ -150,10 +172,10 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100755 tools/inspect_inkling.py
 
 diff --git a/Makefile b/Makefile
-index a70fe0c..2ba4ecc 100644
+index 34a282c..0a937b4 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -89,9 +89,12 @@ CFLAGS  += -DVQ_SUPER=$(VQ_SUPER)
+@@ -100,9 +100,12 @@ CFLAGS  += -DVQ_SUPER=$(VQ_SUPER)
  # and then corrupts memory at run time.
  CFLAGS  += -MMD -MP
  
@@ -169,15 +191,15 @@ index a70fe0c..2ba4ecc 100644
  # Match what backend.c tests for. Linux/aarch64 reports "aarch64", which
  # does not contain "arm" — the old findstring left kda_neon.c out of the
  # build while backend.c still emitted the call to it, so the link failed
-@@ -216,12 +219,20 @@ waste$(EXE): cli/main.o libwaste.a
+@@ -227,12 +230,20 @@ waste$(EXE): cli/main.o libwaste.a
  # One list, used by both `test` and `clean`. A stale test binary is one of
  # the two failures tests/run.sh was written to catch, so a binary that
  # `test` builds and `clean` forgets defeats the check meant to notice it.
 -TESTNAMES := test_kda test_container test_forward test_tokenizer test_k3parts \
--             test_state test_vision test_image test_memory sweep
+-             test_state test_vision test_image test_memory test_cpus sweep
 +TESTNAMES := test_inkling test_inkling_io test_kda test_container test_forward \
 +             test_tokenizer test_k3parts test_state test_vision test_image \
-+             test_memory sweep
++             test_memory test_cpus sweep
  TESTBINS  := $(addsuffix $(EXE),$(TESTNAMES))
  
  test: $(TESTBINS)
@@ -1529,10 +1551,10 @@ index 0000000..6758bd5
 +#endif
 diff --git a/src/inkling_config.c b/src/inkling_config.c
 new file mode 100644
-index 0000000..4e0f999
+index 0000000..2610773
 --- /dev/null
 +++ b/src/inkling_config.c
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,190 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -1718,12 +1740,17 @@ index 0000000..4e0f999
 +#undef ADD_FIELD
 +    return 0;
 +}
++
++int waste_inkling_config_unpadded_vocab(const waste_inkling_config *cfg)
++{
++    return cfg ? cfg->unpadded_vocab : 0;
++}
 diff --git a/src/inkling_config.h b/src/inkling_config.h
 new file mode 100644
-index 0000000..b7ec7f7
+index 0000000..7af4eca
 --- /dev/null
 +++ b/src/inkling_config.h
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,134 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -1844,6 +1871,15 @@ index 0000000..b7ec7f7
 +int waste_inkling_plan_decode_memory(const waste_inkling_config *cfg,
 +                                     uint32_t ctx_tokens,
 +                                     waste_inkling_memory *out);
++
++/* How many logits a caller must provide room for, and how many the model
++ * writes. Exposed as a function rather than left to the caller reading the
++ * struct, because every out-of-process consumer that wants one integer would
++ * otherwise redeclare waste_inkling_config in its own binding — and a partial
++ * redeclaration of a C struct is exactly what silently overran a buffer in
++ * tools/inkling_layer_parity.py while every test still passed. Returns 0 for
++ * a NULL config. */
++int waste_inkling_config_unpadded_vocab(const waste_inkling_config *cfg);
 +
 +#ifdef __cplusplus
 +}
@@ -5048,7 +5084,7 @@ index 0000000..715830e
 +#endif
 +#endif
 diff --git a/src/model.c b/src/model.c
-index 8d4992a..4cad9cc 100644
+index 51ef35b..05b7e53 100644
 --- a/src/model.c
 +++ b/src/model.c
 @@ -22,6 +22,7 @@
@@ -5059,7 +5095,7 @@ index 8d4992a..4cad9cc 100644
  #include "crc32.h"
  #include "ecache.h"
  #include "json.h"
-@@ -972,6 +973,23 @@ int waste_model_load(waste_model *m, const char *dir, int kv_cap,
+@@ -1013,6 +1014,23 @@ int waste_model_load(waste_model *m, const char *dir, int kv_cap,
          }
      }
  
@@ -5084,7 +5120,7 @@ index 8d4992a..4cad9cc 100644
          int cfg = js_get(&d, 0, "config");
          /* The converter flattens K3's nested text_config into `config` and
 diff --git a/src/waste.c b/src/waste.c
-index b1d9bbd..dfff891 100644
+index b59cbf6..c7e7845 100644
 --- a/src/waste.c
 +++ b/src/waste.c
 @@ -22,6 +22,8 @@
@@ -5123,7 +5159,7 @@ index b1d9bbd..dfff891 100644
      memset(out, 0, sizeof *out);
  
      /* trunk: sum the tensor payloads as they are stored, minus the ones the
-@@ -463,7 +485,8 @@ waste_status waste_open(const char *model_path, const waste_cfg *cfg_in,
+@@ -496,7 +518,8 @@ waste_status waste_open(const char *model_path, const waste_cfg *cfg_in,
               * on K3 that is tens of gigabytes lost to one bad manifest. */
              waste_model_free(&c->m);
              free(c);
@@ -5225,7 +5261,7 @@ index 0000000..062dd86
 +  "source": "official Hugging Face release, verified 2026-08-01"
 +}
 diff --git a/tests/run.sh b/tests/run.sh
-index a644b0a..da3aab6 100755
+index cf35765..1d9b77d 100755
 --- a/tests/run.sh
 +++ b/tests/run.sh
 @@ -53,6 +53,20 @@ else
@@ -5249,7 +5285,7 @@ index a644b0a..da3aab6 100755
  # ---------------------------------------------------------------- unit ----
  head_ "kernels vs the reference implementations"
  
-@@ -770,6 +784,73 @@ PYFV
+@@ -790,6 +804,73 @@ PYFV
          no "format_version not enforced (rc=$rc rc2=$rc2)"
      fi
  
@@ -6172,6 +6208,475 @@ index 0000000..f249e6d
 +
 +if __name__ == "__main__":
 +    unittest.main()
+diff --git a/tests/test_inkling_cache_bench.py b/tests/test_inkling_cache_bench.py
+new file mode 100644
+index 0000000..6d4def0
+--- /dev/null
++++ b/tests/test_inkling_cache_bench.py
+@@ -0,0 +1,243 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++"""Tests for the expert-cache benchmark.
++
++These compile `inkling_cache_sim.c` against upstream's real `ecache.c` and
++run it, so they skip when that file is not beside them — which is the case in
++this repository's own tree and not the case in an applied WASTE tree, where
++CI runs them.
++
++The properties checked are the ones every number in docs/THROUGHPUT.md rests
++on: that the cache below one token's working set hits zero (upstream's most
++predictive measurement), that the stand-in record used to keep a 32 GiB cache
++off a 15 GiB machine does not change the answer, and that chunk dedup reduces
++reads.
++"""
++
++import json
++import subprocess
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(REPO / "tools"))
++
++import inkling_cache_trace as trace_mod
++from inkling_cache_bench import (
++    GATE5,
++    INKLING,
++    STANDIN_REC,
++    BuildError,
++    build,
++    main,
++    run_slots,
++    slots_for,
++)
++
++# The applied tree puts ecache.c beside our sources; this repository does not.
++WASTE_SRC = REPO / "src"
++
++
++def _have_ecache() -> bool:
++    return (WASTE_SRC / "ecache.c").is_file()
++
++
++@unittest.skipUnless(_have_ecache(), "ecache.c not present (run in an applied WASTE tree)")
++class SimulatorTest(unittest.TestCase):
++    binary: Path
++    tmp: tempfile.TemporaryDirectory
++
++    @classmethod
++    def setUpClass(cls):
++        cls.tmp = tempfile.TemporaryDirectory()
++        cls.binary = build(WASTE_SRC, Path(cls.tmp.name) / "sim")
++
++    @classmethod
++    def tearDownClass(cls):
++        cls.tmp.cleanup()
++
++    def _trace(self, name, **kw):
++        kw.setdefault("layers", 8)
++        kw.setdefault("experts", 256)
++        kw.setdefault("top_k", 6)
++        kw.setdefault("steps", 60)
++        experts = kw.pop("experts")
++        t = trace_mod.generate(kw.pop("layers"), experts, kw.pop("top_k"),
++                               kw.pop("steps"), **kw)
++        path = Path(self.tmp.name) / name
++        trace_mod.write_trace(path, t, experts)
++        return path
++
++    def test_zero_slots_is_all_misses(self):
++        path = self._trace("z.bin")
++        r = run_slots(self.binary, path, 0)
++        self.assertEqual(r["hits"], 0)
++        self.assertEqual(r["misses"], r["accesses"])
++
++    def test_a_cache_below_one_working_set_hits_zero(self):
++        """docs/GATES.md Gate 5's most predictive finding, reproduced against
++        the real cache: one token touches layers*top_k records, and a cache
++        that cannot hold them keeps nothing alive across a token."""
++        layers, top_k = 8, 6
++        path = self._trace("w.bin", layers=layers, top_k=top_k, steps=80)
++        working_set = layers * top_k
++        r = run_slots(self.binary, path, working_set // 3)
++        self.assertEqual(r["hits"], 0, "a sub-working-set cache produced hits")
++
++    def test_hit_rate_rises_with_slots(self):
++        path = self._trace("m.bin", steps=120)
++        last = -1.0
++        for slots in (48, 128, 512, 1024, 2048):
++            r = run_slots(self.binary, path, slots)
++            self.assertGreaterEqual(r["hit_rate"], last)
++            last = r["hit_rate"]
++
++    def test_a_cache_holding_the_whole_bank_never_evicts(self):
++        path = self._trace("f.bin", layers=4, experts=64, steps=60)
++        r = run_slots(self.binary, path, 4 * 64)
++        self.assertEqual(r["evictions"], 0)
++
++    def test_accounting_is_closed(self):
++        path = self._trace("a.bin")
++        r = run_slots(self.binary, path, 256)
++        self.assertEqual(r["hits"] + r["misses"], r["accesses"])
++        self.assertEqual(r["fetches"], r["misses"])
++        self.assertEqual(r["bytes_read"], r["misses"] * r["rec_bytes"])
++
++    def test_the_standin_record_does_not_change_the_answer(self):
++        """Hit rate is a function of the slot count and the trace alone, which
++        is what lets a 32 GiB cache be measured on a 15 GiB machine. If this
++        ever fails, every GiB/token figure in THROUGHPUT.md is wrong."""
++        path = self._trace("s.bin", steps=80)
++        slots = 300
++        small = run_slots(self.binary, path, slots)
++        proc = subprocess.run(
++            [str(self.binary), str(path), str(slots * 4 * STANDIN_REC),
++             str(4 * STANDIN_REC), "0"],
++            capture_output=True, text=True, check=True)
++        big = json.loads(proc.stdout)
++        self.assertEqual(big["n_slots"], slots)
++        self.assertEqual(big["hits"], small["hits"])
++        self.assertEqual(big["misses"], small["misses"])
++
++    def test_chunk_dedup_reduces_reads_per_position(self):
++        """Measured with NO cache, so the effect is dedup alone. With a cache
++        large enough to hold the short-range reuse the two levers overlap and
++        chunking adds little — which is itself a finding, recorded in
++        docs/THROUGHPUT.md, and the reason this test does not use one."""
++        per_position = {}
++        for chunk in (1, 16):
++            path = self._trace(f"c{chunk}.bin", steps=max(1, 128 // chunk),
++                               chunk=chunk)
++            r = run_slots(self.binary, path, 0)
++            per_position[chunk] = r["misses"] / r["steps"] / chunk
++        self.assertLess(per_position[16], per_position[1])
++
++    def test_dedup_and_caching_overlap(self):
++        """The substitution the line above depends on: given a cache that
++        already holds several working sets, chunking buys much less."""
++        def per_position(chunk, slots):
++            path = self._trace(f"o{chunk}_{slots}.bin",
++                               steps=max(1, 128 // chunk), chunk=chunk)
++            r = run_slots(self.binary, path, slots)
++            return r["misses"] / r["steps"] / chunk
++
++        gain_cold = per_position(1, 0) / per_position(16, 0)
++        gain_warm = per_position(1, 600) / per_position(16, 600)
++        self.assertGreater(gain_cold, gain_warm)
++
++    def test_lru_and_lfru_are_both_accepted_and_differ(self):
++        path = self._trace("p.bin", steps=120)
++        lfru = run_slots(self.binary, path, 200, 0)
++        lru = run_slots(self.binary, path, 200, 1)
++        self.assertEqual(lfru["policy"], 0)
++        self.assertEqual(lru["policy"], 1)
++        self.assertNotEqual(lfru["hits"], lru["hits"])
++
++    def test_rejects_an_expert_outside_the_declared_range(self):
++        path = Path(self.tmp.name) / "bad.bin"
++        trace_mod.write_trace(path, [[[0, 1]]], 256)
++        raw = bytearray(path.read_bytes())
++        raw[-4:] = (999).to_bytes(4, "little")     # expert 999 of 256
++        path.write_bytes(bytes(raw))
++        proc = subprocess.run([str(self.binary), str(path),
++                               str(64 * STANDIN_REC), str(STANDIN_REC)],
++                              capture_output=True, text=True)
++        self.assertNotEqual(proc.returncode, 0)
++        self.assertIn("outside", proc.stderr)
++
++    def test_rejects_a_truncated_trace(self):
++        path = self._trace("t.bin", steps=20)
++        raw = path.read_bytes()
++        path.write_bytes(raw[:20])          # header plus one partial count
++        proc = subprocess.run([str(self.binary), str(path),
++                               str(64 * STANDIN_REC), str(STANDIN_REC)],
++                              capture_output=True, text=True)
++        self.assertNotEqual(proc.returncode, 0)
++        self.assertIn("truncated", proc.stderr)
++
++    def test_rejects_a_bad_magic(self):
++        path = Path(self.tmp.name) / "magic.bin"
++        trace_mod.write_trace(path, [[[0]]], 256)
++        raw = bytearray(path.read_bytes())
++        raw[0] ^= 0xFF
++        path.write_bytes(bytes(raw))
++        proc = subprocess.run([str(self.binary), str(path),
++                               str(64 * STANDIN_REC), str(STANDIN_REC)],
++                              capture_output=True, text=True)
++        self.assertNotEqual(proc.returncode, 0)
++
++    def test_rejects_a_record_that_is_not_page_aligned(self):
++        path = self._trace("r.bin", steps=5)
++        proc = subprocess.run([str(self.binary), str(path), "100000", "5000"],
++                              capture_output=True, text=True)
++        self.assertNotEqual(proc.returncode, 0)
++
++
++class DriverTest(unittest.TestCase):
++    """These need no compiler."""
++
++    def test_slots_for_matches_the_cache_formula(self):
++        self.assertEqual(slots_for(6.34 * (1 << 30), INKLING["rec_bytes"]), 719)
++        self.assertEqual(slots_for(0, INKLING["rec_bytes"]), 0)
++
++    def test_gate5_table_slot_counts_match_its_published_ones(self):
++        """If our record size for Kimi-Linear were wrong the validation would
++        compare against the wrong row."""
++        from inkling_cache_bench import GATE5_REC_BYTES
++
++        for budget, want_slots, _frac, _hit in GATE5:
++            got = slots_for(budget, GATE5_REC_BYTES)
++            self.assertLessEqual(abs(got - want_slots) / want_slots, 0.005)
++
++    def test_inkling_geometry_matches_the_throughput_tool(self):
++        from inkling_throughput import geometry_from_config, load_config
++
++        geo = geometry_from_config(load_config(REPO / "tests" / "data" /
++                                               "inkling-small-config.json"))
++        self.assertEqual(INKLING["layers"], geo.sparse_layers)
++        self.assertEqual(INKLING["top_k"], geo.top_k)
++        self.assertEqual(INKLING["experts"], geo.n_routed_experts)
++        self.assertEqual(INKLING["rec_bytes"], geo.record_bytes)
++
++    def test_build_names_a_missing_ecache(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            with self.assertRaises(BuildError) as ctx:
++                build(Path(tmp), Path(tmp) / "sim")
++            self.assertIn("ecache.c", str(ctx.exception))
++
++    def test_missing_ecache_exits_two_without_a_traceback(self):
++        import io
++        from contextlib import redirect_stdout, redirect_stderr
++
++        with tempfile.TemporaryDirectory() as tmp:
++            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
++                rc = main(["--waste-src", tmp, "validate"])
++        self.assertEqual(rc, 2)
++        self.assertIn("ecache.c", err.getvalue())
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_inkling_cache_trace.py b/tests/test_inkling_cache_trace.py
+new file mode 100644
+index 0000000..b9814d3
+--- /dev/null
++++ b/tests/test_inkling_cache_trace.py
+@@ -0,0 +1,214 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++"""Dependency-light tests for the routing-trace generator.
++
++The generator's job is to be honest about being a model: two parameters, each
++fitted to one upstream measurement, and a structure that cannot accidentally
++claim more than that. These tests pin the fit, the trace format, and the
++dedup semantics that the batching lever depends on.
++"""
++
++import struct
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(REPO / "tools"))
++
++from inkling_cache_trace import (
++    DEFAULT_B,
++    DEFAULT_G,
++    DEFAULT_STICKINESS,
++    GATE2_COVERAGE,
++    GATE2_REUSE,
++    TRACE_MAGIC,
++    Router,
++    coverage,
++    generate,
++    main,
++    measured_reuse,
++    weights,
++    write_trace,
++)
++
++
++class ConcentrationFitTest(unittest.TestCase):
++    def test_reproduces_gate2_coverage_within_two_points(self):
++        w = weights(256)
++        for frac, want in GATE2_COVERAGE:
++            self.assertAlmostEqual(coverage(w, frac), want, delta=0.02,
++                                   msg=f"top {frac:.1%}")
++
++    def test_weights_are_a_normalised_decreasing_distribution(self):
++        w = weights(256)
++        self.assertAlmostEqual(sum(w), 1.0, places=9)
++        self.assertEqual(w, sorted(w, reverse=True))
++        self.assertTrue(all(x > 0 for x in w))
++
++    def test_coverage_is_monotone(self):
++        w = weights(256)
++        last = 0.0
++        for frac in (0.05, 0.1, 0.25, 0.5, 0.9, 1.0):
++            got = coverage(w, frac)
++            self.assertGreaterEqual(got, last)
++            last = got
++        self.assertAlmostEqual(coverage(w, 1.0), 1.0, places=9)
++
++    def test_rejects_degenerate_parameters(self):
++        for kwargs in ({"g": 0}, {"g": -1}, {"b": 0}, {"b": -2}):
++            with self.assertRaises(ValueError):
++                weights(256, **kwargs)
++        with self.assertRaises(ValueError):
++            weights(0)
++
++
++class ReuseFitTest(unittest.TestCase):
++    def test_reproduces_gate2_reuse(self):
++        trace = generate(26, 256, 8, 400, stickiness=DEFAULT_STICKINESS)
++        self.assertAlmostEqual(measured_reuse(trace), GATE2_REUSE, delta=0.03)
++
++    def test_concentration_alone_does_not_explain_the_reuse(self):
++        """The finding that justifies the second parameter existing: an IID
++        draw from the fitted distribution reuses far less than was measured."""
++        iid = measured_reuse(generate(26, 256, 8, 400, stickiness=0.0))
++        self.assertLess(iid, GATE2_REUSE - 0.15)
++
++    def test_reuse_rises_with_stickiness(self):
++        low = measured_reuse(generate(8, 256, 6, 200, stickiness=0.1, seed=3))
++        high = measured_reuse(generate(8, 256, 6, 200, stickiness=0.6, seed=3))
++        self.assertGreater(high, low)
++
++    def test_rejects_out_of_range_stickiness(self):
++        for s in (-0.1, 1.0, 1.5):
++            with self.assertRaises(ValueError):
++                Router.make(256, 6, s, DEFAULT_G, DEFAULT_B)
++
++
++class TraceShapeTest(unittest.TestCase):
++    def test_each_step_selects_exactly_top_k(self):
++        trace = generate(5, 64, 6, 50, seed=2)
++        for step in trace:
++            self.assertEqual(len(step), 5)
++            for ids in step:
++                self.assertEqual(len(ids), 6)
++                self.assertEqual(len(set(ids)), 6, "duplicate expert in one layer")
++                self.assertTrue(all(0 <= e < 64 for e in ids))
++
++    def test_is_deterministic_for_a_seed(self):
++        a = generate(4, 64, 6, 30, seed=11)
++        b = generate(4, 64, 6, 30, seed=11)
++        self.assertEqual(a, b)
++        c = generate(4, 64, 6, 30, seed=12)
++        self.assertNotEqual(a, c)
++
++    def test_layers_route_independently(self):
++        """A shared RNG must not make every layer pick the same experts."""
++        trace = generate(8, 256, 6, 40, seed=5)
++        same = sum(1 for step in trace if len(set(map(tuple, step))) == 1)
++        self.assertEqual(same, 0)
++
++    def test_rejects_impossible_geometry(self):
++        for args in ((5, 64, 65, 10), (5, 64, 0, 10), (0, 64, 6, 10), (5, 64, 6, 0)):
++            with self.assertRaises(ValueError):
++                generate(*args)
++
++
++class ChunkDedupTest(unittest.TestCase):
++    """The batching lever depends entirely on this being a real union."""
++
++    def test_chunk_one_is_top_k(self):
++        trace = generate(4, 256, 6, 20, chunk=1, seed=4)
++        self.assertTrue(all(len(ids) == 6 for step in trace for ids in step))
++
++    def test_a_chunk_never_exceeds_its_positions_and_never_undercuts_one(self):
++        for chunk in (2, 4, 16):
++            trace = generate(4, 256, 6, 20, chunk=chunk, seed=4)
++            for step in trace:
++                for ids in step:
++                    self.assertLessEqual(len(ids), 6 * chunk)
++                    self.assertGreaterEqual(len(ids), 6)
++                    self.assertEqual(len(set(ids)), len(ids))
++
++    def test_dedup_strengthens_with_chunk_size(self):
++        def per_position(chunk):
++            trace = generate(8, 256, 6, 16, chunk=chunk, seed=9)
++            recs = sum(len(i) for s in trace for i in s) / len(trace)
++            return recs / chunk
++
++        self.assertLess(per_position(32), per_position(8))
++        self.assertLess(per_position(8), per_position(1) + 1e-9)
++
++    def test_a_chunk_cannot_exceed_the_expert_count(self):
++        trace = generate(2, 16, 6, 10, chunk=64, seed=1)
++        for step in trace:
++            for ids in step:
++                self.assertLessEqual(len(ids), 16)
++
++
++class TraceFileTest(unittest.TestCase):
++    def test_roundtrip_header_and_payload(self):
++        trace = generate(3, 32, 6, 7, seed=6)
++        with tempfile.TemporaryDirectory() as tmp:
++            path = Path(tmp) / "t.bin"
++            write_trace(path, trace, 32)
++            raw = path.read_bytes()
++        magic, steps, layers, slots = struct.unpack("<IIII", raw[:16])
++        self.assertEqual(magic, TRACE_MAGIC)
++        self.assertEqual((steps, layers, slots), (7, 3, 32))
++
++        off = 16
++        for step in trace:
++            for ids in step:
++                (n,) = struct.unpack("<I", raw[off:off + 4])
++                off += 4
++                self.assertEqual(n, len(ids))
++                got = struct.unpack(f"<{n}I", raw[off:off + 4 * n])
++                off += 4 * n
++                self.assertEqual(list(got), ids)
++        self.assertEqual(off, len(raw), "trailing bytes in trace")
++
++    def test_refuses_an_out_of_range_expert(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            with self.assertRaises(ValueError):
++                write_trace(Path(tmp) / "t.bin", [[[0, 99]]], 32)
++
++
++class CliTest(unittest.TestCase):
++    def test_check_reports_both_fits(self):
++        import io
++        from contextlib import redirect_stdout
++
++        with redirect_stdout(io.StringIO()) as out:
++            self.assertEqual(main(["check"]), 0)
++        text = out.getvalue()
++        self.assertIn("Concentration", text)
++        self.assertIn("Reuse", text)
++        self.assertIn("FITTED", text)
++
++    def test_generate_writes_a_file(self):
++        import io
++        from contextlib import redirect_stdout
++
++        with tempfile.TemporaryDirectory() as tmp:
++            path = Path(tmp) / "g.bin"
++            with redirect_stdout(io.StringIO()):
++                self.assertEqual(
++                    main(["generate", "--out", str(path), "--layers", "4",
++                          "--top-k", "6", "--steps", "20"]), 0)
++            self.assertTrue(path.is_file())
++
++    def test_bad_parameters_exit_nonzero(self):
++        import io
++        from contextlib import redirect_stdout, redirect_stderr
++
++        with tempfile.TemporaryDirectory() as tmp:
++            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
++                rc = main(["--stickiness", "1.5", "generate",
++                           "--out", str(Path(tmp) / "x.bin"), "--steps", "5"])
++        self.assertEqual(rc, 2)
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/tests/test_inkling_config_c.py b/tests/test_inkling_config_c.py
 new file mode 100644
 index 0000000..de92094
@@ -6433,6 +6938,128 @@ index 0000000..de92094
 +            0,
 +        )
 +        self.assertIsNotNone(keepalive if local else a)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_inkling_expert_bench.py b/tests/test_inkling_expert_bench.py
+new file mode 100644
+index 0000000..521e47e
+--- /dev/null
++++ b/tests/test_inkling_expert_bench.py
+@@ -0,0 +1,116 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++"""Tests for the expert-matvec benchmark.
++
++The benchmark's whole value rests on one property: the two paths it times
++compute the same function. A speed comparison between two implementations
++that disagree measures nothing, so that check is the benchmark's first act
++and these tests confirm it is load-bearing rather than decorative.
++"""
++
++import json
++import os
++import shutil
++import subprocess
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[1]
++SOURCE = REPO / "tools" / "inkling_expert_bench.c"
++
++
++def _cc() -> str | None:
++    return os.environ.get("CC") or shutil.which("cc") or shutil.which("gcc")
++
++
++@unittest.skipUnless(_cc() and SOURCE.is_file(), "no C compiler or source")
++class ExpertBenchTest(unittest.TestCase):
++    tmp: tempfile.TemporaryDirectory
++    binary: Path
++
++    @classmethod
++    def setUpClass(cls):
++        cls.tmp = tempfile.TemporaryDirectory()
++        cls.binary = Path(cls.tmp.name) / "bench"
++        proc = subprocess.run(
++            [_cc(), "-O2", "-std=gnu11", "-Wall", "-Wextra", "-Werror",
++             "-o", str(cls.binary), str(SOURCE), "-lm"],
++            capture_output=True, text=True)
++        if proc.returncode != 0:
++            raise AssertionError(f"benchmark does not compile clean:\n{proc.stderr}")
++
++    @classmethod
++    def tearDownClass(cls):
++        cls.tmp.cleanup()
++
++    def run_bench(self, hidden=512, inter=256, reps=1):
++        proc = subprocess.run(
++            [str(self.binary), str(hidden), str(inter), str(reps)],
++            capture_output=True, text=True)
++        self.assertEqual(proc.returncode, 0, proc.stderr)
++        return json.loads(proc.stdout)
++
++    def test_the_two_paths_agree(self):
++        """If this ever fails the LUT formulation is not a drop-in and the
++        speedup is meaningless."""
++        r = self.run_bench()
++        self.assertLess(r["rel_disagreement"], 1e-5)
++
++    def test_agreement_holds_across_geometries(self):
++        for hidden, inter in ((512, 256), (1024, 512), (2048, 512)):
++            r = self.run_bench(hidden, inter)
++            self.assertLess(r["rel_disagreement"], 1e-5, f"{hidden}x{inter}")
++
++    def test_expanded_size_is_the_three_matrices(self):
++        r = self.run_bench(512, 256)
++        self.assertEqual(r["expert_f32_bytes"], 3 * 256 * 512 * 4)
++
++    def test_expand_moves_the_expansion_twice(self):
++        """Write it, then read it straight back. This is the part no amount
++        of SIMD or threading changes."""
++        r = self.run_bench(512, 256)
++        self.assertEqual(r["expand_traffic_per_expert"], 2 * r["expert_f32_bytes"])
++
++    def test_lut_moves_far_less_than_expand(self):
++        r = self.run_bench(4096, 2048)
++        self.assertGreater(r["traffic_ratio"], 10.0)
++        self.assertLess(r["lut_traffic_per_expert"], r["expand_traffic_per_expert"])
++
++    def test_lut_traffic_is_dominated_by_bytes_already_read_from_disk(self):
++        """The index planes are what the expert record IS, so the LUT path
++        adds almost nothing to what streaming already paid for."""
++        r = self.run_bench(4096, 2048)
++        self.assertLess(r["lut_table_bytes"], r["lut_traffic_per_expert"])
++
++    def test_reports_the_released_expert_count(self):
++        r = self.run_bench(512, 256)
++        self.assertEqual(r["experts_per_token"], 240 + 80)
++
++    def test_rejects_geometry_it_cannot_lay_out(self):
++        for hidden, inter in ((100, 256), (512, 100), (0, 256), (512, 0)):
++            proc = subprocess.run(
++                [str(self.binary), str(hidden), str(inter), "1"],
++                capture_output=True, text=True)
++            self.assertNotEqual(proc.returncode, 0, f"{hidden}x{inter} accepted")
++
++    def test_rejects_zero_reps(self):
++        proc = subprocess.run([str(self.binary), "512", "256", "0"],
++                              capture_output=True, text=True)
++        self.assertNotEqual(proc.returncode, 0)
++
++    def test_timings_are_positive_and_expert_is_three_matrices(self):
++        r = self.run_bench(1024, 512, reps=2)
++        self.assertGreater(r["expand_matrix_s"], 0)
++        self.assertGreater(r["lut_matrix_s"], 0)
++        # Both fields are printed with %.6f, so the per-expert figure is
++        # three times an unrounded value while matrix_s*3 is three times a
++        # rounded one. Half a printed ulp times three is the honest tolerance.
++        tol = 3 * 0.5e-6
++        self.assertAlmostEqual(r["expand_expert_s"], r["expand_matrix_s"] * 3, delta=tol)
++        self.assertAlmostEqual(r["lut_expert_s"], r["lut_matrix_s"] * 3, delta=tol)
 +
 +
 +if __name__ == "__main__":
@@ -9845,6 +10472,482 @@ index 0000000..86aaa98
 +
 +if __name__ == "__main__":
 +    unittest.main()
+diff --git a/tests/test_inkling_serve.py b/tests/test_inkling_serve.py
+new file mode 100644
+index 0000000..c3db939
+--- /dev/null
++++ b/tests/test_inkling_serve.py
+@@ -0,0 +1,470 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++"""Tests for the chat endpoint.
++
++The ctypes binding to the private runtime is already exercised by
++`test_inkling_private_c.py`, so these drive the parts this file actually
++adds: chat-template rendering, sampling, request validation, the wire
++format, and — most importantly — the provenance gating that stops synthetic
++output being served as if it were the model's.
++
++No torch, no libwaste, no socket to the outside: the runtime is a stub and
++the server is bound to loopback on an ephemeral port.
++"""
++
++import ctypes as C
++import json
++import sys
++import threading
++import unittest
++import urllib.error
++import urllib.request
++from http.server import ThreadingHTTPServer
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(REPO / "tools"))
++
++from inkling_serve import (
++    DEFAULT_TEMPLATE,
++    InklingError,
++    Session,
++    Tokenizer,
++    collect_generation,
++    load_template,
++    main,
++    make_handler,
++    open_runtime,
++    render,
++    sample,
++)
++
++
++class StubRuntime:
++    """Deterministic logits: token id `n` is favoured at position `n`, so a
++    greedy decode produces a predictable ramp and the tests can assert on
++    content rather than on 'it did not crash'."""
++
++    def __init__(self, vocab=256, context=4096):
++        self.vocab = vocab
++        self.context = context
++        self.steps = []
++        self.resets = 0
++
++    def reset(self):
++        self.resets += 1
++        self.steps.clear()
++
++    def step(self, token, position):
++        """Returns the same type the real Runtime does — a ctypes float
++        array. An earlier stub returned a plain list, which is why a
++        memoryview bug in sample() reached a live server."""
++        self.steps.append((token, position))
++        buf = (C.c_float * self.vocab)()
++        buf[(position + 1) % self.vocab] = 10.0
++        return buf
++
++    def close(self):
++        pass
++
++
++class SequenceRuntime(StubRuntime):
++    """Favour a prescribed token at each decode position."""
++
++    def __init__(self, sequence, vocab=256, context=4096):
++        super().__init__(vocab=vocab, context=context)
++        self.sequence = sequence
++
++    def step(self, token, position):
++        self.steps.append((token, position))
++        buf = (C.c_float * self.vocab)()
++        buf[self.sequence[min(position, len(self.sequence) - 1)]] = 10.0
++        return buf
++
++
++class OneTokenByteTokenizer(Tokenizer):
++    def encode(self, _text):
++        return [0]
++
++
++class EosByteTokenizer(OneTokenByteTokenizer):
++    @property
++    def eos(self):
++        return 7
++
++
++def session(vocab=256):
++    return Session(StubRuntime(vocab), Tokenizer(vocab), DEFAULT_TEMPLATE)
++
++
++class TemplateTest(unittest.TestCase):
++    def test_renders_roles_in_order_and_ends_with_the_generation_prompt(self):
++        out = render([{"role": "system", "content": "S"},
++                      {"role": "user", "content": "U"}], DEFAULT_TEMPLATE)
++        self.assertLess(out.index("S"), out.index("U"))
++        self.assertTrue(out.endswith(DEFAULT_TEMPLATE["generation_prompt"]))
++
++    def test_rejects_an_unknown_role(self):
++        with self.assertRaises(InklingError):
++            render([{"role": "tool", "content": "x"}], DEFAULT_TEMPLATE)
++
++    def test_rejects_non_string_content(self):
++        for bad in (None, 5, ["a"], {"a": 1}):
++            with self.assertRaises(InklingError):
++                render([{"role": "user", "content": bad}], DEFAULT_TEMPLATE)
++
++    def test_absent_assets_give_the_placeholder_template(self):
++        tmpl, kind = load_template(None)
++        self.assertEqual(kind, "placeholder")
++        self.assertEqual(tmpl, DEFAULT_TEMPLATE)
++
++    def test_a_supplied_template_is_labelled_as_supplied(self):
++        import tempfile
++        with tempfile.TemporaryDirectory() as tmp:
++            p = Path(tmp) / "inkling_chat_template.json"
++            p.write_text(json.dumps(dict(DEFAULT_TEMPLATE, user="U:{content}")))
++            tmpl, kind = load_template(Path(tmp))
++        self.assertEqual(kind, "supplied")
++        self.assertEqual(tmpl["user"], "U:{content}")
++
++    def test_an_incomplete_supplied_template_is_refused(self):
++        import tempfile
++        with tempfile.TemporaryDirectory() as tmp:
++            p = Path(tmp) / "inkling_chat_template.json"
++            p.write_text(json.dumps({"user": "{content}"}))
++            with self.assertRaises(InklingError):
++                load_template(Path(tmp))
++
++
++class SampleTest(unittest.TestCase):
++    def test_sampling_accepts_a_ctypes_buffer(self):
++        """The type the real runtime hands back."""
++        import random
++        buf = (C.c_float * 4)(1.0, 5.0, 2.0, 0.0)
++        self.assertEqual(sample(buf, 4, 0.0, 1.0, random.Random(1)), 1)
++        self.assertIn(sample(buf, 4, 1.0, 1.0, random.Random(1)), range(4))
++
++    def test_zero_temperature_is_argmax(self):
++        import random
++        logits = [1.0, 5.0, 2.0, 0.0]
++        self.assertEqual(sample(logits, 4, 0.0, 1.0, random.Random(1)), 1)
++
++    def test_a_dominant_logit_wins_at_temperature(self):
++        import random
++        logits = [0.0, 0.0, 40.0, 0.0]
++        for seed in range(8):
++            self.assertEqual(sample(logits, 4, 1.0, 1.0, random.Random(seed)), 2)
++
++    def test_top_p_excludes_the_tail(self):
++        import random
++        logits = [10.0, 9.9, -40.0, -40.0]
++        for seed in range(16):
++            self.assertIn(sample(logits, 4, 1.0, 0.9, random.Random(seed)), (0, 1))
++
++    def test_sampling_is_deterministic_for_a_seed(self):
++        import random
++        logits = [1.0, 1.1, 0.9, 1.05]
++        a = [sample(logits, 4, 1.0, 1.0, random.Random(7)) for _ in range(5)]
++        b = [sample(logits, 4, 1.0, 1.0, random.Random(7)) for _ in range(5)]
++        self.assertEqual(a, b)
++
++
++class ProvenanceTest(unittest.TestCase):
++    """Only the C runtime's official-stage gate can label weights official."""
++
++    @staticmethod
++    def runtime_factory(mode, calls):
++        class GateRuntime:
++            def __init__(self, _lib, _stage, *, ctx, require_official):
++                calls.append((ctx, require_official))
++                if mode == "corrupt":
++                    raise InklingError("corrupt stage", status=-3)
++                if mode == "synthetic" and require_official:
++                    raise InklingError("not official", status=-5)
++        return GateRuntime
++
++    def test_verified_runtime_is_official(self):
++        calls = []
++        _runtime, kind = open_runtime(
++            Path("libwaste.so"), Path("stage"), 2048, False,
++            self.runtime_factory("official", calls))
++        self.assertEqual(kind, "official")
++        self.assertEqual(calls, [(2048, True)])
++
++    def test_synthetic_runtime_requires_the_explicit_override(self):
++        calls = []
++        with self.assertRaisesRegex(InklingError, "must be treated as synthetic"):
++            open_runtime(
++                Path("libwaste.so"), Path("stage"), 4096, False,
++                self.runtime_factory("synthetic", calls))
++        self.assertEqual(calls, [(4096, True)])
++
++    def test_synthetic_override_reopens_without_the_official_requirement(self):
++        calls = []
++        _runtime, kind = open_runtime(
++            Path("libwaste.so"), Path("stage"), 4096, True,
++            self.runtime_factory("synthetic", calls))
++        self.assertEqual(kind, "synthetic")
++        self.assertEqual(calls, [(4096, True), (4096, False)])
++
++    def test_bogus_attestation_file_cannot_claim_official_weights(self):
++        import tempfile
++
++        with tempfile.TemporaryDirectory() as tmp:
++            (Path(tmp) / "official-weights.json").write_text("{}")
++            with self.assertRaises(InklingError):
++                open_runtime(
++                    Path("libwaste.so"), Path(tmp), 4096, False,
++                    self.runtime_factory("synthetic", []))
++
++    def test_corrupt_stage_never_falls_back_to_synthetic(self):
++        calls = []
++        with self.assertRaisesRegex(InklingError, "corrupt stage"):
++            open_runtime(
++                Path("libwaste.so"), Path("stage"), 4096, True,
++                self.runtime_factory("corrupt", calls))
++        self.assertEqual(calls, [(4096, True)])
++
++
++class CliOptionTest(unittest.TestCase):
++    """Tokenizer assets and the chat template remain independent options."""
++
++    def test_template_can_be_supplied_without_tokenizer_assets(self):
++        import io
++        import tempfile
++        from contextlib import redirect_stderr, redirect_stdout
++        from unittest.mock import patch
++
++        class MainRuntime:
++            lib = object()
++            vocab = 256
++            context = 4096
++
++            def close(self):
++                pass
++
++        class OneShotServer:
++            def __init__(self, *_args):
++                pass
++
++            def serve_forever(self):
++                pass
++
++            def server_close(self):
++                pass
++
++        with tempfile.TemporaryDirectory() as tmp:
++            (Path(tmp) / "inkling_chat_template.json").write_text(
++                json.dumps(DEFAULT_TEMPLATE))
++            with (patch("inkling_serve.find_library", return_value=Path("libwaste.so")),
++                  patch("inkling_serve.open_runtime",
++                        return_value=(MainRuntime(), "synthetic")),
++                  patch("inkling_serve.ThreadingHTTPServer", OneShotServer),
++                  redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err):
++                rc = main(["--stage", tmp, "--template", tmp,
++                           "--i-know-the-weights-are-synthetic"])
++        self.assertEqual(rc, 0)
++        self.assertNotIn("tokenizer assets", err.getvalue())
++
++
++class ContextLimitTest(unittest.TestCase):
++    """Found by pointing the server at a real stage: overrunning the K/V
++    rings surfaced as an opaque 'step failed at position 16' from deep in the
++    C. It has to be refused at the edge, where the caller can act on it."""
++
++    def test_a_prompt_plus_generation_over_capacity_is_refused(self):
++        s = Session(StubRuntime(context=16), Tokenizer(256), DEFAULT_TEMPLATE)
++        with self.assertRaises(InklingError) as ctx:
++            list(s.generate([{"role": "user", "content": "hello there"}],
++                            max_tokens=8, temperature=0.0, top_p=1.0, seed=1))
++        self.assertIn("context exceeded", str(ctx.exception))
++
++    def test_it_is_refused_before_the_runtime_is_touched(self):
++        rt = StubRuntime(context=8)
++        s = Session(rt, Tokenizer(256), DEFAULT_TEMPLATE)
++        with self.assertRaises(InklingError):
++            list(s.generate([{"role": "user", "content": "a longer prompt here"}],
++                            max_tokens=4, temperature=0.0, top_p=1.0, seed=1))
++        self.assertEqual(rt.steps, [], "stepped before refusing")
++
++    def test_a_request_inside_capacity_runs(self):
++        s = Session(StubRuntime(context=4096), Tokenizer(256), DEFAULT_TEMPLATE)
++        ids = list(s.generate([{"role": "user", "content": "hi"}], 4, 0.0, 1.0, 1))
++        self.assertEqual(len(ids), 4)
++
++
++class GenerationTest(unittest.TestCase):
++    def test_prefill_then_decode_visits_every_position_once(self):
++        s = session()
++        ids = list(s.generate([{"role": "user", "content": "hello"}],
++                              max_tokens=4, temperature=0.0, top_p=1.0, seed=1))
++        self.assertEqual(len(ids), 4)
++        positions = [p for _t, p in s.runtime.steps]
++        self.assertEqual(positions, list(range(len(positions))))
++
++    def test_each_generation_resets_the_runtime(self):
++        s = session()
++        for _ in range(3):
++            list(s.generate([{"role": "user", "content": "x"}], 2, 0.0, 1.0, 1))
++        self.assertEqual(s.runtime.resets, 3)
++
++    def test_an_empty_prompt_is_refused(self):
++        s = Session(StubRuntime(), Tokenizer(256), dict(DEFAULT_TEMPLATE,
++                    user="", system="", assistant="", generation_prompt=""))
++        with self.assertRaises(InklingError):
++            list(s.generate([{"role": "user", "content": ""}], 2, 0.0, 1.0, 1))
++
++    def test_generator_reports_length_when_the_budget_is_exhausted(self):
++        ids, reason = collect_generation(
++            session().generate([{"role": "user", "content": "x"}],
++                               2, 0.0, 1.0, 1))
++        self.assertEqual(len(ids), 2)
++        self.assertEqual(reason, "length")
++
++    def test_generator_reports_stop_on_eos(self):
++        tok = EosByteTokenizer(256)
++        ids, reason = collect_generation(
++            Session(SequenceRuntime([7]), tok, DEFAULT_TEMPLATE).generate(
++                [{"role": "user", "content": "x"}], 2, 0.0, 1.0, 1))
++        self.assertEqual(ids, [])
++        self.assertEqual(reason, "stop")
++
++
++class HttpTest(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cls.session = session()
++        handler = make_handler(cls.session, "weights=synthetic tokenizer=fallback",
++                               "inkling-test")
++        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
++        cls.port = cls.httpd.server_address[1]
++        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
++        cls.thread.start()
++
++    @classmethod
++    def tearDownClass(cls):
++        cls.httpd.shutdown()
++        cls.httpd.server_close()
++
++    def url(self, path):
++        return f"http://127.0.0.1:{self.port}{path}"
++
++    def post(self, body, path="/v1/chat/completions"):
++        req = urllib.request.Request(
++            self.url(path), data=json.dumps(body).encode(),
++            headers={"Content-Type": "application/json"}, method="POST")
++        return urllib.request.urlopen(req, timeout=30)
++
++    def test_healthz(self):
++        with urllib.request.urlopen(self.url("/healthz"), timeout=10) as r:
++            self.assertEqual(r.status, 200)
++            self.assertEqual(json.load(r)["status"], "ok")
++
++    def test_models_lists_the_model_with_its_provenance(self):
++        with urllib.request.urlopen(self.url("/v1/models"), timeout=10) as r:
++            data = json.load(r)
++        self.assertEqual(data["data"][0]["id"], "inkling-test")
++        self.assertIn("synthetic", data["data"][0]["provenance"])
++        self.assertEqual(data["data"][0]["context_length"], 4096)
++
++    def test_chat_completion_shape(self):
++        with self.post({"messages": [{"role": "user", "content": "hi"}],
++                        "max_tokens": 5, "temperature": 0}) as r:
++            self.assertEqual(r.status, 200)
++            self.assertIn("synthetic", r.headers["x-waste-provenance"])
++            data = json.load(r)
++        self.assertEqual(data["object"], "chat.completion")
++        self.assertEqual(data["choices"][0]["message"]["role"], "assistant")
++        self.assertIsInstance(data["choices"][0]["message"]["content"], str)
++        self.assertEqual(data["choices"][0]["finish_reason"], "length")
++        self.assertEqual(data["usage"]["completion_tokens"], 5)
++
++    def test_every_response_carries_the_provenance_header(self):
++        for path in ("/healthz", "/v1/models"):
++            with urllib.request.urlopen(self.url(path), timeout=10) as r:
++                self.assertIn("synthetic", r.headers["x-waste-provenance"])
++
++    def test_streaming_emits_sse_frames_and_terminates(self):
++        with self.post({"messages": [{"role": "user", "content": "hi"}],
++                        "max_tokens": 3, "temperature": 0,
++                        "stream": True}) as r:
++            body = r.read().decode()
++        self.assertIn("data: ", body)
++        self.assertIn("[DONE]", body)
++        frames = [l for l in body.splitlines() if l.startswith("data: ")]
++        self.assertGreaterEqual(len(frames), 3)
++        payloads = [json.loads(line[6:]) for line in frames
++                    if line != "data: [DONE]"]
++        self.assertEqual(payloads[-1]["choices"][0]["finish_reason"], "length")
++
++    def test_streaming_preserves_utf8_across_token_boundaries(self):
++        s = Session(SequenceRuntime([0xE2, 0x82, 0xAC]),
++                    OneTokenByteTokenizer(256), DEFAULT_TEMPLATE)
++        httpd = ThreadingHTTPServer(
++            ("127.0.0.1", 0), make_handler(s, "weights=synthetic", "utf8-test"))
++        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
++        thread.start()
++        try:
++            req = urllib.request.Request(
++                f"http://127.0.0.1:{httpd.server_address[1]}/v1/chat/completions",
++                data=json.dumps({
++                    "messages": [{"role": "user", "content": "x"}],
++                    "max_tokens": 3, "temperature": 0, "stream": True,
++                }).encode(),
++                headers={"Content-Type": "application/json"}, method="POST")
++            with urllib.request.urlopen(req, timeout=10) as response:
++                body = response.read().decode()
++        finally:
++            httpd.shutdown()
++            httpd.server_close()
++        payloads = [json.loads(line[6:]) for line in body.splitlines()
++                    if line.startswith("data: ") and line != "data: [DONE]"]
++        content = "".join(
++            item["choices"][0]["delta"].get("content", "") for item in payloads)
++        self.assertEqual(content, "€")
++        self.assertNotIn("\ufffd", content)
++
++    def test_bad_requests_are_refused_with_a_reason(self):
++        cases = [
++            ({}, "messages"),
++            ({"messages": []}, "messages"),
++            ({"messages": ["not-an-object"]}, "message"),
++            ({"messages": [{"role": "user", "content": "x"}], "max_tokens": 0}, "max_tokens"),
++            ({"messages": [{"role": "user", "content": "x"}], "max_tokens": 99999}, "max_tokens"),
++            ({"messages": [{"role": "user", "content": "x"}], "max_tokens": True}, "max_tokens"),
++            ({"messages": [{"role": "user", "content": "x"}], "temperature": 9}, "temperature"),
++            ({"messages": [{"role": "user", "content": "x"}], "temperature": None}, "temperature"),
++            ({"messages": [{"role": "user", "content": "x"}], "temperature": "0.5"}, "temperature"),
++            ({"messages": [{"role": "user", "content": "x"}], "temperature": float("nan")}, "temperature"),
++            ({"messages": [{"role": "user", "content": "x"}], "top_p": 0}, "top_p"),
++            ({"messages": [{"role": "user", "content": "x"}], "top_p": {}}, "top_p"),
++            ({"messages": [{"role": "user", "content": "x"}], "top_p": float("inf")}, "top_p"),
++            ({"messages": [{"role": "user", "content": "x"}], "top_p": 10 ** 400}, "top_p"),
++            ({"messages": [{"role": "user", "content": "x"}], "seed": "1"}, "seed"),
++            ({"messages": [{"role": "user", "content": "x"}], "seed": True}, "seed"),
++            ({"messages": [{"role": "user", "content": "x"}], "stream": "false"}, "stream"),
++            ({"messages": [{"role": "user", "content": "x"}], "stream": 0}, "stream"),
++            ({"messages": [{"role": "bogus", "content": "x"}]}, "role"),
++        ]
++        for body, expect in cases:
++            with self.assertRaises(urllib.error.HTTPError) as ctx:
++                self.post(body)
++            self.assertEqual(ctx.exception.code, 400, body)
++            self.assertIn(expect, json.load(ctx.exception)["error"]["message"])
++
++    def test_unknown_route_is_404(self):
++        with self.assertRaises(urllib.error.HTTPError) as ctx:
++            urllib.request.urlopen(self.url("/v1/nope"), timeout=10)
++        self.assertEqual(ctx.exception.code, 404)
++
++    def test_malformed_json_is_400_not_500(self):
++        req = urllib.request.Request(
++            self.url("/v1/chat/completions"), data=b"{not json",
++            headers={"Content-Type": "application/json"}, method="POST")
++        with self.assertRaises(urllib.error.HTTPError) as ctx:
++            urllib.request.urlopen(req, timeout=10)
++        self.assertEqual(ctx.exception.code, 400)
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/tests/test_inkling_stage.py b/tests/test_inkling_stage.py
 new file mode 100644
 index 0000000..6563386
@@ -10005,6 +11108,411 @@ index 0000000..6563386
 +        self.assertEqual(stage["banks"][0]["experts"], 2)
 +        self.assertFalse(stage["banks"][0]["complete"])
 +        self.assertFalse(stage["status"]["stage_complete_for_requested_layers"])
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_inkling_throughput.py b/tests/test_inkling_throughput.py
+new file mode 100644
+index 0000000..ce5f502
+--- /dev/null
++++ b/tests/test_inkling_throughput.py
+@@ -0,0 +1,399 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++"""Dependency-light tests for the decode-cost model.
++
++No torch is required. Where torch *is* available, the record-size arithmetic
++is checked against a record `inkling_vq.write_expert_record` actually writes —
++because a size model that drifts from the writer would silently move every
++throughput number in the repository.
++"""
++
++import json
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(REPO / "tools"))
++
++from inkling_throughput import (
++    BUDGET_CAP_FRACTION,
++    CAL,
++    GIB,
++    Calibration,
++    VQSpec,
++    expert_record_bytes,
++    geometry_from_config,
++    k3_self_check,
++    load_config,
++    main,
++    matrix_index_bytes,
++    project,
++)
++
++CONFIG = REPO / "tests" / "data" / "inkling-small-config.json"
++
++# The released Inkling-Small text geometry, restated here so a change to the
++# recorded config cannot quietly move these tests with it.
++RELEASE = {
++    "num_hidden_layers": 42,
++    "hidden_size": 4096,
++    "intermediate_size": 2048,
++    "dense_intermediate_size": 16384,
++    "n_routed_experts": 256,
++    "num_experts_per_tok": 6,
++    "n_shared_experts": 2,
++    "dense_mlp_idx": 2,
++}
++
++
++class RecordSizeTest(unittest.TestCase):
++    def test_matches_the_published_vq3r_record(self):
++        """9,457,664 B is quoted in ROADMAP-V19.md, WASTE-CONSTRAINTS.md and
++        the memory plan promoted to waste_plan_memory()."""
++        self.assertEqual(expert_record_bytes(4096, 2048, VQSpec()), 9_457_664)
++
++    def test_record_is_page_aligned(self):
++        for hidden, inter in ((4096, 2048), (2048, 512), (1024, 256)):
++            self.assertEqual(expert_record_bytes(hidden, inter, VQSpec()) % 4096, 0)
++
++    def test_index_bytes_pad_rows_to_the_index_block(self):
++        spec = VQSpec(stages=3, vec_dim=8, index_block=64)
++        # 100 rows pads to 128; 128 rows does not move.
++        self.assertEqual(matrix_index_bytes(100, 64, spec), 128 * 8 * 3)
++        self.assertEqual(matrix_index_bytes(128, 64, spec), 128 * 8 * 3)
++
++    def test_two_stage_records_are_smaller(self):
++        three = expert_record_bytes(4096, 2048, VQSpec(stages=3))
++        two = expert_record_bytes(4096, 2048, VQSpec(stages=2))
++        self.assertLess(two, three)
++
++    def test_rejects_columns_not_divisible_by_vec_dim(self):
++        with self.assertRaises(ValueError):
++            matrix_index_bytes(64, 60, VQSpec(vec_dim=8))
++
++    def test_rejects_invalid_spec(self):
++        for spec in (VQSpec(stages=1), VQSpec(vec_dim=0), VQSpec(index_block=0)):
++            with self.assertRaises(ValueError):
++                expert_record_bytes(64, 64, spec)
++
++
++class RecordSizeAgainstWriterTest(unittest.TestCase):
++    """The model above duplicates `inkling_vq`'s layout so this tool can run
++    without torch. This is the check that the duplicate stays honest."""
++
++    def setUp(self):
++        try:
++            import torch  # noqa: F401
++            import inkling_vq  # noqa: F401
++        except ImportError as exc:
++            self.skipTest(f"torch/inkling_vq unavailable: {exc}")
++
++    def test_writer_produces_the_modelled_size(self):
++        import torch
++        import inkling_vq
++
++        spec = inkling_vq.VQSpec()
++        # Small, so the test is fast; the layout rule is size-independent and
++        # test_matches_the_published_vq3r_record pins the real geometry.
++        hidden, inter = 128, 64
++        shapes = ((inter, hidden), (inter, hidden), (hidden, inter))
++        matrices = [
++            inkling_vq.QuantizedMatrix(
++                indices=torch.zeros(
++                    (spec.stages, rows * cols // spec.vec_dim), dtype=torch.uint8
++                ),
++                scales=torch.zeros(rows, dtype=torch.float16),
++                shape=(rows, cols),
++            )
++            for rows, cols in shapes
++        ]
++        with tempfile.TemporaryDirectory() as tmp:
++            path = Path(tmp) / "rec.bin"
++            with path.open("wb") as f:
++                written = inkling_vq.write_expert_record(f, 0, 0, 0, matrices, spec)
++        self.assertEqual(
++            written,
++            expert_record_bytes(hidden, inter, VQSpec(
++                stages=spec.stages, vec_dim=spec.vec_dim, index_block=spec.index_block
++            )),
++        )
++
++
++class GeometryTest(unittest.TestCase):
++    def setUp(self):
++        self.geo = geometry_from_config(dict(RELEASE))
++
++    def test_reads_the_recorded_config(self):
++        self.assertEqual(geometry_from_config(load_config(CONFIG)).record_bytes,
++                         self.geo.record_bytes)
++
++    def test_layer_split(self):
++        self.assertEqual(self.geo.dense_layers, 2)
++        self.assertEqual(self.geo.sparse_layers, 40)
++
++    def test_records_per_token_is_sparse_layers_times_top_k(self):
++        self.assertEqual(self.geo.records_per_token, 240)
++
++    def test_bytes_per_token(self):
++        self.assertEqual(self.geo.bytes_per_token, 240 * 9_457_664)
++        self.assertAlmostEqual(self.geo.working_set_gib, 2.114, places=3)
++
++    def test_expert_bank_matches_the_published_total(self):
++        """docs/ROADMAP-V19.md §G3: 96,846,479,360 B across 40 sparse layers."""
++        self.assertEqual(self.geo.expert_bank_bytes, 96_846_479_360)
++        self.assertAlmostEqual(self.geo.expert_bank_bytes / GIB, 90.2, places=1)
++
++    def test_shared_experts_are_not_streamed(self):
++        """They bind as trunk tensors (inkling_bind.c), so they must not
++        appear in the per-token record count."""
++        wider = dict(RELEASE, n_shared_experts=8)
++        self.assertEqual(
++            geometry_from_config(wider).records_per_token,
++            self.geo.records_per_token,
++        )
++
++    def test_prefers_moe_intermediate_size_when_present(self):
++        cfg = dict(RELEASE)
++        del cfg["dense_intermediate_size"]
++        cfg["moe_intermediate_size"] = 3072
++        self.assertEqual(geometry_from_config(cfg).moe_intermediate, 3072)
++
++    def test_rejects_a_config_carrying_both_width_keys(self):
++        """The two schemas disagree about which key holds the routed width.
++        A config with both is ambiguous and must not be guessed at."""
++        cfg = dict(RELEASE, moe_intermediate_size=3072)
++        with self.assertRaises(ValueError):
++            geometry_from_config(cfg)
++
++    def test_accepts_num_experts_as_an_alias(self):
++        cfg = dict(RELEASE)
++        del cfg["n_routed_experts"]
++        cfg["num_experts"] = 256
++        self.assertEqual(geometry_from_config(cfg).n_routed_experts, 256)
++
++
++class FailClosedTest(unittest.TestCase):
++    # Fields the decode cost genuinely does not depend on. `dense_mlp_idx`
++    # decides how many layers stream experts, but the dense *width* only sizes
++    # the trunk, which this tool takes from the published plan rather than
++    # recomputing. `n_routed_experts` has an alias, tested separately.
++    NOT_REQUIRED = {"dense_intermediate_size", "n_routed_experts"}
++
++    def test_every_required_field_is_required(self):
++        for key in RELEASE:
++            if key in self.NOT_REQUIRED:
++                continue
++            cfg = dict(RELEASE)
++            del cfg[key]
++            with self.assertRaises(KeyError, msg=f"{key} was defaulted"):
++                geometry_from_config(cfg)
++
++    def test_dense_width_does_not_change_the_streaming_cost(self):
++        """Stated as a test rather than left implicit: the dense MLP is
++        trunk-resident, so its width cannot move bytes per token."""
++        cfg = dict(RELEASE)
++        del cfg["dense_intermediate_size"]
++        self.assertEqual(
++            geometry_from_config(cfg).bytes_per_token,
++            geometry_from_config(dict(RELEASE)).bytes_per_token,
++        )
++
++    def test_rejects_non_positive_and_non_integer_fields(self):
++        for bad in (0, -1, 2.5, "4096", True, None):
++            with self.assertRaises((ValueError, KeyError)):
++                geometry_from_config(dict(RELEASE, hidden_size=bad))
++
++    def test_rejects_top_k_above_the_expert_count(self):
++        with self.assertRaises(ValueError):
++            geometry_from_config(dict(RELEASE, num_experts_per_tok=999))
++
++    def test_rejects_dense_prefix_longer_than_the_model(self):
++        with self.assertRaises(ValueError):
++            geometry_from_config(dict(RELEASE, dense_mlp_idx=42))
++
++
++class BudgetLadderTest(unittest.TestCase):
++    """docs/GATES.md Gate 7: budget = floor + working_set * k, largest k in
++    3..1 fitting under seven eighths of RAM."""
++
++    def setUp(self):
++        self.geo = geometry_from_config(dict(RELEASE))
++
++    def test_eight_gib_machine_clears_one_working_set(self):
++        budget, k = self.geo.budget(8)
++        self.assertEqual(k, 1)
++        self.assertLessEqual(budget, 8 * BUDGET_CAP_FRACTION)
++
++    def test_sixteen_gib_machine_reaches_the_resolver_maximum(self):
++        _budget, k = self.geo.budget(16)
++        self.assertEqual(k, 3)
++
++    def test_ladder_is_monotonic_in_ram(self):
++        last = -1.0
++        for ram in (4, 6, 8, 12, 16, 32, 64, 128):
++            budget, _k = self.geo.budget(ram)
++            self.assertGreaterEqual(budget, last)
++            last = budget
++
++    def test_below_the_floor_reports_zero_working_sets(self):
++        """Gate 5 measured this regime at exactly zero demand hit rate, so it
++        must be reported as its own case rather than as a small cache."""
++        budget, k = self.geo.budget(4)
++        self.assertEqual(k, 0)
++        self.assertEqual(budget, self.geo.model_state_floor_gib)
++
++    def test_budget_never_exceeds_the_cap(self):
++        for ram in (4, 8, 16, 64, 128):
++            budget, _k = self.geo.budget(ram)
++            if budget > self.geo.model_state_floor_gib:
++                self.assertLessEqual(budget, ram * BUDGET_CAP_FRACTION)
++
++
++class TrunkConstantsTest(unittest.TestCase):
++    """The trunk and floor are constants for the released Small, not
++    derivations. Reusing them silently for another geometry would be exactly
++    the confident-wrong-number this port refuses everywhere else."""
++
++    def test_released_config_is_recognised(self):
++        self.assertTrue(geometry_from_config(dict(RELEASE)).trunk_is_trustworthy)
++
++    def test_a_different_geometry_is_not_vouched_for(self):
++        for field, value in (
++            ("num_hidden_layers", 24),
++            ("hidden_size", 2048),
++            ("intermediate_size", 1024),
++            ("num_experts_per_tok", 8),
++            ("n_shared_experts", 1),
++        ):
++            geo = geometry_from_config(dict(RELEASE, **{field: value}))
++            self.assertFalse(geo.trunk_is_trustworthy, field)
++
++    def test_overrides_make_another_geometry_trustworthy(self):
++        geo = geometry_from_config(
++            dict(RELEASE, num_hidden_layers=24), trunk_gib=2.0, floor_gib=2.5
++        )
++        self.assertTrue(geo.trunk_is_trustworthy)
++        self.assertEqual(geo.trunk_gib, 2.0)
++        self.assertEqual(geo.model_state_floor_gib, 2.5)
++
++    def test_overrides_must_come_as_a_pair(self):
++        for kwargs in ({"trunk_gib": 2.0}, {"floor_gib": 2.0}):
++            with self.assertRaises(ValueError):
++                geometry_from_config(dict(RELEASE), **kwargs)
++
++    def test_overrides_must_be_positive(self):
++        with self.assertRaises(ValueError):
++            geometry_from_config(dict(RELEASE), trunk_gib=0.0, floor_gib=1.0)
++
++    def test_cli_warns_on_an_unvouched_config(self):
++        import io
++        from contextlib import redirect_stdout, redirect_stderr
++
++        with tempfile.TemporaryDirectory() as tmp:
++            path = Path(tmp) / "other.json"
++            path.write_text(json.dumps(dict(RELEASE, num_hidden_layers=24)))
++            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
++                self.assertEqual(main(["--config", str(path), "geometry"]), 0)
++            self.assertIn("WARNING", err.getvalue())
++
++    def test_cli_is_silent_on_the_released_config(self):
++        import io
++        from contextlib import redirect_stdout, redirect_stderr
++
++        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
++            main(["geometry"])
++        self.assertNotIn("WARNING", err.getvalue())
++
++
++class CalibrationTest(unittest.TestCase):
++    def test_calibration_is_internally_consistent(self):
++        CAL.check()
++
++    def test_check_catches_a_transcription_error(self):
++        with self.assertRaises(ValueError):
++            Calibration(k3_io_seconds=5.0).check()
++
++    def test_model_reproduces_k3s_measured_throughput(self):
++        """The whole projection is worthless if the model cannot reproduce
++        the one decode it was fitted against."""
++        tok_s, _step = k3_self_check()
++        low, high = CAL.k3_measured_tok_s
++        self.assertGreaterEqual(tok_s, low - 0.05)
++        self.assertLessEqual(tok_s, high + 0.05)
++
++
++class ProjectionTest(unittest.TestCase):
++    def setUp(self):
++        self.geo = geometry_from_config(dict(RELEASE))
++
++    def test_io_falls_with_hit_rate(self):
++        cold = project(self.geo, 3.0, 0.0)
++        warm = project(self.geo, 3.0, 0.5)
++        self.assertLess(warm.io_seconds, cold.io_seconds)
++        self.assertEqual(warm.expert_matmul_seconds, cold.expert_matmul_seconds)
++
++    def test_io_falls_with_bandwidth(self):
++        slow = project(self.geo, 1.0, 0.0)
++        fast = project(self.geo, 10.0, 0.0)
++        self.assertLess(fast.io_seconds, slow.io_seconds)
++
++    def test_pipelining_never_exceeds_the_serial_step(self):
++        p = project(self.geo, 3.0, 0.0)
++        self.assertLessEqual(p.pipelined(p.other_low), p.serial_low)
++
++    def test_stays_io_bound_on_a_laptop_class_disk(self):
++        """The interesting structural claim: at 7 GiB/s and no cache hits the
++        step is still dominated by reads, so prefetch and cache work continue
++        to pay on Inkling. It is only on a top-tier SSD that the balance
++        tips."""
++        self.assertTrue(project(self.geo, 7.0, 0.0).io_bound)
++        self.assertFalse(project(self.geo, 12.89, 0.42).io_bound)
++
++    def test_tok_s_band_is_ordered(self):
++        p = project(self.geo, 3.0, 0.29)
++        self.assertLess(p.tok_s_low, p.tok_s_high)
++
++    def test_rejects_impossible_inputs(self):
++        for bw, hit in ((0.0, 0.0), (-1.0, 0.0), (3.0, 1.0), (3.0, -0.1)):
++            with self.assertRaises(ValueError):
++                project(self.geo, bw, hit)
++
++
++class CliTest(unittest.TestCase):
++    def test_subcommands_exit_zero(self):
++        import io
++        from contextlib import redirect_stdout
++
++        for argv in (["geometry"], ["project"], ["compare"]):
++            with redirect_stdout(io.StringIO()) as out:
++                self.assertEqual(main(argv), 0, argv)
++            self.assertIn("GiB", out.getvalue())
++
++    def test_projection_output_is_labelled_as_an_estimate(self):
++        """A projection that does not say so is the failure mode this whole
++        repository is organised against."""
++        import io
++        from contextlib import redirect_stdout
++
++        with redirect_stdout(io.StringIO()) as out:
++            main(["project"])
++        text = out.getvalue()
++        self.assertIn("PROJECTION", text)
++        self.assertIn("estimate, not a measurement", text)
++
++    def test_bad_config_exits_nonzero_without_a_traceback(self):
++        import io
++        from contextlib import redirect_stdout, redirect_stderr
++
++        with tempfile.TemporaryDirectory() as tmp:
++            path = Path(tmp) / "bad.json"
++            path.write_text(json.dumps({"hidden_size": 4096}))
++            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
++                self.assertEqual(main(["--config", str(path), "geometry"]), 2)
++            self.assertIn("missing required field", err.getvalue())
 +
 +
 +if __name__ == "__main__":
@@ -11232,10 +12740,10 @@ index 0000000..f4fd9ae
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/tools/convert.py b/tools/convert.py
-index e156a81..74ddd16 100644
+index cf9abd4..fae3e06 100644
 --- a/tools/convert.py
 +++ b/tools/convert.py
-@@ -72,6 +72,7 @@ def atomic_text(path, value):
+@@ -87,6 +87,7 @@ def atomic_text(path, value):
  
  sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
  from mxfp4 import ST                                            # noqa: E402
@@ -11243,7 +12751,7 @@ index e156a81..74ddd16 100644
  
  # --- native VQ encoder (optional; ~15x the torch path) --------------------
  _VQ = None
-@@ -472,8 +473,18 @@ def main():
+@@ -807,8 +808,18 @@ def main():
      os.environ.setdefault("OMP_NUM_THREADS", str(per))
      os.environ.setdefault("MKL_NUM_THREADS", str(per))
  
@@ -11575,6 +13083,991 @@ index 0000000..93f3d0b
 +
 +if __name__ == "__main__":
 +    raise SystemExit(main())
+diff --git a/tools/inkling_cache_bench.py b/tools/inkling_cache_bench.py
+new file mode 100644
+index 0000000..c191ab7
+--- /dev/null
++++ b/tools/inkling_cache_bench.py
+@@ -0,0 +1,251 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++"""
++inkling_cache_bench.py — run WASTE's real expert cache over Inkling routing
++traces and report bytes per token.
++
++Builds `inkling_cache_sim.c` against upstream's `src/ecache.c`, generates
++traces with `inkling_cache_trace.py`, and sweeps. Three subcommands:
++
++  validate   Reproduce docs/GATES.md Gate 5 — the real cache measured on
++             Kimi-Linear at six budgets. This is the check that decides
++             whether anything else here is worth reading.
++
++  sweep      Inkling geometry: hit rate and bytes/token against cache size,
++             LFRU vs LRU.
++
++  batch      The chunk-dedup lever: bytes/token against how many decode
++             positions are routed together.
++
++The routing model is Kimi-family statistics applied to Inkling's geometry —
++see `inkling_cache_trace.py` for exactly which two measurements it is fitted
++to and what that does not entitle it to claim. The CACHE, by contrast, is not
++modelled at all: it is the shipping C.
++"""
++
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import shutil
++import subprocess
++import sys
++import tempfile
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++
++import inkling_cache_trace as trace_mod
++
++GIB = 1 << 30
++MIB = 1 << 20
++
++# Inkling-Small, from the released config; see inkling_throughput.py.
++INKLING = dict(layers=40, experts=256, top_k=6, rec_bytes=9_457_664)
++
++# docs/GATES.md Gate 5's setup and its measured result.
++GATE5_REC_BYTES = 2_670_592          # 512 MB / 201 slots, per Gate 5's table
++GATE5 = (
++    (536_870_912, 201, 0.030, 0.132),
++    (1_073_741_824, 402, 0.060, 0.403),
++    (2_147_483_648, 805, 0.121, 0.619),
++    (4_294_967_296, 1610, 0.242, 0.848),
++    (8_589_934_592, 3221, 0.484, 0.939),
++)
++
++
++class BuildError(RuntimeError):
++    pass
++
++
++def build(waste_src: Path, out: Path) -> Path:
++    """Compile the driver against the real ecache.c."""
++    src = Path(__file__).resolve().parent / "inkling_cache_sim.c"
++    ecache = Path(waste_src) / "ecache.c"
++    if not ecache.is_file():
++        raise BuildError(
++            f"{ecache} not found — pass --waste-src pointing at an applied "
++            "WASTE tree (integration/waste/generate.sh makes one)"
++        )
++    cc = os.environ.get("CC", "cc")
++    cmd = [cc, "-O2", "-std=gnu11", "-Wall", "-Wextra",
++           f"-I{waste_src}", "-o", str(out), str(src), str(ecache), "-lpthread"]
++    proc = subprocess.run(cmd, capture_output=True, text=True)
++    if proc.returncode != 0:
++        raise BuildError(f"compile failed:\n{proc.stderr}")
++    return out
++
++
++# waste_ecache_init derives n_slots = budget_bytes / rec_bytes and nothing
++# else in the policy depends on the record size, so hit rate is a function of
++# the slot count and the trace alone. Running with a stand-in record and a
++# matching budget therefore gives the SAME answer while allocating a
++# thousandth of the memory — a 32 GiB cache of real 9 MB records does not fit
++# on the machine measuring it, and paging it would measure the swap file.
++STANDIN_REC = 16384
++
++
++def run_slots(binary: Path, trace: Path, slots: int, policy: int = 0) -> dict:
++    """Run the real cache at exactly `slots` slots."""
++    if slots < 0:
++        raise ValueError("slot count must not be negative")
++    budget = slots * STANDIN_REC
++    proc = subprocess.run(
++        [str(binary), str(trace), str(budget), str(STANDIN_REC), str(policy)],
++        capture_output=True, text=True,
++    )
++    if proc.returncode != 0:
++        raise RuntimeError(f"simulator failed ({proc.returncode}): {proc.stderr}")
++    r = json.loads(proc.stdout)
++    if r["n_slots"] != slots:
++        raise RuntimeError(f"asked for {slots} slots, cache made {r['n_slots']}")
++    return r
++
++
++def slots_for(cache_bytes: float, rec_bytes: int) -> int:
++    return int(cache_bytes // rec_bytes)
++
++
++def _trace(tmp: Path, name: str, *, layers: int, experts: int, top_k: int,
++           steps: int, chunk: int = 1, seed: int = 1, **kw) -> Path:
++    t = trace_mod.generate(layers, experts, top_k, steps, chunk=chunk,
++                           seed=seed, **kw)
++    path = tmp / name
++    trace_mod.write_trace(path, t, experts)
++    return path
++
++
++def cmd_validate(args: argparse.Namespace) -> int:
++    with tempfile.TemporaryDirectory() as td:
++        tmp = Path(td)
++        binary = build(args.waste_src, tmp / "sim")
++        path = _trace(tmp, "kl.bin", layers=26, experts=256, top_k=8,
++                      steps=300, seed=args.seed,
++                      stickiness=args.stickiness)
++        print("docs/GATES.md Gate 5 — the real cache on Kimi-Linear, 300 tokens")
++        print("The CACHE here is upstream's shipping C. Only the trace is modelled.")
++        print()
++        print("   frac of set   slots   measured   model   delta")
++        deltas = []
++        for budget, want_slots, frac, want_hit in GATE5:
++            r = run_slots(binary, path, slots_for(budget, GATE5_REC_BYTES), 0)
++            got = r["hit_rate"]
++            deltas.append(got - want_hit)
++            print(f"   {frac:10.1%}   {r['n_slots']:5d}   {want_hit:7.1%}   "
++                  f"{got:5.1%}   {(got - want_hit) * 100:+5.1f}pp")
++        worst = min(deltas)
++        print()
++        print(f"The model is CONSERVATIVE at every budget: worst {worst * 100:+.1f}pp,")
++        print(f"mean {sum(deltas) / len(deltas) * 100:+.1f}pp. It reproduces the shape and the")
++        print("knee, and under-predicts the level.")
++        print()
++        print("The cause is structural and worth stating rather than tuning away:")
++        print("the trace's temporal correlation is first-order — an expert is")
++        print("carried from one position to the next — so reuse decays")
++        print("geometrically. Real routing also has session-scale structure, where")
++        print("a prompt's domain keeps a subset of experts warm for hundreds of")
++        print("tokens. That is exactly what a cache converts into hits.")
++        print()
++        print("Consequence: every Inkling cache figure this tool produces is a")
++        print("LOWER BOUND on the hit rate, and so an UPPER BOUND on bytes read.")
++        return 0
++
++
++def cmd_sweep(args: argparse.Namespace) -> int:
++    geo = dict(INKLING)
++    with tempfile.TemporaryDirectory() as td:
++        tmp = Path(td)
++        binary = build(args.waste_src, tmp / "sim")
++        path = _trace(tmp, "ink.bin", layers=geo["layers"], experts=geo["experts"],
++                      top_k=geo["top_k"], steps=args.steps, seed=args.seed,
++                      stickiness=args.stickiness)
++        cold = geo["layers"] * geo["top_k"] * geo["rec_bytes"]
++        print(f"Inkling-Small, {args.steps} decode tokens, "
++              f"{cold / GIB:.2f} GiB/token cold")
++        print("Cache is upstream's real ecache.c; hit rates are lower bounds.")
++        print()
++        print("   cache      slots   % bank   LFRU hit   GiB/token   LRU hit")
++        for gib in args.cache_gib:
++            slots = slots_for(gib * GIB, geo["rec_bytes"])
++            lfru = run_slots(binary, path, slots, 0)
++            lru = run_slots(binary, path, slots, 1)
++            bank = geo["layers"] * geo["experts"]
++            # Bytes are the miss count times the REAL record, not the stand-in.
++            gib_tok = lfru["misses"] / lfru["steps"] * geo["rec_bytes"] / GIB
++            print(f"   {gib:5.2f} GiB  {slots:5d}   "
++                  f"{slots / bank:6.1%}   {lfru['hit_rate']:8.1%}   "
++                  f"{gib_tok:9.3f}   {lru['hit_rate']:6.1%}")
++        return 0
++
++
++def cmd_batch(args: argparse.Namespace) -> int:
++    geo = dict(INKLING)
++    with tempfile.TemporaryDirectory() as td:
++        tmp = Path(td)
++        binary = build(args.waste_src, tmp / "sim")
++        slots = slots_for(args.cache_gib * GIB, geo["rec_bytes"])
++        cold_per_token = geo["layers"] * geo["top_k"] * geo["rec_bytes"]
++        print(f"Chunk dedup — {geo['layers']} layers, top-{geo['top_k']} of "
++              f"{geo['experts']}, cache {args.cache_gib} GiB")
++        print("Positions in a chunk share every record but keep all their")
++        print("arithmetic. docs/EFFICIENCY.md §1 measured this on K3.")
++        print()
++        print("   chunk   records/token   GiB/token   vs standalone")
++        base = None
++        for chunk in args.chunk:
++            steps = max(1, args.tokens // chunk)
++            path = _trace(tmp, f"c{chunk}.bin", layers=geo["layers"],
++                          experts=geo["experts"], top_k=geo["top_k"],
++                          steps=steps, chunk=chunk, seed=args.seed,
++                          stickiness=args.stickiness)
++            r = run_slots(binary, path, slots, 0)
++            per_token = r["misses"] / r["steps"] * geo["rec_bytes"] / chunk
++            recs = per_token / geo["rec_bytes"]
++            if base is None:
++                base = per_token
++            print(f"   {chunk:5d}   {recs:13.1f}   {per_token / GIB:9.3f}   "
++                  f"{per_token / base:12.2f}x")
++        print()
++        print(f"   cold, no cache, no dedup: {geo['layers'] * geo['top_k']} "
++              f"records = {cold_per_token / GIB:.2f} GiB/token")
++        return 0
++
++
++DEFAULT_SRC = Path(__file__).resolve().parent.parent / "src"
++
++
++def main(argv: list[str] | None = None) -> int:
++    ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
++    ap.add_argument("--waste-src", type=Path, default=DEFAULT_SRC,
++                    help="directory holding upstream's ecache.c and ecache.h")
++    ap.add_argument("--seed", type=int, default=1)
++    ap.add_argument("--stickiness", type=float,
++                    default=trace_mod.DEFAULT_STICKINESS)
++    sub = ap.add_subparsers(dest="cmd", required=True)
++
++    v = sub.add_parser("validate", help="reproduce Gate 5")
++    v.set_defaults(func=cmd_validate)
++
++    s = sub.add_parser("sweep", help="Inkling hit rate vs cache size")
++    s.add_argument("--steps", type=int, default=300)
++    s.add_argument("--cache-gib", type=float, nargs="+",
++                   default=[1.0, 2.11, 4.0, 6.34, 8.0, 16.0, 32.0])
++    s.set_defaults(func=cmd_sweep)
++
++    b = sub.add_parser("batch", help="bytes/token vs chunk size")
++    b.add_argument("--cache-gib", type=float, default=6.34)
++    b.add_argument("--tokens", type=int, default=512)
++    b.add_argument("--chunk", type=int, nargs="+", default=[1, 2, 4, 8, 16, 32, 64])
++    b.set_defaults(func=cmd_batch)
++
++    args = ap.parse_args(argv)
++    try:
++        return args.func(args)
++    except (BuildError, RuntimeError, ValueError) as exc:
++        print(f"inkling_cache_bench: {exc}", file=sys.stderr)
++        return 2
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tools/inkling_cache_sim.c b/tools/inkling_cache_sim.c
+new file mode 100644
+index 0000000..f143cff
+--- /dev/null
++++ b/tools/inkling_cache_sim.c
+@@ -0,0 +1,179 @@
++/* SPDX-License-Identifier: Apache-2.0
++ *
++ * inkling_cache_sim.c — drive WASTE's REAL expert cache with an Inkling
++ * routing trace and report what it actually does.
++ *
++ * docs/GATES.md Gate 2 simulated LRU-vs-LFRU hit curves in Python and Gate 5
++ * then measured that the real cache beats the simulation above 12%. So a
++ * second Python reimplementation of the policy would be answering a question
++ * whose answer is already known to be wrong. This links `src/ecache.c` and
++ * runs the shipping LFRU implementation — sampled eviction, frequency-first
++ * ordering, hash table and all — over a trace generated by
++ * `inkling_cache_trace.py`.
++ *
++ * Nothing here touches a disk: `fetch` returns immediately. The measurement is
++ * placement, not bandwidth, and every read this reports as a miss is a read
++ * the engine would have issued.
++ *
++ * Build: cc -O2 -std=gnu11 -I<waste/src> -o inkling_cache_sim \
++ *            inkling_cache_sim.c <waste/src>/ecache.c -lpthread
++ * Usage: inkling_cache_sim TRACE.bin CACHE_BYTES REC_BYTES [policy]
++ *        policy 0 = LFRU (shipping default), 1 = LRU
++ *
++ * Prints one JSON object on stdout.
++ *
++ * Trace format, little-endian, produced by inkling_cache_trace.py:
++ *   u32 magic 'ICT1', u32 steps, u32 layers, u32 slots_per_layer
++ *   then steps*layers records of: u32 n, then n * u32 expert ids
++ * A "step" is one decode position for batch 1, or one chunk of positions when
++ * the generator was asked to dedup — which is what `moe_chunk` does upstream,
++ * so a chunk's record count is the number of distinct records it needs.
++ */
++#define _GNU_SOURCE
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "ecache.h"
++
++#define TRACE_MAGIC 0x31544349u   /* 'ICT1' little-endian */
++
++/* The cache only cares that fetch succeeds and fills rec_bytes. Filling it
++ * with anything real would measure memset, not placement. */
++static size_t g_rec;
++static uint64_t g_fetches;
++
++static int sim_fetch(void *user, int layer, int expert, uint8_t *dst)
++{
++    (void)user; (void)layer; (void)expert;
++    g_fetches++;
++    /* Touch one byte per page so the allocation is real without paying for a
++     * full memset of a 9 MB record on every miss. dst is NULL only on the
++     * no-cache path, where there is no slot to touch. */
++    if (dst)
++        for (size_t off = 0; off < g_rec; off += 4096) dst[off] = 1;
++    return 0;
++}
++
++static uint32_t rd_u32(FILE *f, const char *what)
++{
++    uint32_t v;
++    if (fread(&v, sizeof v, 1, f) != 1) {
++        fprintf(stderr, "inkling_cache_sim: truncated trace reading %s\n", what);
++        exit(2);
++    }
++    return v;
++}
++
++int main(int argc, char **argv)
++{
++    if (argc < 4) {
++        fprintf(stderr,
++                "usage: %s TRACE.bin CACHE_BYTES REC_BYTES [policy]\n",
++                argv[0]);
++        return 1;
++    }
++    const char *path = argv[1];
++    const size_t budget = strtoull(argv[2], NULL, 10);
++    const size_t rec = strtoull(argv[3], NULL, 10);
++    const int policy = argc > 4 ? atoi(argv[4]) : 0;
++
++    if (rec == 0 || rec % 4096) {
++        fprintf(stderr, "inkling_cache_sim: record must be a positive multiple of 4096\n");
++        return 1;
++    }
++    g_rec = rec;
++
++    FILE *f = fopen(path, "rb");
++    if (!f) { perror("open trace"); return 1; }
++    if (rd_u32(f, "magic") != TRACE_MAGIC) {
++        fprintf(stderr, "inkling_cache_sim: not an ICT1 trace\n");
++        return 2;
++    }
++    const uint32_t steps = rd_u32(f, "steps");
++    const uint32_t layers = rd_u32(f, "layers");
++    const uint32_t slots = rd_u32(f, "slots_per_layer");
++    if (!steps || !layers || !slots) {
++        fprintf(stderr, "inkling_cache_sim: empty trace\n");
++        return 2;
++    }
++
++    waste_ecache c;
++    if (waste_ecache_init(&c, budget, rec, policy) != 0) {
++        fprintf(stderr, "inkling_cache_sim: cache init refused "
++                        "(budget %zu, record %zu)\n", budget, rec);
++        return 3;
++    }
++
++    uint64_t accesses = 0;
++    int *ids = NULL;
++    uint32_t ids_cap = 0;
++
++    for (uint32_t s = 0; s < steps; s++) {
++        for (uint32_t L = 0; L < layers; L++) {
++            const uint32_t n = rd_u32(f, "record count");
++            if (n > ids_cap) {
++                ids = realloc(ids, (size_t)n * sizeof *ids);
++                if (!ids) { fprintf(stderr, "oom\n"); return 4; }
++                ids_cap = n;
++            }
++            for (uint32_t i = 0; i < n; i++) {
++                const uint32_t e = rd_u32(f, "expert id");
++                if (e >= slots) {
++                    fprintf(stderr, "inkling_cache_sim: expert %u outside "
++                                    "0..%u\n", e, slots - 1);
++                    return 2;
++                }
++                ids[i] = (int)e;
++            }
++            /* Name the layer's records before reading any of them. With a
++             * synchronous cache this is a no-op, which is the point: the
++             * demand stream must measure the same either way. */
++            waste_ecache_hint(&c, (int)L, ids, (int)n);
++            for (uint32_t i = 0; i < n; i++) {
++                if (c.n_slots == 0) {
++                    /* ecache.h says a zero budget "disables caching (every
++                     * access reads)", but waste_ecache_get has no slot to
++                     * return and answers NULL — at a zero budget the engine
++                     * reads directly rather than calling it. Model that here
++                     * instead of reporting a failure, so the no-cache column
++                     * is the honest all-miss baseline it claims to be. */
++                    c.misses++;
++                    c.bytes_read += rec;
++                    sim_fetch(NULL, (int)L, ids[i], NULL);
++                } else if (!waste_ecache_get(&c, (int)L, ids[i], sim_fetch, NULL)) {
++                    fprintf(stderr, "inkling_cache_sim: get failed at "
++                                    "layer %u expert %d\n", L, ids[i]);
++                    return 5;
++                }
++                accesses++;
++            }
++        }
++    }
++    fclose(f);
++
++    /* bytes_read is what the disk would have moved; per-step is the number
++     * that multiplies into seconds. */
++    const double per_step = (double)c.bytes_read / (double)steps;
++    printf("{\"steps\":%u,\"layers\":%u,\"slots_per_layer\":%u,"
++           "\"accesses\":%llu,\"hits\":%llu,\"misses\":%llu,"
++           "\"evictions\":%llu,\"fetches\":%llu,"
++           "\"n_slots\":%d,\"budget_bytes\":%zu,\"rec_bytes\":%zu,"
++           "\"policy\":%d,\"hit_rate\":%.6f,\"bytes_read\":%llu,"
++           "\"bytes_per_step\":%.1f}\n",
++           steps, layers, slots,
++           (unsigned long long)accesses,
++           (unsigned long long)c.hits,
++           (unsigned long long)c.misses,
++           (unsigned long long)c.evictions,
++           (unsigned long long)g_fetches,
++           c.n_slots, budget, rec, policy,
++           waste_ecache_hit_rate(&c),
++           (unsigned long long)c.bytes_read,
++           per_step);
++
++    free(ids);
++    waste_ecache_free(&c);
++    return 0;
++}
+diff --git a/tools/inkling_cache_trace.py b/tools/inkling_cache_trace.py
+new file mode 100644
+index 0000000..f87b5e3
+--- /dev/null
++++ b/tools/inkling_cache_trace.py
+@@ -0,0 +1,271 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++"""
++inkling_cache_trace.py — generate routing traces for `inkling_cache_sim.c`.
++
++Inkling's router has never been observed: running it needs the checkpoint.
++What *has* been observed is the Kimi router family, twice, by upstream:
++
++  docs/GATES.md Gate 2 (Kimi-Linear-48B, 256 experts, top-8, 300 tokens)
++    concentration  top 8.7% of slots cover 50% of activations,
++                   top 28% cover 80%, top 51% cover 95%
++    reuse          next-token reuse 33.6%
++
++So this generator has exactly two free parameters, each fitted to one of those
++two measurements:
++
++  concentration   a stretched exponential p_i ~ exp(-b (i/N)^g) over the
++                  experts of a layer, fitted to the coverage curve
++                  (g = 0.55, b = 5.5; reproduces 49.4 / 81.8 / 93.5 against a
++                  measured 50 / 80 / 95).
++
++  stickiness      the probability that an expert selected at one position is
++                  selected again at the next. Concentration ALONE gives only
++                  11.6% reuse against a measured 33.6%, so routing carries
++                  real temporal correlation that an IID draw does not
++                  reproduce — this parameter is that gap and nothing more.
++
++Two parameters, two measurements: the model is not predictive yet. What makes
++it usable is that it then reproduces a THIRD measurement it was not fitted to
++— Gate 5's real-cache hit-rate curve — which `--validate` runs and prints.
++
++WHAT THIS IS NOT. It is not Inkling's routing. It is the Kimi family's
++routing statistics applied to Inkling's geometry, on the explicit assumption
++that a sigmoid-plus-top-k router with a correction bias behaves similarly at
++256 experts and top-6. Upstream's own Gate 2 caveat applies: reuse falls and
++concentration rises as experts get finer-grained, and which dominates is
++model-specific. Every number produced from this trace inherits that
++assumption, and `--concentration`/`--stickiness` exist so a reader can see how
++much the answer moves when it is wrong.
++
++One real routing trace from the official model replaces all of this.
++"""
++
++from __future__ import annotations
++
++import argparse
++import math
++import random
++import struct
++import sys
++from dataclasses import dataclass
++from pathlib import Path
++
++TRACE_MAGIC = 0x31544349  # 'ICT1'
++
++# Fitted to Gate 2's coverage curve; see module docstring.
++DEFAULT_G = 0.55
++DEFAULT_B = 5.5
++# Fitted to Gate 2's 33.6% next-token reuse given the concentration above.
++DEFAULT_STICKINESS = 0.249
++
++# Gate 2's measured concentration, kept here so --validate can restate it.
++GATE2_COVERAGE = ((0.087, 0.50), (0.28, 0.80), (0.51, 0.95))
++GATE2_REUSE = 0.336
++
++# docs/GATES.md Gate 5, the real cache on Kimi-Linear over 300 decode tokens.
++# fraction of the expert set -> measured hit rate
++GATE5_HIT_CURVE = ((0.030, 0.132), (0.060, 0.403), (0.121, 0.619),
++                   (0.242, 0.848), (0.484, 0.939))
++GATE5_GEOMETRY = dict(layers=26, experts=256, top_k=8, steps=300)
++
++
++def weights(n: int, g: float = DEFAULT_G, b: float = DEFAULT_B) -> list[float]:
++    """Per-expert selection probability, most-used first."""
++    if n <= 0:
++        raise ValueError("expert count must be positive")
++    if g <= 0 or b <= 0:
++        raise ValueError("concentration parameters must be positive")
++    raw = [math.exp(-b * ((i / n) ** g)) for i in range(n)]
++    total = sum(raw)
++    return [x / total for x in raw]
++
++
++def coverage(w: list[float], fraction: float) -> float:
++    """Share of activations taken by the top `fraction` of experts."""
++    k = max(1, round(fraction * len(w)))
++    return sum(sorted(w, reverse=True)[:k])
++
++
++def _weighted_sample(pool: list[int], w: list[float], k: int,
++                     rng: random.Random) -> list[int]:
++    """Weighted selection without replacement — a router's top-k."""
++    pool = list(pool)
++    ww = [w[i] for i in pool]
++    out: list[int] = []
++    for _ in range(min(k, len(pool))):
++        total = sum(ww)
++        if total <= 0:
++            out.append(pool.pop(0))
++            ww.pop(0)
++            continue
++        r = rng.random() * total
++        acc = 0.0
++        for i, x in enumerate(ww):
++            acc += x
++            if acc >= r:
++                out.append(pool.pop(i))
++                ww.pop(i)
++                break
++    return out
++
++
++@dataclass
++class Router:
++    """One layer's routing over a sequence of positions."""
++
++    experts: int
++    top_k: int
++    stickiness: float
++    w: list[float]
++    prev: list[int]
++
++    @classmethod
++    def make(cls, experts: int, top_k: int, stickiness: float,
++             g: float, b: float) -> "Router":
++        if not 0.0 <= stickiness < 1.0:
++            raise ValueError("stickiness must be in [0, 1)")
++        if top_k <= 0 or top_k > experts:
++            raise ValueError("top_k must be in 1..experts")
++        return cls(experts, top_k, stickiness, weights(experts, g, b), [])
++
++    def step(self, rng: random.Random) -> list[int]:
++        """Select this position's experts: carry some of the previous
++        selection, fill the rest from the concentration distribution."""
++        kept = [e for e in self.prev if rng.random() < self.stickiness]
++        remaining = self.top_k - len(kept)
++        if remaining > 0:
++            pool = [i for i in range(self.experts) if i not in set(kept)]
++            kept += _weighted_sample(pool, self.w, remaining, rng)
++        else:
++            kept = kept[: self.top_k]
++        self.prev = kept
++        return kept
++
++
++def generate(layers: int, experts: int, top_k: int, steps: int,
++             chunk: int = 1, stickiness: float = DEFAULT_STICKINESS,
++             g: float = DEFAULT_G, b: float = DEFAULT_B,
++             seed: int = 1) -> list[list[list[int]]]:
++    """Return `steps` entries, each a list per layer of the DISTINCT expert
++    ids that step needs.
++
++    `chunk` > 1 groups that many decode positions into one step and takes the
++    union per layer — which is what upstream's `moe_chunk` does, iterating the
++    distinct experts of a chunk. It is the whole batching lever: the positions
++    still each cost their own arithmetic, but they share every record."""
++    if steps <= 0 or layers <= 0 or chunk <= 0:
++        raise ValueError("layers, steps and chunk must be positive")
++    rng = random.Random(seed)
++    routers = [Router.make(experts, top_k, stickiness, g, b) for _ in range(layers)]
++    out = []
++    for _ in range(steps):
++        per_layer = []
++        for r in routers:
++            union: set[int] = set()
++            for _ in range(chunk):
++                union.update(r.step(rng))
++            per_layer.append(sorted(union))
++        out.append(per_layer)
++    return out
++
++
++def write_trace(path: Path, trace: list[list[list[int]]], experts: int) -> int:
++    steps = len(trace)
++    layers = len(trace[0])
++    buf = bytearray(struct.pack("<IIII", TRACE_MAGIC, steps, layers, experts))
++    for step in trace:
++        if len(step) != layers:
++            raise ValueError("ragged trace")
++        for ids in step:
++            buf += struct.pack("<I", len(ids))
++            for e in ids:
++                if not 0 <= e < experts:
++                    raise ValueError(f"expert {e} outside 0..{experts - 1}")
++                buf += struct.pack("<I", e)
++    Path(path).write_bytes(bytes(buf))
++    return len(buf)
++
++
++def measured_reuse(trace: list[list[list[int]]]) -> float:
++    """Next-step reuse, the quantity Gate 2 reports. Only meaningful for
++    chunk == 1, where a step is one position."""
++    total = 0.0
++    n = 0
++    for a, b in zip(trace, trace[1:]):
++        for prev, cur in zip(a, b):
++            if cur:
++                total += len(set(prev) & set(cur)) / len(cur)
++                n += 1
++    return total / n if n else 0.0
++
++
++def cmd_generate(args: argparse.Namespace) -> int:
++    trace = generate(args.layers, args.experts, args.top_k, args.steps,
++                     chunk=args.chunk, stickiness=args.stickiness,
++                     g=args.g, b=args.b, seed=args.seed)
++    size = write_trace(args.out, trace, args.experts)
++    per_step = sum(len(ids) for step in trace for ids in step) / len(trace)
++    print(f"wrote {args.out} ({size:,} B)")
++    print(f"  steps {args.steps}, layers {args.layers}, top-k {args.top_k}, "
++          f"chunk {args.chunk}")
++    print(f"  distinct records per step: {per_step:.1f} "
++          f"(a chunk of {args.chunk} costs {args.layers * args.top_k * args.chunk} "
++          f"without dedup)")
++    if args.chunk == 1:
++        print(f"  next-token reuse: {measured_reuse(trace):.1%} "
++              f"(Gate 2 measured {GATE2_REUSE:.1%})")
++    return 0
++
++
++def cmd_check(args: argparse.Namespace) -> int:
++    """Restate the two fitted quantities against what upstream measured."""
++    w = weights(args.experts, args.g, args.b)
++    print("Concentration, against docs/GATES.md Gate 2:")
++    for frac, want in GATE2_COVERAGE:
++        got = coverage(w, frac)
++        print(f"  top {frac:5.1%} of experts: measured {want:.0%}, model {got:.1%}")
++    trace = generate(GATE5_GEOMETRY["layers"], args.experts, 8, 400,
++                     stickiness=args.stickiness, g=args.g, b=args.b,
++                     seed=args.seed)
++    print(f"\nReuse: measured {GATE2_REUSE:.1%}, model {measured_reuse(trace):.1%}")
++    print("\nBoth of the above are FITTED, not predicted. The prediction this")
++    print("model has to earn is Gate 5's hit-rate curve; run the simulator")
++    print("with --validate to see it.")
++    return 0
++
++
++def main(argv: list[str] | None = None) -> int:
++    ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
++    ap.add_argument("--experts", type=int, default=256)
++    ap.add_argument("--g", type=float, default=DEFAULT_G,
++                    help="concentration shape (fitted to Gate 2)")
++    ap.add_argument("--b", type=float, default=DEFAULT_B,
++                    help="concentration scale (fitted to Gate 2)")
++    ap.add_argument("--stickiness", type=float, default=DEFAULT_STICKINESS,
++                    help="temporal correlation (fitted to Gate 2's reuse)")
++    ap.add_argument("--seed", type=int, default=1)
++    sub = ap.add_subparsers(dest="cmd", required=True)
++
++    g = sub.add_parser("generate", help="write a trace")
++    g.add_argument("--out", type=Path, required=True)
++    g.add_argument("--layers", type=int, default=40)
++    g.add_argument("--top-k", type=int, default=6)
++    g.add_argument("--steps", type=int, default=300)
++    g.add_argument("--chunk", type=int, default=1,
++                   help="decode positions grouped into one step (batching)")
++    g.set_defaults(func=cmd_generate)
++
++    c = sub.add_parser("check", help="restate the fit against Gate 2")
++    c.set_defaults(func=cmd_check)
++
++    args = ap.parse_args(argv)
++    try:
++        return args.func(args)
++    except ValueError as exc:
++        print(f"inkling_cache_trace: {exc}", file=sys.stderr)
++        return 2
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tools/inkling_expert_bench.c b/tools/inkling_expert_bench.c
+new file mode 100644
+index 0000000..e824d7a
+--- /dev/null
++++ b/tools/inkling_expert_bench.c
+@@ -0,0 +1,260 @@
++/* SPDX-License-Identifier: Apache-2.0
++ *
++ * inkling_expert_bench.c — what one routed expert costs, two ways.
++ *
++ * This port's expert path and upstream's compute the same function by very
++ * different means, and until now nobody had measured the difference.
++ *
++ *   EXPAND   `decode_matrix` in inkling_wexp.c reconstructs the whole
++ *            quantized matrix into F32 — for Inkling that is
++ *            3 x 2048 x 4096 floats, 100.7 MB per expert — and
++ *            inkling_layer.c then runs an ordinary dense matvec over it.
++ *            This is what the private runtime does today.
++ *
++ *   LUT      upstream's `vq_matvec` (src/model.c) never expands an expert.
++ *            It builds a table from the ACTIVATION once per matrix,
++ *            lut[v][stage][entry] = sum_d x[v*dim+d] * book[stage][entry][d],
++ *            then each output row is `nv * stages` table lookups and adds.
++ *            At Inkling's geometry the table is nv*stages*entries floats =
++ *            1.5 MB, so it is L2-resident rather than L1-resident. That is
++ *            still two orders of magnitude below the 100.7 MB the expanded
++ *            expert streams through DRAM, which is the point.
++ *
++ * docs/WASTE-CONSTRAINTS.md §2 already said the scalar path "should not
++ * become the hot path". This measures what that sentence is worth.
++ *
++ * Both implementations here are standalone so the benchmark builds without
++ * the engine, and the FIRST thing the program does is check that they agree
++ * to floating-point tolerance on the same weights and activation. A speed
++ * comparison between two things that compute different functions would be
++ * worthless, so if the check fails the program refuses to print a timing.
++ *
++ * Build: cc -O2 -std=gnu11 -o inkling_expert_bench inkling_expert_bench.c -lm
++ * Usage: inkling_expert_bench [hidden] [intermediate] [reps]
++ *
++ * Prints one JSON object on stdout.
++ */
++#define _GNU_SOURCE
++#include <math.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
++
++#define STAGES 3
++#define ENTRIES 256
++#define VEC_DIM 8
++#define INDEX_BLOCK 64
++
++/* Inkling-Small: 40 sparse layers x top-6 routed, plus 2 shared per layer. */
++#define ROUTED_PER_TOKEN 240
++#define SHARED_PER_TOKEN 80
++
++static double now(void)
++{
++    struct timespec t;
++    clock_gettime(CLOCK_MONOTONIC, &t);
++    return (double)t.tv_sec + (double)t.tv_nsec / 1e9;
++}
++
++static uint32_t rng_state = 0x9e3779b9u;
++static float frand(void)
++{
++    rng_state = rng_state * 1664525u + 1013904223u;
++    return (float)((rng_state >> 8) & 0xffff) / 32768.0f - 1.0f;
++}
++
++/* Index layout, matching inkling_vq.py's `block_indices` and the reader in
++ * inkling_wexp.c: [row_block][vector][row_in_block][stage]. */
++static size_t idx_at(int row, int vector, int stage, int nv)
++{
++    const size_t block = (size_t)(row / INDEX_BLOCK);
++    const size_t in_block = (size_t)(row % INDEX_BLOCK);
++    return ((block * (size_t)nv + (size_t)vector) * INDEX_BLOCK + in_block)
++           * STAGES + (size_t)stage;
++}
++
++/* ---- path EXPAND: reconstruct to F32, then a dense matvec ---------------- */
++
++static void expand(const uint8_t *idx, const uint16_t *scale_h,
++                   const float *books, int rows, int cols, float *out)
++{
++    const int nv = cols / VEC_DIM;
++    for (int r = 0; r < rows; r++) {
++        /* The real reader converts an fp16 scale here; a multiply by a float
++         * is the same work and keeps this file free of an f16 decoder. */
++        const float scale = (float)scale_h[r] * (1.0f / 32768.0f);
++        for (int v = 0; v < nv; v++) {
++            float *dst = out + ((size_t)r * nv + v) * VEC_DIM;
++            for (int d = 0; d < VEC_DIM; d++) dst[d] = 0.0f;
++            for (int s = 0; s < STAGES; s++) {
++                const unsigned code = idx[idx_at(r, v, s, nv)];
++                const float *book = books + ((size_t)s * ENTRIES + code) * VEC_DIM;
++                for (int d = 0; d < VEC_DIM; d++) dst[d] += book[d];
++            }
++            for (int d = 0; d < VEC_DIM; d++) dst[d] *= scale;
++        }
++    }
++}
++
++static void dense_matvec(const float *W, const float *x, int rows, int cols,
++                         float *y)
++{
++    for (int r = 0; r < rows; r++) {
++        const float *w = W + (size_t)r * cols;
++        float acc = 0.0f;
++        for (int c = 0; c < cols; c++) acc += w[c] * x[c];
++        y[r] = acc;
++    }
++}
++
++/* ---- path LUT: build a table from the activation, then gather ------------ */
++
++static void build_lut(const float *books, const float *x, int cols, float *lut)
++{
++    const int nv = cols / VEC_DIM;
++    for (int v = 0; v < nv; v++) {
++        const float *xv = x + (size_t)v * VEC_DIM;
++        for (int s = 0; s < STAGES; s++) {
++            const float *book = books + (size_t)s * ENTRIES * VEC_DIM;
++            float *dst = lut + ((size_t)v * STAGES + s) * ENTRIES;
++            for (int e = 0; e < ENTRIES; e++) {
++                const float *b = book + (size_t)e * VEC_DIM;
++                float acc = 0.0f;
++                for (int d = 0; d < VEC_DIM; d++) acc += xv[d] * b[d];
++                dst[e] = acc;
++            }
++        }
++    }
++}
++
++static void lut_matvec(const uint8_t *idx, const uint16_t *scale_h,
++                       const float *lut, int rows, int cols, float *y)
++{
++    const int nv = cols / VEC_DIM;
++    for (int r = 0; r < rows; r++) {
++        float acc = 0.0f;
++        for (int v = 0; v < nv; v++) {
++            const float *blk = lut + (size_t)v * STAGES * ENTRIES;
++            for (int s = 0; s < STAGES; s++)
++                acc += blk[(size_t)s * ENTRIES + idx[idx_at(r, v, s, nv)]];
++        }
++        y[r] = acc * ((float)scale_h[r] * (1.0f / 32768.0f));
++    }
++}
++
++int main(int argc, char **argv)
++{
++    const int hidden = argc > 1 ? atoi(argv[1]) : 4096;
++    const int inter = argc > 2 ? atoi(argv[2]) : 2048;
++    const int reps = argc > 3 ? atoi(argv[3]) : 3;
++
++    if (hidden <= 0 || inter <= 0 || hidden % VEC_DIM || inter % VEC_DIM ||
++        hidden % INDEX_BLOCK || inter % INDEX_BLOCK || reps <= 0) {
++        fprintf(stderr, "bad geometry\n");
++        return 1;
++    }
++
++    /* One matrix stands for the expert; gate, up and down are all
++     * rows x cols with the same total work, so the per-expert figure is
++     * three times what is measured here. gate is [inter, hidden]. */
++    const int rows = inter, cols = hidden;
++    const int nv = cols / VEC_DIM;
++
++    const size_t n_idx = (size_t)((rows + INDEX_BLOCK - 1) / INDEX_BLOCK)
++                       * INDEX_BLOCK * (size_t)nv * STAGES;
++    uint8_t *idx = malloc(n_idx);
++    uint16_t *scale = malloc((size_t)rows * sizeof *scale);
++    float *books = malloc((size_t)STAGES * ENTRIES * VEC_DIM * sizeof *books);
++    float *x = malloc((size_t)cols * sizeof *x);
++    float *W = malloc((size_t)rows * cols * sizeof *W);
++    float *lut = malloc((size_t)nv * STAGES * ENTRIES * sizeof *lut);
++    float *ya = malloc((size_t)rows * sizeof *ya);
++    float *yb = malloc((size_t)rows * sizeof *yb);
++    if (!idx || !scale || !books || !x || !W || !lut || !ya || !yb) {
++        fprintf(stderr, "out of memory\n");
++        return 1;
++    }
++
++    for (size_t i = 0; i < n_idx; i++) idx[i] = (uint8_t)(rng_state = rng_state * 1103515245u + 12345u) ;
++    for (int r = 0; r < rows; r++) scale[r] = (uint16_t)(1000 + (r % 5000));
++    for (size_t i = 0; i < (size_t)STAGES * ENTRIES * VEC_DIM; i++) books[i] = frand();
++    for (int c = 0; c < cols; c++) x[c] = frand();
++
++    /* Agreement first. A timing comparison between two implementations that
++     * do not compute the same thing is not a measurement of anything. */
++    expand(idx, scale, books, rows, cols, W);
++    dense_matvec(W, x, rows, cols, ya);
++    build_lut(books, x, cols, lut);
++    lut_matvec(idx, scale, lut, rows, cols, yb);
++
++    double worst = 0.0, denom = 0.0;
++    for (int r = 0; r < rows; r++) {
++        const double d = fabs((double)ya[r] - (double)yb[r]);
++        if (d > worst) worst = d;
++        if (fabs((double)ya[r]) > denom) denom = fabs((double)ya[r]);
++    }
++    const double rel = denom > 0 ? worst / denom : worst;
++    if (!(rel < 1e-5)) {
++        fprintf(stderr, "inkling_expert_bench: the two paths disagree "
++                        "(rel %.3e) — refusing to report a timing\n", rel);
++        return 2;
++    }
++
++    double t_expand = 1e30, t_lut = 1e30;
++    for (int i = 0; i < reps; i++) {
++        double t0 = now();
++        expand(idx, scale, books, rows, cols, W);
++        dense_matvec(W, x, rows, cols, ya);
++        double dt = now() - t0;
++        if (dt < t_expand) t_expand = dt;
++
++        t0 = now();
++        build_lut(books, x, cols, lut);
++        lut_matvec(idx, scale, lut, rows, cols, yb);
++        dt = now() - t0;
++        if (dt < t_lut) t_lut = dt;
++    }
++
++    /* Per expert: three matrices of this shape. */
++    const double exp_expert = t_expand * 3.0, lut_expert = t_lut * 3.0;
++    const int experts = ROUTED_PER_TOKEN + SHARED_PER_TOKEN;
++    const double f32_bytes = (double)rows * cols * 4.0 * 3.0;
++
++    /* Memory traffic, which is the part no amount of SIMD or threading
++     * changes. EXPAND writes the reconstructed F32 matrix and reads it
++     * straight back, so it moves twice the expanded size through DRAM per
++     * expert. LUT touches the index planes — bytes the engine had to read
++     * from disk regardless — plus a table small enough to stay in cache. */
++    const double expand_traffic = f32_bytes * 2.0;
++    const double lut_bytes = (double)nv * STAGES * ENTRIES * 4.0;
++    const double lut_traffic = (double)n_idx * 3.0 + lut_bytes;
++
++    printf("{\"hidden\":%d,\"intermediate\":%d,\"reps\":%d,"
++           "\"rel_disagreement\":%.3e,"
++           "\"expand_matrix_s\":%.6f,\"lut_matrix_s\":%.6f,"
++           "\"expand_expert_s\":%.6f,\"lut_expert_s\":%.6f,"
++           "\"speedup\":%.2f,"
++           "\"expert_f32_bytes\":%.0f,"
++           "\"expand_traffic_per_expert\":%.0f,"
++           "\"lut_traffic_per_expert\":%.0f,"
++           "\"lut_table_bytes\":%.0f,"
++           "\"traffic_ratio\":%.1f,"
++           "\"experts_per_token\":%d,"
++           "\"expand_token_traffic_gib\":%.1f,"
++           "\"lut_token_traffic_gib\":%.2f,"
++           "\"expand_token_s\":%.3f,\"lut_token_s\":%.3f}\n",
++           hidden, inter, reps, rel,
++           t_expand, t_lut, exp_expert, lut_expert,
++           t_expand / t_lut, f32_bytes,
++           expand_traffic, lut_traffic, lut_bytes,
++           expand_traffic / lut_traffic, experts,
++           expand_traffic * experts / 1073741824.0,
++           lut_traffic * experts / 1073741824.0,
++           exp_expert * experts, lut_expert * experts);
++
++    free(idx); free(scale); free(books); free(x); free(W);
++    free(lut); free(ya); free(yb);
++    return 0;
++}
 diff --git a/tools/inkling_fixture.py b/tools/inkling_fixture.py
 new file mode 100644
 index 0000000..86655ab
@@ -15039,6 +17532,660 @@ index 0000000..92dd6cb
 +
 +if __name__ == "__main__":
 +    raise SystemExit(main())
+diff --git a/tools/inkling_serve.py b/tools/inkling_serve.py
+new file mode 100644
+index 0000000..c000ff4
+--- /dev/null
++++ b/tools/inkling_serve.py
+@@ -0,0 +1,648 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++"""
++inkling_serve.py — an OpenAI-compatible chat endpoint over the staged Inkling
++runtime.
++
++WHAT THIS IS, EXACTLY
++---------------------
++Public `waste_open` still returns WASTE_E_UNSUPPORTED for an Inkling
++container, and nothing here changes that. This server drives the
++**converter-private** runtime — `waste_inkling_private_open/step` — which is
++the same path the parity harnesses use. It exists so the API surface is real,
++testable and reviewable *before* the loader dispatch of ROADMAP G6 lands,
++rather than after.
++
++Upstream's `serve/` is architecture-agnostic: it reaches the engine only
++through `waste_open`, `waste_tokenize` and the step API. So when G6 lands,
++this file is not the chat server — `serve/` is, unchanged, and this becomes
++redundant. That is the intended outcome, and it is why this deliberately
++implements the same wire format rather than a nicer one.
++
++THE MODEL IS SYNTHETIC UNTIL THE CHECKPOINT SAYS OTHERWISE
++----------------------------------------------------------
++A staged directory built from synthetic weights produces synthetic text. This
++server says so, in the startup banner, in `/v1/models`, and in a
++`x-waste-provenance` header on every response. It refuses to hide it:
++`--i-know-the-weights-are-synthetic` is required to start against a stage that
++does not pass the C runtime's verified official Inkling-Small profile gate,
++and the flag is deliberately tedious to type.
++
++TOKENIZER
++---------
++The release ships tiktoken ranks, a special-token map and a chat template.
++Where those are present (`--tokenizer DIR`), they are used through libwaste's
++own `waste_tok_*`. Where they are not, a byte-level fallback stands in so the
++plumbing is exercisable — and every response is labelled `tokenizer=fallback`,
++because a byte tokenizer against real weights would produce fluent-looking
++nonsense, which is the single most misleading failure this project could ship.
++
++    python3 tools/inkling_serve.py --stage STAGE_DIR [--tokenizer DIR]
++                                   [--host 127.0.0.1] [--port 8000]
++
++Endpoints: GET /v1/models, POST /v1/chat/completions (streaming and not),
++GET /healthz. Stdlib only.
++"""
++
++from __future__ import annotations
++
++import argparse
++import codecs
++import ctypes as C
++import json
++import math
++import os
++import random
++import sys
++import threading
++import time
++import uuid
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from pathlib import Path
++
++# ------------------------------------------------------------ C bindings ----
++
++PRIVATE_OK = 0
++PRIVATE_E_UNSUPPORTED = -5
++PRIVATE_STATUS = {
++    0: "ok", -1: "argument", -2: "io", -3: "format",
++    -4: "out of memory", -5: "unsupported", -6: "runtime",
++}
++
++
++class PrivateOptions(C.Structure):
++    _fields_ = [("context_capacity", C.c_int),
++                ("verify_crc", C.c_int),
++                ("require_official_small", C.c_int)]
++
++
++class InklingError(RuntimeError):
++    def __init__(self, message: str, *, status: int | None = None):
++        super().__init__(message)
++        self.status = status
++
++
++def _soext() -> str:
++    return "dll" if os.name == "nt" else ("dylib" if sys.platform == "darwin" else "so")
++
++
++def find_library(explicit: str | None = None) -> Path:
++    """Most specific first, exactly as serve/engine.py does."""
++    candidates = []
++    if explicit:
++        candidates.append(Path(explicit))
++    if os.environ.get("WASTE_LIB"):
++        candidates.append(Path(os.environ["WASTE_LIB"]))
++    here = Path(__file__).resolve().parent
++    for base in (here.parent, here.parent.parent, Path.cwd()):
++        candidates.append(base / f"libwaste.{_soext()}")
++    candidates.append(Path(f"libwaste.{_soext()}"))
++    for path in candidates:
++        if path.name and (path.is_file() or path == candidates[-1]):
++            try:
++                C.CDLL(str(path))
++                return path
++            except OSError:
++                continue
++    raise InklingError(
++        f"libwaste.{_soext()} not found — build it with "
++        f"`make libwaste.{_soext()}` in an applied WASTE tree, or set WASTE_LIB"
++    )
++
++
++class Runtime:
++    """The staged private runtime: open, step, reset, close."""
++
++    def __init__(self, lib_path: Path, stage: Path, ctx: int = 4096,
++                 verify_crc: bool = True, require_official: bool = False):
++        self.lib = C.CDLL(str(lib_path))
++        self._bind()
++        opts = PrivateOptions(ctx, 1 if verify_crc else 0,
++                              1 if require_official else 0)
++        handle = C.c_void_p()
++        detail = C.create_string_buffer(512)
++        st = self.lib.waste_inkling_private_open(
++            str(stage).encode(), C.byref(opts), C.byref(handle),
++            detail, len(detail))
++        if st != PRIVATE_OK:
++            raise InklingError(
++                f"cannot open stage {stage}: {PRIVATE_STATUS.get(st, st)}"
++                + (f" — {detail.value.decode(errors='replace')}" if detail.value else ""),
++                status=st)
++        self.handle = handle
++        cfg = self.lib.waste_inkling_private_config(handle)
++        if not cfg:
++            raise InklingError("runtime returned no config")
++        # unpadded_vocab is the only field this server needs; read it through
++        # the accessor rather than declaring the whole config struct, because
++        # a struct declared here would be a second copy of a C layout and this
++        # repository has already been bitten once by exactly that.
++        self.vocab = int(self.lib.waste_inkling_config_unpadded_vocab(cfg))
++        if self.vocab <= 0:
++            raise InklingError(f"implausible vocabulary size {self.vocab}")
++        self.context = ctx
++        self._logits = (C.c_float * self.vocab)()
++        self._lock = threading.Lock()
++
++    def _bind(self):
++        L = self.lib
++        L.waste_inkling_private_open.restype = C.c_int
++        L.waste_inkling_private_open.argtypes = [
++            C.c_char_p, C.POINTER(PrivateOptions), C.POINTER(C.c_void_p),
++            C.c_char_p, C.c_size_t]
++        L.waste_inkling_private_step.restype = C.c_int
++        L.waste_inkling_private_step.argtypes = [
++            C.c_void_p, C.c_int, C.c_int, C.POINTER(C.c_float), C.c_size_t]
++        L.waste_inkling_private_reset.restype = None
++        L.waste_inkling_private_reset.argtypes = [C.c_void_p]
++        L.waste_inkling_private_close.restype = None
++        L.waste_inkling_private_close.argtypes = [C.c_void_p]
++        L.waste_inkling_private_config.restype = C.c_void_p
++        L.waste_inkling_private_config.argtypes = [C.c_void_p]
++        L.waste_inkling_private_error.restype = C.c_char_p
++        L.waste_inkling_private_error.argtypes = [C.c_void_p]
++        L.waste_inkling_config_unpadded_vocab.restype = C.c_int
++        L.waste_inkling_config_unpadded_vocab.argtypes = [C.c_void_p]
++
++    def error(self) -> str:
++        msg = self.lib.waste_inkling_private_error(self.handle)
++        return msg.decode(errors="replace") if msg else ""
++
++    def step(self, token: int, position: int):
++        """Returns the logits buffer itself — a `c_float * vocab`, which
++        indexes and len()s like a sequence. NOT a memoryview: wrapping a
++        ctypes float array in one gives format '<f', which raises
++        NotImplementedError on the first subscript. That shipped once,
++        because the test stub returned a plain list and hid it."""
++        st = self.lib.waste_inkling_private_step(
++            self.handle, token, position, self._logits, self.vocab)
++        if st != PRIVATE_OK:
++            raise InklingError(
++                f"step failed at position {position}: "
++                f"{PRIVATE_STATUS.get(st, st)} — {self.error()}")
++        return self._logits
++
++    def reset(self):
++        self.lib.waste_inkling_private_reset(self.handle)
++
++    def close(self):
++        if getattr(self, "handle", None):
++            self.lib.waste_inkling_private_close(self.handle)
++            self.handle = None
++
++
++# ------------------------------------------------------------- tokenizer ----
++
++
++class Tokenizer:
++    """Either the official assets through libwaste, or a byte fallback.
++
++    The fallback exists so the server is runnable and testable with no
++    checkpoint. It is never silent: `kind` reaches /v1/models and the
++    provenance header, because a byte tokenizer driving real weights would
++    emit fluent-looking nonsense."""
++
++    kind = "fallback"
++
++    def __init__(self, vocab: int):
++        self.vocab = vocab
++
++    def encode(self, text: str) -> list[int]:
++        return [b % self.vocab for b in text.encode("utf-8")]
++
++    def decode_bytes(self, ids: list[int]) -> bytes:
++        return bytes(i % 256 for i in ids)
++
++    def decode(self, ids: list[int]) -> str:
++        return self.decode_bytes(ids).decode("utf-8", errors="replace")
++
++    @property
++    def eos(self) -> int:
++        return -1
++
++
++class OfficialTokenizer(Tokenizer):
++    kind = "official"
++
++    def __init__(self, lib: C.CDLL, directory: Path, vocab: int):
++        super().__init__(vocab)
++        lib.waste_tok_open.restype = C.c_void_p
++        lib.waste_tok_open.argtypes = [C.c_char_p]
++        lib.waste_tok_encode.restype = C.c_int
++        lib.waste_tok_encode.argtypes = [C.c_void_p, C.c_char_p,
++                                         C.POINTER(C.c_int32), C.c_int]
++        lib.waste_tok_decode.restype = C.c_int
++        lib.waste_tok_decode.argtypes = [C.c_void_p, C.POINTER(C.c_int32),
++                                         C.c_int, C.c_char_p, C.c_int]
++        lib.waste_tok_eos.restype = C.c_int
++        lib.waste_tok_eos.argtypes = [C.c_void_p]
++        self.lib = lib
++        self.tok = lib.waste_tok_open(str(directory).encode())
++        if not self.tok:
++            raise InklingError(f"no tokenizer assets in {directory}")
++
++    def encode(self, text: str) -> list[int]:
++        cap = len(text.encode()) + 8
++        buf = (C.c_int32 * cap)()
++        n = self.lib.waste_tok_encode(self.tok, text.encode(), buf, cap)
++        if n < 0:
++            raise InklingError("tokenizer refused the input")
++        return list(buf[:n])
++
++    def decode_bytes(self, ids: list[int]) -> bytes:
++        if not ids:
++            return b""
++        arr = (C.c_int32 * len(ids))(*ids)
++        cap = 4 * len(ids) + 64
++        buf = C.create_string_buffer(cap)
++        n = self.lib.waste_tok_decode(self.tok, arr, len(ids), buf, cap)
++        return buf.raw[:max(n, 0)]
++
++    @property
++    def eos(self) -> int:
++        return int(self.lib.waste_tok_eos(self.tok))
++
++
++# --------------------------------------------------------- chat template ----
++
++DEFAULT_TEMPLATE = {
++    "system": "<|system|>\n{content}\n",
++    "user": "<|user|>\n{content}\n",
++    "assistant": "<|assistant|>\n{content}\n",
++    "generation_prompt": "<|assistant|>\n",
++}
++
++
++def load_template(directory: Path | None) -> tuple[dict, str]:
++    """The release ships a chat template. Until G4 verifies ours renders it
++    byte-exactly, a locally supplied one is used and labelled as such — a
++    plausible-looking template is exactly the kind of unverified detail this
++    project refuses to present as official."""
++    if directory:
++        path = Path(directory) / "inkling_chat_template.json"
++        if path.is_file():
++            data = json.loads(path.read_text())
++            missing = set(DEFAULT_TEMPLATE) - set(data)
++            if missing:
++                raise InklingError(
++                    f"chat template {path} is missing {sorted(missing)}")
++            return data, "supplied"
++    return DEFAULT_TEMPLATE, "placeholder"
++
++
++def render(messages: list[dict], template: dict) -> str:
++    out = []
++    for m in messages:
++        role = m.get("role")
++        if role not in ("system", "user", "assistant"):
++            raise InklingError(f"unsupported role {role!r}")
++        content = m.get("content")
++        if not isinstance(content, str):
++            raise InklingError("message content must be a string")
++        out.append(template[role].format(content=content))
++    out.append(template["generation_prompt"])
++    return "".join(out)
++
++
++# ---------------------------------------------------------------- sample ----
++
++
++def sample(logits, n: int, temperature: float, top_p: float,
++           rng: random.Random) -> int:
++    if temperature <= 0.0:
++        best, best_v = 0, -math.inf
++        for i in range(n):
++            if logits[i] > best_v:
++                best, best_v = i, logits[i]
++        return best
++    scaled = [logits[i] / temperature for i in range(n)]
++    top = max(scaled)
++    exps = [math.exp(v - top) for v in scaled]
++    total = sum(exps)
++    probs = sorted(((e / total, i) for i, e in enumerate(exps)), reverse=True)
++    if 0.0 < top_p < 1.0:
++        acc, cut = 0.0, len(probs)
++        for k, (p, _i) in enumerate(probs):
++            acc += p
++            if acc >= top_p:
++                cut = k + 1
++                break
++        probs = probs[:cut]
++    mass = sum(p for p, _ in probs)
++    r = rng.random() * mass
++    acc = 0.0
++    for p, i in probs:
++        acc += p
++        if acc >= r:
++            return i
++    return probs[-1][1]
++
++
++def collect_generation(gen) -> tuple[list[int], str]:
++    """Consume a generation without losing the generator's finish reason."""
++    ids = []
++    while True:
++        try:
++            ids.append(next(gen))
++        except StopIteration as done:
++            reason = done.value if done.value in ("stop", "length") else "stop"
++            return ids, reason
++
++
++def request_number(req: dict, name: str, default: float) -> float:
++    """Read a finite JSON number. Booleans and numeric strings are not numbers."""
++    value = req.get(name, default)
++    if isinstance(value, bool) or not isinstance(value, (int, float)):
++        raise InklingError(f"{name} must be a number")
++    try:
++        value = float(value)
++    except OverflowError as exc:
++        raise InklingError(f"{name} must be finite") from exc
++    if not math.isfinite(value):
++        raise InklingError(f"{name} must be finite")
++    return value
++
++
++# ---------------------------------------------------------------- server ----
++
++
++class Session:
++    """One generation. The runtime holds a single K/V state, so generations
++    are serialized — correctness before concurrency, and the private runtime
++    was never built for the latter."""
++
++    def __init__(self, runtime: Runtime, tokenizer: Tokenizer, template: dict):
++        self.runtime = runtime
++        self.tokenizer = tokenizer
++        self.template = template
++        self.lock = threading.Lock()
++
++    def generate(self, messages, max_tokens, temperature, top_p, seed):
++        prompt = render(messages, self.template)
++        ids = self.tokenizer.encode(prompt)
++        if not ids:
++            raise InklingError("prompt encoded to zero tokens")
++        # The runtime's K/V rings are sized at open. Stepping past them is a
++        # runtime error deep in the C, which surfaced here as an opaque
++        # "step failed at position N" the first time this server was pointed
++        # at a real stage. Refuse it at the edge, where the caller can act.
++        want = len(ids) + max_tokens
++        if want > self.runtime.context:
++            raise InklingError(
++                f"context exceeded: prompt is {len(ids)} tokens and max_tokens "
++                f"is {max_tokens}, but this runtime was opened with a context "
++                f"capacity of {self.runtime.context}")
++        rng = random.Random(seed)
++        with self.lock:
++            self.runtime.reset()
++            pos = 0
++            for tok in ids[:-1]:
++                self.runtime.step(tok, pos)
++                pos += 1
++            nxt = ids[-1]
++            for _ in range(max_tokens):
++                logits = self.runtime.step(nxt, pos)
++                pos += 1
++                nxt = sample(logits, self.runtime.vocab, temperature, top_p, rng)
++                if nxt == self.tokenizer.eos:
++                    return "stop"
++                yield nxt
++            return "length"
++
++
++def make_handler(session: Session, provenance: str, model_name: str):
++    class Handler(BaseHTTPRequestHandler):
++        protocol_version = "HTTP/1.1"
++        server_version = "waste-inkling-preview"
++
++        def log_message(self, fmt, *args):
++            sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
++
++        def _send(self, code, payload, ctype="application/json"):
++            body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
++            self.send_response(code)
++            self.send_header("Content-Type", ctype)
++            self.send_header("Content-Length", str(len(body)))
++            self.send_header("x-waste-provenance", provenance)
++            self.end_headers()
++            self.wfile.write(body)
++
++        def _error(self, code, message, kind="invalid_request_error"):
++            self._send(code, {"error": {"message": message, "type": kind}})
++
++        def do_GET(self):
++            if self.path == "/healthz":
++                return self._send(200, {"status": "ok", "provenance": provenance})
++            if self.path in ("/v1/models", "/models"):
++                return self._send(200, {"object": "list", "data": [{
++                    "id": model_name, "object": "model",
++                    "owned_by": "waste-inkling-preview",
++                    "provenance": provenance,
++                    "context_length": session.runtime.context,
++                }]})
++            return self._error(404, f"no route {self.path}", "not_found")
++
++        def do_POST(self):
++            if self.path not in ("/v1/chat/completions", "/chat/completions"):
++                return self._error(404, f"no route {self.path}", "not_found")
++            try:
++                length = int(self.headers.get("Content-Length") or 0)
++            except ValueError:
++                return self._error(400, "bad Content-Length")
++            if length <= 0 or length > 4 << 20:
++                return self._error(400, "request body must be 1..4 MiB")
++            try:
++                req = json.loads(self.rfile.read(length))
++            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
++                return self._error(400, f"malformed JSON: {exc}")
++            if not isinstance(req, dict):
++                return self._error(400, "body must be a JSON object")
++
++            messages = req.get("messages")
++            if not isinstance(messages, list) or not messages:
++                return self._error(400, "messages must be a non-empty array")
++            if not all(isinstance(message, dict) for message in messages):
++                return self._error(400, "each message must be an object")
++            max_tokens = req.get("max_tokens", 128)
++            if (isinstance(max_tokens, bool) or not isinstance(max_tokens, int)
++                    or not 1 <= max_tokens <= 4096):
++                return self._error(400, "max_tokens must be 1..4096")
++            try:
++                temperature = request_number(req, "temperature", 1.0)
++                top_p = request_number(req, "top_p", 1.0)
++            except InklingError as exc:
++                return self._error(400, str(exc))
++            if not 0.0 <= temperature <= 4.0:
++                return self._error(400, "temperature must be 0..4")
++            if not 0.0 < top_p <= 1.0:
++                return self._error(400, "top_p must be in (0, 1]")
++            seed = req.get("seed")
++            if (seed is not None
++                    and (isinstance(seed, bool) or not isinstance(seed, int))):
++                return self._error(400, "seed must be an integer")
++            stream = req.get("stream", False)
++            if not isinstance(stream, bool):
++                return self._error(400, "stream must be a boolean")
++
++            try:
++                gen = session.generate(messages, max_tokens, temperature, top_p, seed)
++                if stream:
++                    return self._stream(gen)
++                ids, finish_reason = collect_generation(gen)
++            except InklingError as exc:
++                return self._error(400, str(exc))
++
++            text = session.tokenizer.decode(ids)
++            self._send(200, {
++                "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
++                "object": "chat.completion",
++                "created": int(time.time()),
++                "model": model_name,
++                "provenance": provenance,
++                "choices": [{
++                    "index": 0,
++                    "message": {"role": "assistant", "content": text},
++                    "finish_reason": finish_reason,
++                }],
++                "usage": {"completion_tokens": len(ids)},
++            })
++
++        def _stream(self, gen):
++            self.send_response(200)
++            self.send_header("Content-Type", "text/event-stream")
++            self.send_header("Cache-Control", "no-cache")
++            self.send_header("x-waste-provenance", provenance)
++            self.send_header("Transfer-Encoding", "chunked")
++            self.end_headers()
++            ident = f"chatcmpl-{uuid.uuid4().hex[:24]}"
++            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
++
++            def chunk(delta, finish=None):
++                payload = json.dumps({
++                    "id": ident, "object": "chat.completion.chunk",
++                    "created": int(time.time()), "model": model_name,
++                    "choices": [{"index": 0, "delta": delta,
++                                 "finish_reason": finish}],
++                }).encode()
++                frame = b"data: " + payload + b"\n\n"
++                self.wfile.write(b"%x\r\n" % len(frame) + frame + b"\r\n")
++                self.wfile.flush()
++
++            try:
++                chunk({"role": "assistant"})
++                while True:
++                    try:
++                        tok = next(gen)
++                    except StopIteration as done:
++                        finish = (done.value
++                                  if done.value in ("stop", "length") else "stop")
++                        break
++                    content = decoder.decode(
++                        session.tokenizer.decode_bytes([tok]), final=False)
++                    if content:
++                        chunk({"content": content})
++                content = decoder.decode(b"", final=True)
++                if content:
++                    chunk({"content": content})
++                chunk({}, finish=finish)
++                done = b"data: [DONE]\n\n"
++                self.wfile.write(b"%x\r\n" % len(done) + done + b"\r\n")
++                self.wfile.write(b"0\r\n\r\n")
++                self.wfile.flush()
++            except (BrokenPipeError, ConnectionResetError):
++                pass
++            except InklingError as exc:
++                try:
++                    chunk({"content": f"\n[error: {exc}]"}, finish="stop")
++                    self.wfile.write(b"0\r\n\r\n")
++                except OSError:
++                    pass
++
++    return Handler
++
++
++def open_runtime(lib_path: Path, stage: Path, ctx: int,
++                 allow_synthetic: bool, runtime_cls=Runtime):
++    """Let the C runtime prove official provenance before we claim it.
++
++    The first open requires the verified official Inkling-Small stage flag and
++    geometry. Only that specific fail-closed refusal may fall back to a
++    synthetic open, and only after the caller supplies the explicit override.
++    Corrupt, incomplete, or unreadable stages never take the fallback path.
++    """
++    try:
++        return (runtime_cls(lib_path, stage, ctx=ctx, require_official=True),
++                "official")
++    except InklingError as exc:
++        if exc.status != PRIVATE_E_UNSUPPORTED:
++            raise
++        if not allow_synthetic:
++            raise InklingError(
++                f"refusing to serve {stage}: the runtime stage did not pass "
++                "the verified official Inkling-Small profile gate, so the "
++                "weights must be treated as synthetic. Pass "
++                "--i-know-the-weights-are-synthetic to serve it anyway.",
++                status=exc.status) from exc
++    return (runtime_cls(lib_path, stage, ctx=ctx, require_official=False),
++            "synthetic")
++
++
++def main(argv=None) -> int:
++    ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
++    ap.add_argument("--stage", type=Path, required=True,
++                    help="directory holding runtime-stage.bin and its artifacts")
++    ap.add_argument("--tokenizer", type=Path, default=None,
++                    help="directory with the official tiktoken assets")
++    ap.add_argument("--template", type=Path, default=None,
++                    help="directory holding inkling_chat_template.json; "
++                         "separate from --tokenizer because the two are "
++                         "separate artifacts and a run may have either")
++    ap.add_argument("--lib", default=None, help="path to libwaste")
++    ap.add_argument("--host", default="127.0.0.1")
++    ap.add_argument("--port", type=int, default=8000)
++    ap.add_argument("--context", type=int, default=4096)
++    ap.add_argument("--model-name", default="inkling-small-preview")
++    ap.add_argument("--i-know-the-weights-are-synthetic", action="store_true",
++                    dest="allow_synthetic")
++    args = ap.parse_args(argv)
++
++    try:
++        lib_path = find_library(args.lib)
++        runtime, weights_kind = open_runtime(
++            lib_path, args.stage, args.context, args.allow_synthetic)
++        if args.tokenizer:
++            tokenizer = OfficialTokenizer(runtime.lib, args.tokenizer, runtime.vocab)
++        else:
++            tokenizer = Tokenizer(runtime.vocab)
++        template, template_kind = load_template(args.template or args.tokenizer)
++    except InklingError as exc:
++        print(f"inkling_serve: {exc}", file=sys.stderr)
++        return 2
++
++    provenance = (f"weights={weights_kind} tokenizer={tokenizer.kind} "
++                  f"template={template_kind}")
++    session = Session(runtime, tokenizer, template)
++    httpd = ThreadingHTTPServer((args.host, args.port),
++                                make_handler(session, provenance, args.model_name))
++
++    print(f"inkling_serve: http://{args.host}:{args.port}/v1/chat/completions")
++    print(f"  library      {lib_path}")
++    print(f"  stage        {args.stage}")
++    print(f"  vocabulary   {runtime.vocab}")
++    print(f"  provenance   {provenance}")
++    if "weights=synthetic" in provenance:
++        print("  NOTE: synthetic weights. The text is not this model's output.")
++    if tokenizer.kind == "fallback":
++        print("  NOTE: byte-level fallback tokenizer, not the official one.")
++    try:
++        httpd.serve_forever()
++    except KeyboardInterrupt:
++        pass
++    finally:
++        httpd.server_close()
++        runtime.close()
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
 diff --git a/tools/inkling_source.py b/tools/inkling_source.py
 new file mode 100644
 index 0000000..f443322
@@ -15468,6 +18615,633 @@ index 0000000..2835065
 +    }
 +    write_json_atomic(out / "stage.json", stage)
 +    return stage
+diff --git a/tools/inkling_throughput.py b/tools/inkling_throughput.py
+new file mode 100644
+index 0000000..59d1a1c
+--- /dev/null
++++ b/tools/inkling_throughput.py
+@@ -0,0 +1,621 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++"""
++inkling_throughput.py — what Inkling-Small costs per token, and what that
++means for tok/s on a machine you own.
++
++Every gate in ROADMAP-V19.md asks whether this port computes the right
++thing. None of them asks how fast, and throughput is what decides whether
++streaming a 276B model off disk is a product or a curiosity. This tool
++answers the part that is knowable from geometry plus upstream's own
++measurements, without the checkpoint.
++
++Three subcommands, stdlib only:
++
++  geometry   Exact VQ record size, records and bytes per decoded token, the
++             expert bank on disk, one token's working set, and the budget
++             ladder WASTE's resolver would pick on a given machine.
++
++  project    Decode throughput over a bandwidth x hit-rate grid, using the
++             cost decomposition upstream measured for K3.
++
++  compare    Inkling-Small against K3 on the numbers that set tok/s.
++
++WHAT IS MEASURED AND WHAT IS NOT
++--------------------------------
++Geometry is exact: it is arithmetic over the released config and the WEXP
++record layout in `inkling_vq.py`, and `tests/test_inkling_throughput.py`
++checks it against a record that file actually writes.
++
++The projection is an ESTIMATE. It is calibrated against real measurements
++of a different model (K3) on one machine, and extrapolated to Inkling by
++cost model rather than measured. Its inputs are named in CALIBRATION below
++so that a wrong answer can be traced to a wrong input. It is labelled in
++every line of output that carries it, because a projection dressed as a
++measurement is how this decision goes wrong — see docs/EFFICIENCY.md, which
++this file deliberately imitates.
++
++Nothing here has been run against the official checkpoint.
++"""
++
++from __future__ import annotations
++
++import argparse
++import json
++import sys
++from dataclasses import dataclass, field
++from pathlib import Path
++
++GIB = 1 << 30
++MIB = 1 << 20
++
++# ---------------------------------------------------------------- layout ----
++#
++# WEXP record layout, from `inkling_vq.py`:
++#   [48-byte header][gate indices][up indices][down indices][scales]
++# padded to a 4 KiB multiple. Index planes are blocked to `index_block` rows;
++# scales are one float16 per row, unpadded.
++
++VQ_HEADER_BYTES = 48
++VQ_ALIGN = 4096
++
++
++@dataclass(frozen=True)
++class VQSpec:
++    """Mirrors inkling_vq.VQSpec without importing it — that module needs
++    torch, and this tool must run anywhere. The test suite checks the two
++    agree by writing a real record."""
++
++    stages: int = 3
++    vec_dim: int = 8
++    index_block: int = 64
++
++    def validate(self) -> None:
++        if self.stages not in (2, 3):
++            raise ValueError("WASTE expert VQ stages must be 2 or 3")
++        if self.vec_dim <= 0 or self.vec_dim > 64:
++            raise ValueError("invalid VQ vector dimension")
++        if self.index_block <= 0 or self.index_block > 4096:
++            raise ValueError("invalid VQ index block")
++
++
++def _align(value: int, alignment: int = VQ_ALIGN) -> int:
++    return (value + alignment - 1) // alignment * alignment
++
++
++def matrix_index_bytes(rows: int, cols: int, spec: VQSpec) -> int:
++    """Bytes one quantized matrix contributes to a record's index planes."""
++    if rows <= 0 or cols <= 0:
++        raise ValueError("matrix dimensions must be positive")
++    if cols % spec.vec_dim:
++        raise ValueError(f"columns {cols} not a multiple of vec_dim {spec.vec_dim}")
++    padded_rows = _align(rows, spec.index_block)
++    vectors_per_row = cols // spec.vec_dim
++    return padded_rows * vectors_per_row * spec.stages
++
++
++def expert_record_bytes(hidden: int, intermediate: int, spec: VQSpec) -> int:
++    """Size on disk of one routed expert, exactly as `write_expert_record`
++    lays it out. gate and up are [intermediate, hidden]; down is
++    [hidden, intermediate]."""
++    spec.validate()
++    shapes = (
++        (intermediate, hidden),   # gate
++        (intermediate, hidden),   # up
++        (hidden, intermediate),   # down
++    )
++    total = VQ_HEADER_BYTES
++    for rows, cols in shapes:
++        total += matrix_index_bytes(rows, cols, spec)
++    for rows, _cols in shapes:
++        total += rows * 2         # float16 scale per row, unpadded
++    return _align(total)
++
++
++# ------------------------------------------------------------ calibration ----
++#
++# Measured, not assumed. Each constant names where it came from so a wrong
++# projection can be traced to a wrong input rather than argued about.
++
++
++@dataclass(frozen=True)
++class Calibration:
++    """Upstream's measured K3 decode, from docs/EFFICIENCY.md (2026-07-31),
++    on a 64 GB M5 Pro with the container on the internal SSD."""
++
++    # docs/EFFICIENCY.md §1: 92 MoE layers x top-16.
++    k3_records_per_token: int = 1472
++    # docs/EFFICIENCY.md §2: "11.83 MB records (K3's real expert size)".
++    k3_record_bytes: int = int(11.83 * MIB)
++
++    # docs/EFFICIENCY.md §4, decomposed at the margin at the default budget
++    # (17.56 GB cache, 13% hit), before read-ahead landed.
++    k3_io_seconds: float = 1.41
++    k3_expert_matmul_seconds: float = 1.03
++    k3_other_seconds: float = 0.50
++    k3_hit_rate: float = 0.13
++
++    # docs/EFFICIENCY.md §2, tools/diskbench.c on the internal SSD.
++    k3_bandwidth_qd1: float = 10.73          # GiB/s
++    k3_bandwidth_qd4: float = 12.89          # GiB/s
++
++    # docs/EFFICIENCY.md, measured after the read-ahead of §4A and the router
++    # lookahead of §4F. The projection is checked against this.
++    k3_measured_tok_s: tuple[float, float] = (0.56, 0.63)
++
++    # K3's resident trunk, docs/EFFICIENCY.md §4B ("the 27.5 GiB trunk is
++    # read in full every token"). Used to scale non-expert compute.
++    k3_trunk_gib: float = 27.28
++
++    def k3_bytes_per_token(self) -> int:
++        return self.k3_records_per_token * self.k3_record_bytes
++
++    def check(self) -> None:
++        """The decomposition must reproduce its own I/O term, or one of the
++        numbers above has been transcribed wrong."""
++        cold = self.k3_bytes_per_token() / GIB
++        predicted = cold * (1.0 - self.k3_hit_rate) / self.k3_bandwidth_qd1
++        if abs(predicted - self.k3_io_seconds) > 0.10:
++            raise ValueError(
++                f"calibration inconsistent: {cold:.2f} GiB/token at "
++                f"{self.k3_hit_rate:.0%} hit and {self.k3_bandwidth_qd1} GiB/s "
++                f"gives {predicted:.2f}s, but EFFICIENCY.md §4 says "
++                f"{self.k3_io_seconds}s"
++            )
++
++
++CAL = Calibration()
++
++# docs/GATES.md Gate 7: the default-budget resolver takes the largest
++# `floor + working_set * k` for k in 3..1 that fits under seven eighths of RAM.
++BUDGET_STEPS = (3, 2, 1)
++BUDGET_CAP_FRACTION = 7 / 8
++
++
++# -------------------------------------------------------------- geometry ----
++
++
++@dataclass(frozen=True)
++class Geometry:
++    layers: int
++    dense_layers: int
++    sparse_layers: int
++    hidden: int
++    moe_intermediate: int
++    n_routed_experts: int
++    top_k: int
++    n_shared_experts: int
++    record_bytes: int
++    spec: VQSpec
++    # Published in docs/ROADMAP-V19.md §G3. Unlike everything else on this
++    # class these two are NOT derived from the config — sizing the trunk means
++    # walking every trunk tensor at its chosen quantization, which is
++    # inkling_plan.py's job. They are correct for the released Inkling-Small at
++    # the Q4 bulk + Q8 vocab/router operating point and for nothing else, which
++    # is why `released_small` below refuses to vouch for another geometry.
++    trunk_gib: float = 3.642
++    model_state_floor_gib: float = 4.1
++    derived_trunk: bool = False
++
++    # The geometry the trunk and floor constants were derived for.
++    RELEASED_SMALL = (42, 4096, 2048, 256, 6, 2)
++
++    @property
++    def released_small(self) -> bool:
++        """True when this is the config those two constants describe."""
++        return (
++            self.layers,
++            self.hidden,
++            self.moe_intermediate,
++            self.n_routed_experts,
++            self.top_k,
++            self.n_shared_experts,
++        ) == self.RELEASED_SMALL
++
++    @property
++    def trunk_is_trustworthy(self) -> bool:
++        return self.derived_trunk or self.released_small
++
++    @property
++    def records_per_token(self) -> int:
++        return self.sparse_layers * self.top_k
++
++    @property
++    def bytes_per_token(self) -> int:
++        return self.records_per_token * self.record_bytes
++
++    @property
++    def working_set_gib(self) -> float:
++        """One token touches this many distinct records. docs/GATES.md
++        Gate 5: a demand-only cache below this keeps nothing alive from one
++        token to the next and its hit rate is not low but zero."""
++        return self.bytes_per_token / GIB
++
++    @property
++    def expert_bank_bytes(self) -> int:
++        return self.sparse_layers * self.n_routed_experts * self.record_bytes
++
++    def mlp_flops_per_token(self, dense_intermediate: int) -> dict[str, int]:
++        """Multiply-accumulates x2 for one decoded position's MLP work.
++
++        This is the number no amount of cache or prefetch touches. An expert
++        is gate + up + down, so 2 * 3 * intermediate * hidden flops, and the
++        shared experts are paid on every token of every sparse layer whether
++        or not anything was routed."""
++        def mlp(inter: int) -> int:
++            return 2 * 3 * inter * self.hidden
++
++        return {
++            "routed": self.sparse_layers * self.top_k * mlp(self.moe_intermediate),
++            "shared": self.sparse_layers * self.n_shared_experts * mlp(self.moe_intermediate),
++            "dense": self.dense_layers * mlp(dense_intermediate),
++        }
++
++    def budget(self, ram_gib: float) -> tuple[float, int]:
++        """Reproduce upstream's default-budget resolver. Returns
++        (budget_gib, k); k == 0 means not even one working set fits, which
++        is the regime Gate 5 measured at exactly zero hit rate."""
++        cap = ram_gib * BUDGET_CAP_FRACTION
++        for k in BUDGET_STEPS:
++            want = self.model_state_floor_gib + self.working_set_gib * k
++            if want <= cap:
++                return want, k
++        return self.model_state_floor_gib, 0
++
++
++def _require_int(cfg: dict, key: str) -> int:
++    """Fail closed. A missing field is not a zero, and a plausible default
++    here would produce a confident wrong byte count — the exact failure
++    `inkling_public.c` refuses at the C boundary."""
++    if key not in cfg:
++        raise KeyError(f"config is missing required field {key!r}")
++    value = cfg[key]
++    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
++        raise ValueError(f"config field {key!r} must be a positive integer")
++    return value
++
++
++def load_config(path: Path) -> dict:
++    raw = json.loads(Path(path).read_text())
++    return raw.get("text_config", raw)
++
++
++def geometry_from_config(
++    cfg: dict,
++    spec: VQSpec | None = None,
++    trunk_gib: float | None = None,
++    floor_gib: float | None = None,
++) -> Geometry:
++    """Build the decode geometry. `trunk_gib`/`floor_gib` override the
++    released-Small constants; pass them for any other config, because the
++    defaults do not describe it and this tool cannot derive them."""
++    spec = spec or VQSpec()
++    layers = _require_int(cfg, "num_hidden_layers")
++    hidden = _require_int(cfg, "hidden_size")
++    # The routed width. The release schema calls it `intermediate_size` and
++    # the dense width `dense_intermediate_size`; Transformers 5.14.1 folds the
++    # latter into its own `intermediate_size` and calls the routed one
++    # `moe_intermediate_size`. Resolved against the authoritative config.json:
++    # routed is 2048. See ROADMAP-V19.md's schema note.
++    if "moe_intermediate_size" in cfg and "dense_intermediate_size" in cfg:
++        raise ValueError(
++            "config carries both 'moe_intermediate_size' and "
++            "'dense_intermediate_size'; the routed width is ambiguous"
++        )
++    routed_key = "moe_intermediate_size" if "moe_intermediate_size" in cfg else "intermediate_size"
++    moe_intermediate = _require_int(cfg, routed_key)
++
++    if "n_routed_experts" in cfg:
++        n_routed = _require_int(cfg, "n_routed_experts")
++    else:
++        n_routed = _require_int(cfg, "num_experts")
++    top_k = _require_int(cfg, "num_experts_per_tok")
++    n_shared = _require_int(cfg, "n_shared_experts")
++    dense = _require_int(cfg, "dense_mlp_idx")
++
++    if top_k > n_routed:
++        raise ValueError("num_experts_per_tok exceeds the routed expert count")
++    if dense >= layers:
++        raise ValueError("dense_mlp_idx is not inside the layer range")
++
++    if (trunk_gib is not None) != (floor_gib is not None):
++        raise ValueError("pass both --trunk-gib and --floor-gib, or neither")
++    if trunk_gib is not None and (trunk_gib <= 0 or floor_gib <= 0):
++        raise ValueError("trunk and floor sizes must be positive")
++
++    overrides = {}
++    if trunk_gib is not None:
++        overrides = {
++            "trunk_gib": trunk_gib,
++            "model_state_floor_gib": floor_gib,
++            "derived_trunk": True,
++        }
++
++    return Geometry(
++        layers=layers,
++        dense_layers=dense,
++        sparse_layers=layers - dense,
++        hidden=hidden,
++        moe_intermediate=moe_intermediate,
++        n_routed_experts=n_routed,
++        top_k=top_k,
++        n_shared_experts=n_shared,
++        record_bytes=expert_record_bytes(hidden, moe_intermediate, spec),
++        spec=spec,
++        **overrides,
++    )
++
++
++# ------------------------------------------------------------ projection ----
++
++
++@dataclass(frozen=True)
++class Projection:
++    """One point of the estimate. `other_seconds` is a band, so tok/s is too."""
++
++    bandwidth: float
++    hit_rate: float
++    io_seconds: float
++    expert_matmul_seconds: float
++    other_low: float
++    other_high: float
++
++    @property
++    def serial_low(self) -> float:
++        return self.io_seconds + self.expert_matmul_seconds + self.other_low
++
++    def pipelined(self, other: float) -> float:
++        """docs/EFFICIENCY.md §4A: read-ahead turns the sum of I/O and expert
++        compute into a maximum. Everything else stays serial."""
++        return max(self.io_seconds, self.expert_matmul_seconds) + other
++
++    @property
++    def tok_s_high(self) -> float:
++        return 1.0 / self.pipelined(self.other_low)
++
++    @property
++    def tok_s_low(self) -> float:
++        return 1.0 / self.pipelined(self.other_high)
++
++    @property
++    def io_bound(self) -> bool:
++        return self.io_seconds > self.expert_matmul_seconds
++
++
++def project(
++    geo: Geometry,
++    bandwidth: float,
++    hit_rate: float,
++    cal: Calibration = CAL,
++    other_high_multiple: float = 2.0,
++) -> Projection:
++    """Estimate one decode step.
++
++    The two compute terms are scaled from K3's measured decomposition:
++
++    * Expert matmul scales with bytes per token. docs/EFFICIENCY.md §1: the
++      cost is one `vq_apply` pass per (token, expert) pair and `vq_rows` does
++      `stages` gathers per row per vector position — which is the same
++      quantity as the record's index bytes. So the ratio of expert compute is
++      the ratio of per-token expert bytes. This is a cost model, not a
++      measurement, and it is the largest single assumption here.
++
++    * Everything else (trunk matvecs, attention, norms, routing) scales with
++      resident trunk bytes, which is what dominates it on K3. Inkling's
++      attention machinery differs from MLA/KDA — a real K/V cache and four
++      short convolutions per layer — so the upper end of the band multiplies
++      that estimate by `other_high_multiple` rather than pretending the shape
++      is known.
++    """
++    if not 0.0 <= hit_rate < 1.0:
++        raise ValueError("hit_rate must be in [0, 1)")
++    if bandwidth <= 0:
++        raise ValueError("bandwidth must be positive")
++    cal.check()
++
++    cold_gib = geo.bytes_per_token / GIB
++    io_seconds = cold_gib * (1.0 - hit_rate) / bandwidth
++
++    expert_ratio = geo.bytes_per_token / cal.k3_bytes_per_token()
++    expert_matmul = cal.k3_expert_matmul_seconds * expert_ratio
++
++    other_low = cal.k3_other_seconds * (geo.trunk_gib / cal.k3_trunk_gib)
++    return Projection(
++        bandwidth=bandwidth,
++        hit_rate=hit_rate,
++        io_seconds=io_seconds,
++        expert_matmul_seconds=expert_matmul,
++        other_low=other_low,
++        other_high=other_low * other_high_multiple,
++    )
++
++
++def k3_self_check(cal: Calibration = CAL) -> tuple[float, float]:
++    """Run the same model on K3's own numbers. If it does not land near the
++    measured 0.56-0.63 tok/s, the model is wrong and every Inkling figure it
++    produces is decoration."""
++    cal.check()
++    io = cal.k3_bytes_per_token() / GIB * (1 - cal.k3_hit_rate) / cal.k3_bandwidth_qd4
++    step = max(io, cal.k3_expert_matmul_seconds) + cal.k3_other_seconds
++    return 1.0 / step, step
++
++
++# ------------------------------------------------------------------- cli ----
++
++DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "tests" / "data" / "inkling-small-config.json"
++
++
++def _fmt_gib(n: float) -> str:
++    return f"{n:,.2f} GiB"
++
++
++def _geometry(args: argparse.Namespace) -> Geometry:
++    """Shared construction, including the one warning this tool owes the
++    caller: the trunk and floor are constants, not derivations, and silently
++    reusing them for a different model is exactly the confident-wrong-number
++    failure the rest of this port refuses."""
++    geo = geometry_from_config(
++        load_config(args.config),
++        trunk_gib=getattr(args, "trunk_gib", None),
++        floor_gib=getattr(args, "floor_gib", None),
++    )
++    if not geo.trunk_is_trustworthy:
++        print(
++            "WARNING: this config is not the released Inkling-Small, and the\n"
++            "  resident trunk and model-state floor below are constants derived\n"
++            "  for that model. Every budget and 'other s' figure that depends on\n"
++            "  them is wrong here. Pass --trunk-gib and --floor-gib.",
++            file=sys.stderr,
++        )
++    return geo
++
++
++def cmd_geometry(args: argparse.Namespace) -> int:
++    geo = _geometry(args)
++    print("Inkling-Small decode geometry  (exact — arithmetic over the config)")
++    print(f"  layers                     {geo.layers} ({geo.dense_layers} dense, {geo.sparse_layers} sparse)")
++    print(f"  hidden / routed width      {geo.hidden} / {geo.moe_intermediate}")
++    print(f"  routed experts, top-k      {geo.n_routed_experts}, {geo.top_k}")
++    print(f"  shared experts             {geo.n_shared_experts} (trunk-resident, not streamed)")
++    print(f"  VQ{geo.spec.stages}R record             {geo.record_bytes:,} B")
++    print()
++    print(f"  records per decoded token  {geo.records_per_token}")
++    print(f"  bytes per decoded token    {geo.bytes_per_token:,} B  ({_fmt_gib(geo.working_set_gib)})")
++    print(f"  expert bank on disk        {_fmt_gib(geo.expert_bank_bytes / GIB)}")
++    print(f"  trunk, resident            {_fmt_gib(geo.trunk_gib)}")
++    print(f"  model-state floor          {_fmt_gib(geo.model_state_floor_gib)}")
++    print()
++    print("Default budget the resolver would pick  (docs/GATES.md Gate 7)")
++    print("    RAM      budget    cache   working sets")
++    for ram in args.ram:
++        budget, k = geo.budget(ram)
++        cache = budget - geo.model_state_floor_gib
++        note = "  <- below the Gate 5 floor: demand hit rate is zero" if k == 0 else ""
++        print(f"  {ram:5.0f} GiB  {budget:6.2f}  {cache:6.2f}   {k}x{note}")
++    return 0
++
++
++def cmd_project(args: argparse.Namespace) -> int:
++    geo = _geometry(args)
++    tok_s, step = k3_self_check()
++    print("Calibration self-check: the same model on K3's own inputs gives")
++    print(f"  {step:.2f} s/token = {tok_s:.2f} tok/s against a measured "
++          f"{CAL.k3_measured_tok_s[0]}-{CAL.k3_measured_tok_s[1]} tok/s "
++          "(docs/EFFICIENCY.md)")
++    print()
++    print("PROJECTION — an estimate, not a measurement. No official weight has")
++    print("been executed by this code. Inputs are named in Calibration.")
++    print()
++    print("  GiB/s   hit    I/O s   expert s   other s      tok/s      bound by")
++    for bw in args.bandwidth:
++        for hit in args.hit:
++            p = project(geo, bw, hit)
++            print(
++                f"  {bw:5.2f}  {hit:4.0%}  {p.io_seconds:6.3f}   "
++                f"{p.expert_matmul_seconds:7.3f}   "
++                f"{p.other_low:.3f}-{p.other_high:.3f}   "
++                f"{p.tok_s_low:5.2f}-{p.tok_s_high:5.2f}   "
++                f"{'I/O' if p.io_bound else 'compute'}"
++            )
++    return 0
++
++
++def cmd_ceiling(args: argparse.Namespace) -> int:
++    """What arithmetic rate a target decode speed demands.
++
++    Every other lever in this repository moves bytes. This one does not move,
++    and it is what decides whether a target is reachable at all: no cache
++    policy, chunk size or prefetch depth changes how many multiplies a token
++    costs."""
++    cfg = load_config(args.config)
++    geo = _geometry(args)
++    dense_inter = cfg.get("dense_intermediate_size", cfg.get("intermediate_size"))
++    if not isinstance(dense_inter, int) or dense_inter <= 0:
++        print("inkling_throughput: config has no usable dense MLP width",
++              file=sys.stderr)
++        return 2
++
++    parts = geo.mlp_flops_per_token(dense_inter)
++    total = sum(parts.values())
++    print("MLP arithmetic per decoded position (exact)")
++    print(f"  routed experts ({geo.records_per_token:>4})   {parts['routed'] / 1e9:6.2f} GFLOP")
++    print(f"  shared experts ({geo.sparse_layers * geo.n_shared_experts:>4})   {parts['shared'] / 1e9:6.2f} GFLOP")
++    print(f"  dense MLP      ({geo.dense_layers:>4})   {parts['dense'] / 1e9:6.2f} GFLOP")
++    print(f"  total                  {total / 1e9:6.2f} GFLOP")
++    print()
++    print("Sustained arithmetic a target decode rate requires, before any")
++    print("attention, norm, router or dequantization overhead:")
++    print()
++    print("   tok/s     GFLOP/s")
++    for rate in args.tok_s:
++        print(f"   {rate:6.1f}   {total * rate / 1e9:9.1f}")
++    print()
++    print("No cache policy, chunk size or prefetch depth changes this column.")
++    return 0
++
++
++def cmd_compare(args: argparse.Namespace) -> int:
++    geo = _geometry(args)
++    k3_bytes = CAL.k3_bytes_per_token()
++    rows = [
++        ("records per token", CAL.k3_records_per_token, geo.records_per_token, "{:,.0f}"),
++        ("record bytes", CAL.k3_record_bytes, geo.record_bytes, "{:,.0f}"),
++        ("bytes per token (GiB)", k3_bytes / GIB, geo.bytes_per_token / GIB, "{:.2f}"),
++        ("resident trunk (GiB)", CAL.k3_trunk_gib, geo.trunk_gib, "{:.2f}"),
++    ]
++    print(f"  {'':24} {'K3':>12} {'Inkling-Small':>14}   K3 / Inkling")
++    for label, a, b, fmt in rows:
++        print(f"  {label:24} {fmt.format(a):>12} {fmt.format(b):>14}   {a / b:>8.1f}x")
++    print()
++    print(f"  Inkling reads {k3_bytes / geo.bytes_per_token:.1f}x less per token than K3.")
++    print("  (K3's model-state floor is its trunk: MLA caches a latent, so its")
++    print("   per-token state is small next to the resident weights.)")
++    print()
++    print("RAM needed for the resolver's k-th working-set step:")
++    print("        k    K3 needs      Inkling needs")
++    for k in BUDGET_STEPS:
++        k3_need = (CAL.k3_trunk_gib + (k3_bytes / GIB) * k) / BUDGET_CAP_FRACTION
++        ink_need = (geo.model_state_floor_gib + geo.working_set_gib * k) / BUDGET_CAP_FRACTION
++        print(f"       {k}x   {k3_need:7.1f} GiB   {ink_need:9.1f} GiB")
++    return 0
++
++
++def main(argv: list[str] | None = None) -> int:
++    ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
++    ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
++    ap.add_argument("--trunk-gib", type=float, default=None,
++                    help="resident trunk size; required for any config that is "
++                         "not the released Inkling-Small")
++    ap.add_argument("--floor-gib", type=float, default=None,
++                    help="model-state floor; pass with --trunk-gib")
++    sub = ap.add_subparsers(dest="cmd", required=True)
++
++    g = sub.add_parser("geometry", help="exact per-token cost and budget ladder")
++    g.add_argument("--ram", type=float, nargs="+", default=[8, 16, 24, 32, 64, 128])
++    g.set_defaults(func=cmd_geometry)
++
++    p = sub.add_parser("project", help="estimated decode throughput")
++    p.add_argument("--bandwidth", type=float, nargs="+",
++                   default=[0.55, 2.11, 2.45, 7.00, 10.73, 12.89],
++                   help="GiB/s of cache-bypassed random record reads")
++    p.add_argument("--hit", type=float, nargs="+", default=[0.0, 0.29, 0.42])
++    p.set_defaults(func=cmd_project)
++
++    c = sub.add_parser("compare", help="Inkling-Small against K3")
++    c.set_defaults(func=cmd_compare)
++
++    k = sub.add_parser("ceiling", help="arithmetic a target decode rate demands")
++    k.add_argument("--tok-s", type=float, nargs="+",
++                   default=[1, 3.4, 7, 10, 34])
++    k.set_defaults(func=cmd_ceiling)
++
++    args = ap.parse_args(argv)
++    try:
++        return args.func(args)
++    except (KeyError, ValueError) as exc:
++        print(f"inkling_throughput: {exc}", file=sys.stderr)
++        return 2
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
 diff --git a/tools/inkling_trace.py b/tools/inkling_trace.py
 new file mode 100644
 index 0000000..87bcc52

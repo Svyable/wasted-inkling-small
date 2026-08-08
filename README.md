@@ -200,6 +200,8 @@ Today only the planning path crosses the public boundary. Execution APIs return
 | Official router evidence | Eight deterministic BF16 states record exact `(expert_id, weight)` pairs for layers 2 and 5 |
 | Evidence-selected fixture plan | 175 entries, 3,842,395,658 payload bytes, 52 metadata/range requests, 25 touched shards |
 | Sparse memory bound | Selected experts are supplied through `expert_get`; no full 256-expert float32 bank expansion |
+| Decode cost model | Exact per-token geometry, the expert cache measured against upstream's real `ecache.c`, and a throughput projection calibrated to reproduce K3's measured decode — [docs/THROUGHPUT.md](docs/THROUGHPUT.md) |
+| Chat API surface | `/v1/chat/completions` served over the staged runtime, streaming and not, run end to end; public `waste_open` still refused |
 
 The committed official selection contains **33 unique routed experts for layer
 2** and **26 unique routed experts for layer 5** across the eight deterministic
@@ -232,6 +234,65 @@ official-weight execution has now crossed several important gates:
 | Quantized model quality | Q8/Q4/VQ tolerances, throughput, conversion time, and memory floors still require official measurement |
 | Public loader and generation | Deliberately disabled |
 | Native Windows and operator validation | Final release and serving gate |
+
+---
+
+## What a decoded token costs
+
+Every gate above asks whether this port computes the right thing. None asked
+how fast. **[docs/THROUGHPUT.md](docs/THROUGHPUT.md)** answers the part that is
+knowable without running the whole checkpoint.
+
+| | K3 | Inkling-Small | K3 / Inkling |
+| --- | ---: | ---: | ---: |
+| bytes read per decoded token | 17.01 GiB | **2.11 GiB** | **8.0x** |
+| RAM for the cache resolver's first rung | 50.6 GiB | **7.1 GiB** | 7.1x |
+| RAM for its maximum | 89.5 GiB | **11.9 GiB** | 7.5x |
+
+WASTE's budget resolver steps in whole multiples of one token's working set,
+because upstream measured that a demand-only cache below it hits *exactly
+zero*. That quantum is 17 GiB on K3 and 2.11 GiB here, so **an 8 GiB machine
+clears a full working set and a 16 GiB machine reaches the largest cache the
+engine will ever ask for**.
+
+The geometry is exact. The cache is measured, not modelled —
+`inkling_cache_sim.c` links upstream's real `ecache.c` and runs the shipping
+LFRU, reproduces upstream's published curve conservatively (mean -9.9pp), and
+independently reproduces its sharpest finding: a cache below one token's
+working set hits exactly zero. Throughput is a projection, labelled as one in
+every line it prints, and calibrated to reproduce K3's own measured decode
+(0.61 tok/s against a measured 0.56-0.63) before being applied here.
+
+**The largest available win is a defect in this port.** `inkling_wexp.c`
+expands every expert to 100.7 MB of F32 before multiplying it; upstream's
+`vq_matvec` never expands one. Measured 4.5-5.9x in isolation and 18.3x less
+DRAM traffic — 60.0 GiB/token down to 3.28. Tempered by upstream's own VQ4P
+result, where a 3.88x isolation win became 1.09-1.18x in the engine for
+reasons they could not account for; expect a range, not the headline.
+
+## Talking to it
+
+`tools/inkling_serve.py` serves an OpenAI-compatible chat endpoint over the
+staged runtime, and has been run end to end rather than mocked: HTTP in, C
+forward pass, sampled tokens, JSON out, SSE streaming included.
+
+```sh
+python3 tools/inkling_serve.py --stage STAGE_DIR --i-know-the-weights-are-synthetic
+curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":16}'
+```
+
+Every response carries `x-waste-provenance` — today `weights=synthetic
+tokenizer=fallback` — so a caller cannot mistake staged synthetic output for
+the model's. The server first requires the C runtime's verified official
+Inkling-Small profile gate; only the explicit, deliberately tedious flag
+permits reopening a stage as synthetic.
+
+It drives the **converter-private** path on purpose. Upstream's `serve/`
+reaches the engine only through `waste_open`, so when the loader dispatch
+lands, `serve/` becomes the chat server unchanged and this becomes redundant.
+That is the intended outcome, and it is why it implements the same wire format
+rather than a nicer one.
 
 ---
 
@@ -290,7 +351,7 @@ stack.
 inkling/                     source of truth: C runtime, tools, tests, design
 mvp/                         bounded official-reference and evidence harnesses
 integration/waste/           upstream pin, overlays, generation, verification
-dist/waste-inkling-6931570/  generated and checksummed patch bundle
+dist/waste-inkling-d9b919a/  generated and checksummed WASTE 0.6.6 bundle
 docs/                        architecture, evidence, audit, and roadmap
 waste-inkling-patch-v16..18/ frozen provenance and historical audit trail
 ```
@@ -351,15 +412,15 @@ integration/waste/verify.sh /tmp/waste
 ```sh
 git clone https://github.com/sqliteai/waste.git
 cd waste
-git checkout 69315701f634648f7a790915a0a525ed8aabf218
-git am /path/to/dist/waste-inkling-6931570/patches/0001-Add-the-Inkling-Small-runtime-foundation-to-WASTE.patch
+git checkout d9b919a791148b571e643d0af666bf19b4d733ab
+git am /path/to/dist/waste-inkling-d9b919a/patches/0001-Add-the-Inkling-Small-runtime-foundation-to-WASTE.patch
 PATH=/usr/bin:/bin make check
 ```
 
 Verify the bundle before applying it:
 
 ```sh
-cd /path/to/dist/waste-inkling-6931570
+cd /path/to/dist/waste-inkling-d9b919a
 sha256sum -c SHA256SUMS
 ```
 
@@ -396,8 +457,8 @@ because official-weight numerical parity is not yet green.
 The integration targets:
 
 ```text
-sqliteai/waste@69315701f634648f7a790915a0a525ed8aabf218
-WASTE 0.6.3
+sqliteai/waste@d9b919a791148b571e643d0af666bf19b4d733ab
+WASTE 0.6.6
 public API version 1
 container format version 0
 ```

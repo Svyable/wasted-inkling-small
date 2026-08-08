@@ -1,0 +1,321 @@
+Generated bundle validation
+===========================
+
+Date: 2026-08-08
+Host: Linux x86_64, 15 GB usable RAM, 4 cores, virtio block device
+Compiler: GCC / cc
+Python: 3.11.15, torch 2.13.0, numpy 2.4.6
+Merge-review host: Linux x86_64, 15 GB usable RAM, 9 cores; GCC 13.3.0
+Merge-review Python: 3.12.13, torch 2.13.0+cu130, numpy 2.5.1
+Upstream: sqliteai/waste@d9b919a791148b571e643d0af666bf19b4d733ab
+WASTE: 0.6.6; API 1; format 0
+
+The performance measurements below were produced on the original host. The
+bundle hashes and every validation gate affected by the merge-review changes
+were rerun on the merge-review host. The official 532 GB checkpoint was not
+present, so nothing here is official-weight parity.
+
+Correction: the 2026-08-02 revision of this file recorded tree
+bd7c8750100d393c13cd36062489cc4fce27ad69 and was not regenerated when the
+official-transformers layer parity landed, so it named a tree two changes
+behind the bundle it shipped beside. The hashes below were produced by the run
+that produced this file.
+
+GENERATION
+----------
+PASS  integration/waste/generate.sh reproduces the reviewed v18 tree
+      Result: ce6c5272e801c651cc6b71f869a1b0cd7167dab5, byte-identical to the
+      tree produced by `git am` of waste-inkling-patch-v18. Established before
+      any source change, as the correctness check on the extraction itself.
+
+PASS  integration/waste/generate.sh is deterministic on a fixed toolchain
+      Two independent runs over identical sources produced identical patch
+      bytes.
+
+      Qualified after CI disproved the unqualified claim: `git format-patch`
+      ends the file with the LOCAL Git version, so a runner on Git 2.54.0
+      produced different bytes from this host's 2.43.0 with nothing stale.
+      The generator now passes --no-signature, and the CI gate compares the
+      APPLIED TREE HASH rather than patch bytes — content-addressed, immune to
+      toolchain drift, and identical to what a consumer relies on.
+
+PASS  committed bundle applies to the reviewed tree
+      git am of dist/waste-inkling-d9b919a/patches/*.patch onto the pinned
+      upstream yields 8c51f8c2442bbfda5fd95588d89c5792a839a19a.
+      Patch sha256: a574944854ddb800f5017a1626eec3e89402322150516efd81542e66e1d68ffe
+
+PASS  integration/waste/verify.sh
+      Generated tree: 8c51f8c2442bbfda5fd95588d89c5792a839a19a
+
+VALIDATION
+----------
+PASS  PATH=/usr/bin:/bin make check
+      Result: 33 passed, 0 failed, 13 skipped
+      Includes:
+        - cgroup-v2 limits vs the automatic budget ceiling
+        - Inkling architecture seam and scalar runtime primitives
+        - a Kimi container relabelled Inkling refused by every path
+        - an Inkling container plans, fails closed on a missing config
+          field, and still refuses to load
+        - the staged tensor and expert-bank readers, as C
+        - upstream serve suite: 168 checks passed
+
+PASS  PATH=/usr/bin:/bin make asan
+      Result: 32 passed, 0 failed, 14 skipped
+      AddressSanitizer and UndefinedBehaviorSanitizer were clean.
+
+PASS  PATH=/usr/bin:/bin make fuzz-asan FUZZ_RUNS=200
+      Result: 200 cases; 145 rejected; 55 loaded; 0 crashed; 0 hung
+
+PASS  strict compile of src/arch.c and all src/inkling*.c
+      Flags: -std=gnu11 -Wall -Wextra -Werror -Isrc
+      Result: 12 translation units compiled
+
+PASS  integration/waste/check_upstream_contracts.py
+      WASTE 0.6.6 waste_cfg ABI/defaults, VQ4P and expert-parallel markers,
+      converter controls/refusal, and diskbench cache-bypass contracts hold.
+
+PASS  complete Inkling Python suite
+      python3 -m unittest discover -s tests -p "test_ink*.py" -t .
+      Result: 262 tests, OK, process exit 0
+      python3 -m unittest tests.test_inspect_inkling tests.test_convert_inkling
+      Result: 18 tests, OK
+      Total: 280 tests passing.
+
+      The v16 bundle recorded 99 tests and nothing re-ran them; that number is
+      confirmed, and the fixture reader, the layer-parity harness, the
+      official-transformers layer comparison, the decode cost model and the
+      expert-cache benchmark, the expert-matvec benchmark and the chat
+      endpoint bring the total to 280.
+
+      The process exit code is checked deliberately. An earlier revision of
+      inkling_layer_parity.py declared waste_inkling_attention_state with six
+      fields where the header has eleven, so every state_init wrote 88 bytes
+      into a 64-byte buffer. All tests passed and the numbers were correct; the
+      interpreter segfaulted during shutdown garbage collection. A suite that
+      only reads "OK" would have shipped it.
+
+PASS  ctypes struct layout probe
+      tests/test_inkling_layer_parity.py compiles a C probe that prints
+      sizeof() for the attention state, layer state, layer scratch, layer
+      weights, and config, and compares each against ctypes.sizeof.
+      Verified to fail on the six-field declaration above.
+
+PASS  dependency-light selection, no torch installed
+      tests/test_inspect_inkling.py, tests/test_inkling_plan.py,
+      tests/test_inkling_release.py, tests/test_inkling_config_c.py,
+      tests/test_inkling_fixture.py
+
+PASS  python3 -m compileall -q tools tests
+
+PASS  Windows cross-build and execution
+      Toolchain: x86_64-w64-mingw32-gcc-posix 13.2.0, run under Wine 9.0
+      - all 12 Inkling translation units compiled -Werror for the target
+      - full `make CC=x86_64-w64-mingw32-gcc-posix` produced waste.exe and
+        libwaste.dll
+      - test_inkling.exe  -> INKLING OK
+      - test_inkling_io.exe -> INKLING IO OK
+      - waste.exe plan on an Inkling container produced byte-identical
+        figures to the Linux build
+
+      This is the first time inkling_stage_reader.c's Windows branch has been
+      compiled by anything, let alone run. It carries a complete second
+      positional-read implementation (ReadFile with OVERLAPPED) that the
+      Python differential tests cannot reach and that no CI job touched.
+      test_inkling_io.c exists so that one binary exercises it on both
+      platforms.
+
+      NOT claimed: native Windows. This is a cross-build executed under Wine.
+      Offsets above 4 GiB, NTFS atomic replacement, Unicode paths, and
+      cancellation during a multi-hundred-GB conversion remain untested.
+
+I/O MEASUREMENT, AND A BUG IT FOUND
+-----------------------------------
+PASS  tools/diskbench.c now bypasses the page cache on Linux
+      Until this bundle, nocache() was #ifdef __APPLE__ with no Linux arm and
+      no open() used O_DIRECT, so every Linux run measured the page cache
+      whenever the file fit in RAM — and printed it under the label
+      "cache bypassed". That is the fiction upstream's GATES.md Gate 5 exists
+      to prevent, defeated on one platform by a missing #else.
+
+      Same host, same 8 GiB file, same 9,457,664 B Inkling record:
+
+                        unpatched   with O_DIRECT   inflation
+        seq read        5.66 GiB/s     2.39 GiB/s        2.4x
+        rand 1 thread   5.67 GiB/s     2.08 GiB/s        2.7x
+        rand 2 threads  8.41 GiB/s     2.41 GiB/s        3.5x
+        rand 4 threads 14.49 GiB/s     3.00 GiB/s        4.8x
+
+      The unpatched figure is higher than the 12.89 GiB/s upstream measured on
+      an M5 Pro internal SSD, on a cloud VM that really does 3.00.
+
+      A refused O_DIRECT is now reported rather than silently downgraded, and
+      the trailing tok/s column takes the model's GB/token instead of
+      hardcoding K3's 12.5.
+
+      NOT claimed: that these are laptop numbers. This host is a cloud VM on
+      virtio. 2.08 GiB/s at queue depth 1 is a slow modern NVMe.
+
+PASS  decode cost model
+      tools/inkling_throughput.py, 45 tests. Geometry is exact and checked
+      against a record inkling_vq.write_expert_record actually writes:
+      9,457,664 B per routed expert, 240 records and 2.11 GiB per decoded
+      token, a 90.20 GiB expert bank.
+
+      Throughput is a PROJECTION, labelled as one in every line it prints. It
+      is calibrated against upstream's measured K3 decomposition and reproduces
+      K3's own measured decode (0.61 tok/s against a measured 0.56-0.63) before
+      being applied to Inkling. See docs/THROUGHPUT.md §5 for the four things
+      that would falsify it.
+
+PASS  expert cache measured, not modelled
+      tools/inkling_cache_sim.c links upstream's real src/ecache.c — the
+      shipping LFRU with sampled eviction — and runs it over Inkling routing
+      traces. Gate 2 simulated this policy in Python and Gate 5 then measured
+      the simulation wrong in a known direction, so a second Python model
+      would have been answering a settled question badly.
+
+      Reproduces docs/GATES.md Gate 5 on Kimi-Linear at five budgets, matching
+      its published slot counts and its curve shape, and under-predicting the
+      level by a mean 9.9pp. The trace generator has two parameters, each
+      fitted to one Gate 2 measurement; the Gate 5 curve is not fitted, so it
+      is the check. Conservative in the safe direction: every Inkling cache
+      figure is a lower bound on hit rate.
+
+      Measured on Inkling geometry (40 sparse layers, top-6 of 256):
+        1.00 GiB cache   0.0% hit    <- reproduces Gate 5's zero below one
+        6.34 GiB cache  34.7% hit       token's 2.11 GiB working set
+       32.00 GiB cache  82.2% hit
+
+      Chunk dedup, no cache: 1.00x at chunk 1 falling to 0.28x at chunk 64.
+
+      Contract detail found and worked around: ecache.h documents a zero
+      budget as "disables caching (every access reads)", but
+      waste_ecache_get has no slot to hand back and returns NULL, so at a
+      zero budget the engine must read directly rather than call it. The
+      simulator models that instead of reporting a failure.
+
+PASS  arithmetic ceiling
+      tools/inkling_throughput.py ceiling: 16.91 GFLOP per decoded position
+      (12.08 routed + 4.03 shared + 0.81 dense), exact. Reaching 34 tok/s
+      demands 575 GFLOP/s sustained before attention, norms, routing or
+      dequantization — which no cache policy, chunk size or prefetch depth
+      changes. docs/THROUGHPUT.md §6 is the analysis.
+
+PASS  expert matvec measured: this port expands what upstream never does
+      tools/inkling_expert_bench.c times the two ways an expert can be
+      multiplied and CHECKS THEY AGREE BEFORE PRINTING A TIMING, because a
+      speed comparison between two implementations of different functions
+      measures nothing. They agree to a relative 2.4e-06.
+
+      EXPAND  decode_matrix in inkling_wexp.c reconstructs the whole
+              quantized matrix into F32 -- 3 x 2048 x 4096 floats, 100.7 MB
+              per expert -- and inkling_layer.c runs a dense matvec over it.
+              This is what the private runtime does today.
+      LUT     upstream's vq_matvec builds a table from the ACTIVATION once
+              per matrix and gathers per row. It never expands an expert.
+
+                                     expand      LUT     ratio
+        one matrix, -O2             29.4 ms   6.6 ms      4.5x
+        one matrix, -O3             22.4 ms   4.9 ms      4.6x
+        one matrix, -O3 -march=native 22.9 ms 3.9 ms      5.9x
+        DRAM traffic per expert     201.3 MB  11.0 MB    18.3x
+        DRAM traffic per token       60.0 GiB 3.28 GiB   18.3x
+
+      The ratio GROWS with optimization because the expand path is
+      memory-bound, and the traffic ratio holds regardless of implementation
+      quality. 60 GiB/token through DRAM is 28x what the model reads from
+      disk, so the I/O analysis above was optimising the wrong side of the
+      machine.
+
+      NOT claimed: that this is landed in the runtime. The benchmark is
+      standalone; wiring it means routing the layer through a quantized
+      backend instead of a resident-F32 expert, which carries parity risk and
+      belongs behind G1. Both implementations are scalar and single-threaded,
+      so the ratio is the finding and the absolute times are this machine's.
+
+REBASED TO WASTE 0.6.6, AND A CONTRIBUTION WITHDRAWN
+---------------------------------------------------
+Repinned from 6931570 (0.6.3) to d9b919a (0.6.6), 21 commits on. Only one
+overlay fragment needed re-resolving — Makefile.diff, because 0.6.6 added
+test_cpus to TESTNAMES — which is what the fragment-per-file design exists
+for. make check gains two checks (31 -> 33).
+
+The diskbench overlay carried here was DELETED, not rebased: upstream fixed
+the same bug on 2026-08-04 in def83ef, reported by fab2s, four days before
+this repository found it independently. The standalone patch prepared for
+upstream was withdrawn rather than sent. Their fix is better in two ways,
+both of them this repository's reasoning failing rather than its code:
+they bypass the write too (measured: a buffered write leaves the file
+resident and every read row below reports RAM, 8.07 vs 26.04 GB/s), and
+they probe O_DIRECT with a real aligned transfer rather than trusting the
+open, which tmpfs would have turned into a table of zeroes here.
+
+Re-measured with 0.6.6's diskbench on this host: 2.19 seq read, 2.11 rand
+1-thread, 2.45 rand 4-thread. The 3.00 GiB/s this file previously recorded
+at 4 threads came from the local fix and was 22% optimistic.
+
+CHAT ENDPOINT, RUN END TO END
+-----------------------------
+PASS  tools/inkling_serve.py serves /v1/chat/completions over the staged
+      private runtime. Verified against a real synthetic stage, not a mock:
+      HTTP in, waste_inkling_private_step forward pass, sampled tokens,
+      OpenAI-shaped JSON out, plus SSE streaming. 34 tests.
+
+      Public waste_open still returns WASTE_E_UNSUPPORTED. This drives the
+      converter-private path so the wire format is reviewable before G6
+      lands; upstream's serve/ reaches the engine only through waste_open,
+      so when G6 lands serve/ becomes the chat server unchanged and this
+      becomes redundant.
+
+      Every response carries x-waste-provenance. Official weight provenance
+      requires the C runtime's verified Inkling-Small profile gate; only an
+      explicit flag permits reopening a stage as synthetic:
+        weights=synthetic tokenizer=fallback template=supplied
+
+      Running it for real found three defects the unit tests had not:
+        - no context-limit enforcement, surfacing as an opaque
+          "step failed at position 16" from inside the C;
+        - --tokenizer conflated tokenizer assets with the chat template,
+          so a run with a template and no tiktoken assets was refused —
+          which is exactly the state this project is in until G4;
+        - memoryview over a ctypes float array raises
+          NotImplementedError on first subscript, hidden because the test
+          stub returned a plain list.
+      All three fixed and regression-tested; the stub now returns the type
+      the runtime does.
+
+      Merge review then hardened five API contracts:
+        - a file named official-weights.json can no longer claim official
+          provenance; the C runtime must accept require_official_small;
+        - synthetic fallback is allowed only for that specific profile
+          refusal and never for corrupt or unreadable stages;
+        - invalid, non-finite or wrongly typed numeric/boolean request fields
+          return 400 rather than escaping as TypeError/ValueError;
+        - streaming decodes raw token bytes incrementally across UTF-8
+          boundaries;
+        - streaming reports finish_reason=length when max_tokens is exhausted
+          and stop only for EOS.
+
+PUBLIC SURFACE PROMOTED
+-----------------------
+waste_plan_memory() now answers for an Inkling container; waste_open and
+everything downstream still return WASTE_E_UNSUPPORTED.
+
+The promotion is scoped to planning on purpose. A plan is arithmetic over
+declared geometry, so a bug in it produces a wrong byte count that the caller
+sees immediately. A forward pass is a claim about a model whose official
+weights this code has never read.
+
+Cross-checks against the geometry documented in docs/INKLING.md, on a
+synthetic Inkling manifest carrying the released Small config:
+  KV + four convolution rings at 4K ctx   371 MB   (predicted 0.362 GiB)
+  minimum expert cache                    108 MB   (6 x 9,457,664 x 2)
+  resident trunk excludes both row-backed vocabulary tables
+
+WHAT IS STILL NOT CLAIMED
+-------------------------
+Official-weight activation parity has not run: the checkpoint was not present.
+Tokenizer, chat template, serving, multimodal execution, native Windows, and
+production performance all remain gates. The public loader still returns
+WASTE_E_UNSUPPORTED for any Inkling container, by design.

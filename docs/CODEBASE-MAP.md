@@ -23,7 +23,7 @@ build product:
 inkling/src, tools, tests, docs           ← AUTHORITATIVE. Edit these.
 integration/waste/overlay/*.diff          ← the five upstream edits, 193 lines
 integration/waste/{baseline.env,generate.sh,verify.sh}
-dist/waste-inkling-6931570/               ← GENERATED. Never edit.
+dist/waste-inkling-d9b919a/               ← GENERATED. Never edit.
 
 waste-inkling-patch-v18/                  ← frozen provenance (WASTE 0.6.3)
 waste-inkling-patch-v17/                  ← frozen provenance (WASTE 0.6.2)
@@ -263,6 +263,11 @@ resident bytes and canonical F32 resident bytes separately.
 | `inkling_parity.py` | 416 | bounded fixture extraction + CRC-protected activation archives + comparison |
 | `inkling_fixture.py` | 268 | **dependency-free** fixture reader: CRC verification, axis-0 expert slices, BF16/F16/F32 → F32 decode, module-relative state-dict keys, fail-closed coverage checks |
 | `inkling_layer_parity.py` | 470 | binds one layer from a fixture and runs the traced C decoder layer; owns its ctypes ABI declarations, which a compiled probe checks against the headers |
+| `inkling_throughput.py` | 493 | **dependency-free** decode cost model: exact VQ record geometry, bytes per token, expert bank, the budget-resolver ladder, and a throughput projection calibrated against upstream's measured K3 decode |
+| `inkling_serve.py` | 648 | OpenAI-compatible chat over the staged private runtime: strict request validation, incremental UTF-8 streaming, finish reasons, and C-runtime-gated provenance on every response |
+| `inkling_expert_bench.c` | 243 | expand-then-dense against LUT gather at Inkling geometry; refuses to time two paths that disagree |
+| `inkling_cache_trace.py` | 254 | **dependency-free** routing-trace generator: two parameters, each fitted to one upstream measurement, validated against a third it was not fitted to |
+| `inkling_cache_bench.py` | 232 | builds and drives the cache simulator; reproduces Gate 5, sweeps cache size, measures chunk dedup |
 | `inkling_trace.py` | 147 | C side of the trace protocol |
 | `inkling_reference.py` | 163 | official Transformers side of the trace protocol |
 | `convert_inkling.py` | 306 | the CLI that drives all of the above |
@@ -339,7 +344,7 @@ integration/waste/
   verify.sh       generate.sh → tree hash → -Werror compile → make check
 
 dist/
-  waste-inkling-6931570/    GENERATED, committed for consumers:
+  waste-inkling-d9b919a/    GENERATED, committed for consumers:
     patches/0001-…patch, BASELINE, SHA256SUMS, TEST-RESULTS.txt, README.md
 
 docs/             STATE-OF-THE-PORT.md, CODEBASE-MAP.md, ROADMAP-V19.md
@@ -374,7 +379,7 @@ The generated patch reproduced tree
 the overlay, with no source edits, before anything else was allowed to change.
 
 **R2 — Make the bundle generated. ✅ done.**
-`dist/waste-inkling-6931570/` is produced by `generate.sh` and checked by CI
+`dist/waste-inkling-d9b919a/` is produced by `generate.sh` and checked by CI
 against a fresh regeneration, so a stale `dist/` cannot ship unreviewed code.
 `waste-inkling-patch-v16` through `-v18` stay exactly where they are as frozen
 provenance; deleting them would cost the audit trail and buy nothing.

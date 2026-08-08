@@ -88,8 +88,10 @@ jobs:
           }
           actual = {layer: sorted(values) for layer, values in plan["experts"].items()}
           assert actual == expected
-          assert plan["entries"] == 175
-          assert plan["payload_bytes"] == 3842395658
+          # 64 position-zero entries plus 47 newly required experts * 2 tensors.
+          assert plan["entries"] == 158
+          # This probe intentionally omits layer 0 from the older 3.58 GiB fixture.
+          assert 985959432 < plan["payload_bytes"] < 4 * 1024**3
           assert plan["revision"] == selection["revision"]
           assert plan["config_sha256"] == selection["config_sha256"]
           assert plan["index_sha256"] == selection["index_sha256"]

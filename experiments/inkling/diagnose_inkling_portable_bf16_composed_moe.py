@@ -21,6 +21,7 @@ import json
 import os
 import platform
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping
@@ -164,7 +165,7 @@ def collect_execution_profile(
         }
     )
     profile = {
-        "schema_version": 1,
+        "schema_version": 2,
         "workflow": {
             "event_name": env.get("GITHUB_EVENT_NAME"),
             "job": env.get("GITHUB_JOB"),
@@ -203,11 +204,21 @@ def collect_execution_profile(
             for key in ("os", "arch", "image_os", "image_version")
         },
         "cpu": profile["cpu"],
-        "torch": profile["torch"],
-        "thread_environment": profile["thread_environment"],
     }
     profile["host_class_sha256"] = hashlib.sha256(
         json.dumps(host_class, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    reference_profile = {
+        "host_class_sha256": profile["host_class_sha256"],
+        "torch": profile["torch"],
+        "thread_environment": profile["thread_environment"],
+    }
+    profile["reference_profile_sha256"] = hashlib.sha256(
+        json.dumps(
+            reference_profile,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
     ).hexdigest()
     return profile
 
@@ -362,6 +373,26 @@ def metrics(reference: torch.Tensor, candidate: torch.Tensor) -> dict[str, Any]:
     }
 
 
+def tensor_payload(tensor: torch.Tensor) -> dict[str, Any]:
+    """Retain exact float32 and BF16 payload bits for paired-arm comparison."""
+    raw = tensor.detach().float().cpu().contiguous()
+    bfloat16 = raw.to(torch.bfloat16).contiguous()
+    raw_bits = raw.view(torch.int32).reshape(-1)
+    bfloat16_bits = bfloat16.view(torch.int16).reshape(-1)
+    return {
+        "shape": list(raw.shape),
+        "byte_order": sys.byteorder,
+        "float32_bits": raw_bits.tolist(),
+        "float32_sha256": hashlib.sha256(
+            raw_bits.numpy().tobytes(order="C")
+        ).hexdigest(),
+        "bfloat16_bits": bfloat16_bits.tolist(),
+        "bfloat16_sha256": hashlib.sha256(
+            bfloat16_bits.numpy().tobytes(order="C")
+        ).hexdigest(),
+    }
+
+
 def classify_stages(stage_metrics: dict[str, dict[str, Any]]) -> dict[str, Any]:
     prefix: list[str] = []
     for stage in STAGES:
@@ -399,6 +430,100 @@ def complete_evidence_outcome(
         ),
         "exact_layers": exact_layers,
         "nonexact_layers": nonexact_layers,
+    }
+
+
+def classify_dispatch_pair(
+    native: Mapping[str, Any],
+    forced_avx2: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Apply the predeclared native/forced-AVX2 interpretation table."""
+    native_profile = native["execution_profile"]
+    forced_profile = forced_avx2["execution_profile"]
+    host_class = native_profile["host_class_sha256"]
+    if forced_profile["host_class_sha256"] != host_class:
+        raise ComposedMoeError("dispatch-pair arms ran on different host classes")
+    layers = sorted(native["layers"], key=int)
+    if layers != sorted(forced_avx2["layers"], key=int):
+        raise ComposedMoeError("dispatch-pair layer sets differ")
+
+    layer_out_bitwise: dict[str, Any] = {}
+    for layer in layers:
+        native_payloads = native["layers"][layer]["layer_out_payloads"]
+        forced_payloads = forced_avx2["layers"][layer]["layer_out_payloads"]
+        comparison: dict[str, bool] = {}
+        for side in ("official", "candidate"):
+            for representation in ("float32", "bfloat16"):
+                key = f"{representation}_bits"
+                comparison[f"{side}_{representation}_equal"] = (
+                    native_payloads[side][key] == forced_payloads[side][key]
+                )
+        comparison["all_payloads_equal"] = all(comparison.values())
+        layer_out_bitwise[layer] = comparison
+
+    arms_equal = all(
+        value["all_payloads_equal"] for value in layer_out_bitwise.values()
+    )
+    exact_classification = "complete_sparse_layers_are_bfloat16_exact"
+    native_exact = (
+        native["evidence_outcome"]["classification"] == exact_classification
+    )
+    forced_exact = (
+        forced_avx2["evidence_outcome"]["classification"]
+        == exact_classification
+    )
+
+    if native_exact and forced_exact:
+        if arms_equal:
+            classification = "both_dispatch_profiles_exact_and_bitwise_equal"
+            reference_profile_bound = False
+            next_action = "no_failure_reproduced"
+        else:
+            classification = (
+                "both_dispatch_profiles_exact_but_layer_out_is_dispatch_variant"
+            )
+            reference_profile_bound = True
+            next_action = "scope_official_exactness_to_named_reference_profiles"
+        denominator_live = False
+    elif not native_exact and forced_exact:
+        classification = "forced_avx2_closes_native_mismatch"
+        reference_profile_bound = True
+        denominator_live = False
+        next_action = "scope_official_exactness_to_named_reference_profiles"
+    elif native_exact and not forced_exact:
+        classification = "forced_avx2_introduces_mismatch"
+        reference_profile_bound = True
+        denominator_live = False
+        next_action = "scope_official_exactness_to_named_reference_profiles"
+    elif arms_equal:
+        classification = "dispatch_invariant_mismatch_keeps_denominator_defect_live"
+        reference_profile_bound = False
+        denominator_live = True
+        next_action = "investigate_logsumexp_denominator_reduction"
+    else:
+        classification = "dispatch_variant_mismatch_remains_profile_bound"
+        reference_profile_bound = True
+        denominator_live = False
+        next_action = "scope_profiles_before_investigating_residual_mismatch"
+
+    return {
+        "format": "inkling-bfloat16-dispatch-pair-classification",
+        "version": 1,
+        "host_class_sha256": host_class,
+        "native_reference_profile_sha256": native_profile[
+            "reference_profile_sha256"
+        ],
+        "forced_avx2_reference_profile_sha256": forced_profile[
+            "reference_profile_sha256"
+        ],
+        "native_exact": native_exact,
+        "forced_avx2_exact": forced_exact,
+        "arms_bitwise_equal": arms_equal,
+        "layer_out_bitwise": layer_out_bitwise,
+        "classification": classification,
+        "reference_profile_bound": reference_profile_bound,
+        "denominator_defect_branch_live": denominator_live,
+        "next_action": next_action,
     }
 
 
@@ -678,6 +803,10 @@ def analyze_layer(
     return {
         "decision": classify_stages(comparisons),
         "stages": comparisons,
+        "layer_out_payloads": {
+            "official": tensor_payload(official["layer_out"]),
+            "candidate": tensor_payload(candidate["stages"]["layer_out"]),
+        },
         "official_route": official_route,
         "candidate_routed_index": candidate["candidate_routed_index"],
         "candidate_routed_weight": candidate["candidate_routed_weight"],

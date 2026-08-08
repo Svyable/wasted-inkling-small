@@ -92,6 +92,38 @@ An exact route claim must follow these rules:
    generation parity merely because two routes are valid members of the same
    BF16 cutoff class. The measured layer-output changes are large.
 
+## Same-host native/forced-AVX2 classification
+
+The position-zero exactness instability is tested by a paired experiment, not
+by separate workflow dispatches. An eligible job must:
+
+1. check `/proc/cpuinfo` for `avx512f` before checkout or dependency install;
+2. install the pinned stack and continue only if native Torch reports AVX512;
+3. acquire and CRC-verify one source-bound fixture;
+4. execute the native arm and then a fresh process with
+   `ATEN_CPU_CAPABILITY=avx2` on the same runner;
+5. require one `host_class_sha256` while retaining distinct
+   `reference_profile_sha256` values; and
+6. compare the official and candidate layer-2/layer-5 `layer_out` float32 and
+   BF16 payloads bit-for-bit across arms.
+
+Ineligible hosts are neutral observations. They must skip the fixture download
+and must not count as exactness passes or failures.
+
+The outcome meanings are fixed before measurement:
+
+| Native | Forced AVX2 | Cross-arm payloads | Classification | Consequence |
+| --- | --- | --- | --- | --- |
+| exact | exact | identical | `both_dispatch_profiles_exact_and_bitwise_equal` | No failure reproduced; neither dispatch is cleared globally. |
+| exact | exact | different | `both_dispatch_profiles_exact_but_layer_out_is_dispatch_variant` | Official outputs are reference-profile-bound. |
+| nonexact | exact | any | `forced_avx2_closes_native_mismatch` | The official reference is dispatch-sensitive; scope exactness to named profiles rather than blaming WASTE C. |
+| exact | nonexact | any | `forced_avx2_introduces_mismatch` | The official reference is dispatch-sensitive; scope exactness to named profiles. |
+| nonexact | nonexact | identical | `dispatch_invariant_mismatch_keeps_denominator_defect_live` | Only this result keeps the `logsumexp` denominator-defect branch live. |
+| nonexact | nonexact | different | `dispatch_variant_mismatch_remains_profile_bound` | Dispatch/profile variation remains unresolved; it does not isolate the denominator. |
+
+This table classifies evidence; it does not weaken any parity assertion or
+enable public execution.
+
 ## Current evidence frontier
 
 The stacked evidence through #42 establishes the following bounded facts:

@@ -69,6 +69,21 @@ that JSON even when its exactness assertion fails. A named official-reference
 profile should replace this provisional scope only after the metadata either
 correlates a second failure with a host class or rules host class out.
 
+PR #54 added five profiled AVX2 executions across AMD EPYC 7763 and EPYC 9V74
+hosts; all five were exact. Combined with the original runs, the observations
+are AVX2 8/8 and AVX512 1/2, or 9/10 overall. This does not implicate AVX512:
+with one failure among ten runs, the probability that it falls in the two-run
+AVX512 arm by chance is 2/10 (the one-tailed Fisher result). Nor does 8/8 clear
+AVX2: the rule-of-three 95% upper bound is approximately 3/8, or 37.5%.
+Position-zero exactness is therefore unsettled for every dispatch class.
+
+Execution-profile schema version 2 separates physical host identity from the
+reference runtime. `host_class_sha256` binds only the hosted image and CPU
+class, so native and forced-dispatch processes on one job share it.
+`reference_profile_sha256` additionally binds Torch dispatch and thread
+controls, so the two arms remain distinguishable. Version-1 hashes from #54
+included both categories and remain valid only as version-1 artifact IDs.
+
 ## What is retained
 
 - the exact Python harness and test blobs at the #51 tip, which contains the
@@ -95,10 +110,13 @@ Until that passes, this evidence must not be described as full stateful-layer,
 full-decoder, generation, tokenizer, container, or public-runtime parity.
 
 Separately, position-zero exactness must not become a settled G1 premise until
-the 4/5 observation is resolved. Repeat the profiled complete-layer run until a
-second failure is captured. If failures cluster by CPU/runner profile, bind the
-claim to that named profile; otherwise investigate the `logsumexp` denominator
-reduction as an unresolved arithmetic defect.
+the 4/5 observation is resolved. The next bounded experiment must run native
+AVX512 and forced AVX2 as fresh processes in one job, after one cheap host gate
+and against one verified fixture. Separate workflow dispatches are not paired
+because they re-randomize the runner. The predeclared interpretation table is
+in `docs/INKLING-REFERENCE-PROFILES.md`; the denominator-defect branch remains
+live only when both arms are nonexact and their official and candidate
+`layer_out` payloads agree bit-for-bit across dispatches.
 
 ## Safety boundary
 

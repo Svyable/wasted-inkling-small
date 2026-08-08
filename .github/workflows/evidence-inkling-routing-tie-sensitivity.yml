@@ -1,0 +1,247 @@
+name: Evidence Inkling routing tie sensitivity
+
+on:
+  pull_request:
+    paths:
+      - "experiments/inkling/diagnose_inkling_bf16_router_tie_output_sensitivity.py"
+      - "experiments/inkling/test_inkling_bf16_router_tie_output_sensitivity.py"
+      - "experiments/inkling/diagnose_inkling_bf16_router_tie_resolution.py"
+      - "experiments/inkling/run_inkling_portable_bf16_complete_sparse_layer.py"
+      - "experiments/inkling/diagnose_inkling_portable_bf16_composed_moe.py"
+      - "experiments/inkling/run_inkling_portable_bf16_composed_moe.py"
+      - "mvp/diagnose_inkling_pre_router.py"
+      - "mvp/inkling_canonical_route_layer_parity.py"
+      - "mvp/inkling_fixture_reference.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "mvp/inkling_c_config.py"
+      - "docs/OFFICIAL-ROUTER-SELECTION.json"
+      - ".github/workflows/evidence-inkling-routing-tie-sensitivity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-routing-tie-evidence-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  OPENBLAS_NUM_THREADS: "1"
+
+jobs:
+  tie-impact:
+    name: Complete-layer output sensitivity to valid cutoff ties
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install and fingerprint the pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            'torch==2.13.0' 'transformers==5.14.1'
+          python3 - <<'PY'
+          import json
+          import torch
+
+          assert torch.__version__.split('+', 1)[0] == "2.13.0"
+          caps = dict(torch.cpu.get_capabilities())
+          interesting = {
+              key: caps.get(key)
+              for key in (
+                  "architecture", "avx2", "avx512_f", "avx512_bf16",
+                  "amx_bf16", "amx_tile",
+              )
+              if key in caps
+          }
+          print(
+              "TIE_IMPACT_BACKEND "
+              f"torch={torch.__version__} "
+              f"dispatch={torch.backends.cpu.get_cpu_capability()} "
+              f"threads={torch.get_num_threads()} "
+              f"interop={torch.get_num_interop_threads()} "
+              f"caps={json.dumps(interesting, sort_keys=True)}"
+          )
+          PY
+
+      - name: Run focused tie-impact contracts
+        run: |
+          python3 -m compileall -q experiments/inkling
+          PYTHONPATH=mvp:experiments/inkling python3 -m unittest discover \
+            -s experiments/inkling \
+            -p 'test_inkling_bf16_router_tie_output_sensitivity.py' -v
+
+      - name: Reproduce the position-zero cutoff-union fixture plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          plan="${RUNNER_TEMP}/tie-impact-plan.json"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" \
+            --layers 2,5 \
+            --experts '2:13,26,67,69,75,83,90,150,238;5:56,63,66,99,105,180,238' \
+            --max-total-gib 2 \
+            --plan-only > "$plan"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          plan = json.loads((root / "tie-impact-plan.json").read_text())
+          selection = json.loads(Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text())
+          expected = {
+              "2": [13, 26, 67, 69, 75, 83, 90, 150, 238],
+              "5": [56, 63, 66, 99, 105, 180, 238],
+          }
+          actual = {layer: sorted(values) for layer, values in plan["experts"].items()}
+          assert actual == expected
+          assert plan["revision"] == selection["revision"]
+          assert plan["config_sha256"] == selection["config_sha256"]
+          assert plan["index_sha256"] == selection["index_sha256"]
+          assert plan["payload_bytes"] <= 2 * 1024**3
+          print(
+              "TIE_IMPACT_PLAN "
+              f"entries={plan['entries']} payload_bytes={plan['payload_bytes']} "
+              f"requests={plan['requests']} experts={actual}"
+          )
+          PY
+
+      - name: Extract and bind the cutoff-union fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          fixture="${RUNNER_TEMP}/tie-impact-fixture"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" \
+              --layers 2,5 \
+              --experts '2:13,26,67,69,75,83,90,150,238;5:56,63,66,99,105,180,238' \
+              --max-total-gib 2 \
+              --out "$fixture" > "${RUNNER_TEMP}/tie-impact-manifest.json"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((10 << (attempt - 1)))
+              echo "fixture attempt ${attempt} failed; retrying after ${delay}s" >&2
+              sleep "$delay"
+            fi
+          done
+          if [ "$extracted" != true ]; then
+            echo "tie-impact fixture extraction exhausted four attempts" >&2
+            exit 2
+          fi
+          python3 inkling/tools/inkling_fixture.py --fixture "$fixture" --verify
+
+          PYTHONPATH=mvp python3 - <<PY
+          import json
+          import time
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import deterministic_hidden_states, input_sha256
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+
+          root = Path("${RUNNER_TEMP}")
+          config = None
+          for attempt in range(4):
+              try:
+                  source = HttpRangeSource(
+                      "https://huggingface.co/thinkingmachines/Inkling-Small",
+                      "$revision",
+                  )
+                  config = source.file("config.json")
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3:
+                      raise
+                  time.sleep(10 * (2**attempt))
+          assert config is not None
+          (root / "config.json").write_bytes(config)
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text())
+          assert input_sha256(inputs, torch.bfloat16) == selection["inputs_sha256"]
+          (root / "inputs.json").write_text(json.dumps(inputs.tolist()) + "\n", encoding="utf-8")
+          PY
+
+          PYTHONPATH=mvp python3 mvp/inkling_c_config.py \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --out "${RUNNER_TEMP}/c-config.json"
+
+      - name: Enumerate tied routes and measure complete-layer impact
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/diagnose_inkling_bf16_router_tie_output_sensitivity.py \
+            --fixture "${RUNNER_TEMP}/tie-impact-fixture" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --c-config "${RUNNER_TEMP}/c-config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --out "${RUNNER_TEMP}/tie-impact.json" > /dev/null
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads((Path(os.environ["RUNNER_TEMP"]) / "tie-impact.json").read_text())
+          assert result["format"] == "inkling-bfloat16-router-tie-output-sensitivity"
+          assert result["source"]["production_source_unchanged"] is True
+          backend = result["backend"]
+          print(
+              "TIE_IMPACT_RESULT_BACKEND "
+              f"torch={backend['torch_version']} dispatch={backend['cpu_dispatch']} "
+              f"threads={backend['num_threads']} caps={backend['cpu_capabilities']}"
+          )
+          expected_counts = {"2": 10, "5": 4}
+          for layer, value in sorted(result["layers"].items(), key=lambda item: int(item[0])):
+              assert value["route_count"] == expected_counts[layer]
+              assert sum(1 for route in value["routes"] if route["is_official"]) == 1
+              c_low = value["c_low_id_validation"]
+              assert c_low["stages"]["layer_out"]["raw_exact_fraction"] == 1.0
+              assert set(c_low["candidate_ids"]) == set(value["low_id_route"])
+              decision = value["decision"]
+              assert decision["classification"] in {
+                  "cutoff_tie_alternatives_are_layer_output_exact",
+                  "cutoff_tie_alternatives_are_bfloat16_equivalent",
+                  "cutoff_tie_alternatives_change_layer_output",
+              }
+              print(
+                  "TIE_IMPACT_DECISION "
+                  f"layer={layer} classification={decision['classification']} "
+                  f"routes={value['route_count']} alternatives={decision['alternatives']} "
+                  f"min_bf16_exact={decision['min_layer_out_bfloat16_exact_fraction']:.9f} "
+                  f"max_bf16_abs={decision['max_layer_out_bfloat16_abs']:.9g} "
+                  f"max_raw_abs={decision['max_layer_out_raw_abs']:.9g} "
+                  f"official={value['official_ids']} low={value['low_id_route']} high={value['high_id_route']}"
+              )
+              print(
+                  "TIE_IMPACT_C_LOW "
+                  f"layer={layer} candidate={c_low['candidate_ids']} "
+                  f"raw_exact={c_low['stages']['layer_out']['raw_exact_fraction']:.9f} "
+                  f"bf16_exact={c_low['stages']['layer_out']['bfloat16_exact_fraction']:.9f} "
+                  f"backend_calls={len(c_low['backend_calls'])}"
+              )
+              for route in value["routes"]:
+                  stage = route["stages"]["layer_out"]
+                  print(
+                      "TIE_IMPACT_ROUTE "
+                      f"layer={layer} ids={route['ids']} official={route['is_official']} "
+                      f"raw_exact={stage['raw_exact_fraction']:.9f} "
+                      f"bf16_exact={stage['bfloat16_exact_fraction']:.9f} "
+                      f"raw_max_abs={stage['raw_max_abs']:.9g} "
+                      f"bf16_max_abs={stage['bfloat16_max_abs']:.9g}"
+                  )
+          PY

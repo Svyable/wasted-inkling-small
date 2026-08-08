@@ -18,10 +18,12 @@ import argparse
 import ctypes
 import hashlib
 import json
+import os
+import platform
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import torch
 from torch.nn import functional as F
@@ -110,6 +112,104 @@ STAGES = (
     "mlp_branch",
     "layer_out",
 )
+
+_CPUINFO_FIELDS = {
+    "vendor_id": "vendor_id",
+    "cpu family": "family",
+    "model": "model",
+    "model name": "model_name",
+    "stepping": "stepping",
+    "microcode": "microcode",
+}
+
+
+def _first_cpuinfo(path: Path) -> dict[str, Any]:
+    """Read the first Linux processor block without making it a run gate."""
+    values: dict[str, Any] = {
+        "available": False,
+        **{field: None for field in _CPUINFO_FIELDS.values()},
+    }
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return values
+    for line in text.splitlines():
+        if not line.strip():
+            break
+        key, separator, value = line.partition(":")
+        if separator and key.strip() in _CPUINFO_FIELDS:
+            values[_CPUINFO_FIELDS[key.strip()]] = value.strip()
+    values["available"] = any(
+        values[field] is not None for field in _CPUINFO_FIELDS.values()
+    )
+    return values
+
+
+def collect_execution_profile(
+    *,
+    environ: Mapping[str, str] | None = None,
+    cpuinfo_path: Path = Path("/proc/cpuinfo"),
+    torch_module: Any = torch,
+    logical_cpu_count: int | None = None,
+) -> dict[str, Any]:
+    """Bind a numerical result to the hosted runner and CPU class that made it."""
+    env = os.environ if environ is None else environ
+    if logical_cpu_count is None:
+        logical_cpu_count = os.cpu_count()
+    cpu = _first_cpuinfo(cpuinfo_path)
+    cpu.update(
+        {
+            "logical_cpu_count": logical_cpu_count,
+            "machine": platform.machine(),
+        }
+    )
+    profile = {
+        "schema_version": 1,
+        "workflow": {
+            "event_name": env.get("GITHUB_EVENT_NAME"),
+            "job": env.get("GITHUB_JOB"),
+            "ref": env.get("GITHUB_REF"),
+            "run_attempt": env.get("GITHUB_RUN_ATTEMPT"),
+            "run_id": env.get("GITHUB_RUN_ID"),
+            "sha": env.get("GITHUB_SHA"),
+        },
+        "runner": {
+            "runner_id": env.get("RUNNER_NAME"),
+            "os": env.get("RUNNER_OS"),
+            "arch": env.get("RUNNER_ARCH"),
+            "image_os": env.get("ImageOS"),
+            "image_version": env.get("ImageVersion"),
+        },
+        "cpu": cpu,
+        "torch": {
+            "version": str(torch_module.__version__),
+            "cpu_capability": torch_module.backends.cpu.get_cpu_capability(),
+            "num_threads": int(torch_module.get_num_threads()),
+            "num_interop_threads": int(torch_module.get_num_interop_threads()),
+        },
+        "thread_environment": {
+            name: env.get(name)
+            for name in (
+                "OMP_NUM_THREADS",
+                "MKL_NUM_THREADS",
+                "OPENBLAS_NUM_THREADS",
+                "ATEN_CPU_CAPABILITY",
+            )
+        },
+    }
+    host_class = {
+        "runner": {
+            key: profile["runner"][key]
+            for key in ("os", "arch", "image_os", "image_version")
+        },
+        "cpu": profile["cpu"],
+        "torch": profile["torch"],
+        "thread_environment": profile["thread_environment"],
+    }
+    profile["host_class_sha256"] = hashlib.sha256(
+        json.dumps(host_class, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return profile
 
 _ROUTED_LOOP_OLD = """        for (int i = 0; i < hidden; i++) s->ff[i] = 0.0f;
         for (int k = 0; k < cfg->top_k; k++) {
@@ -276,6 +376,29 @@ def classify_stages(stage_metrics: dict[str, dict[str, Any]]) -> dict[str, Any]:
         "classification": "single_token_sparse_layer_is_bfloat16_exact",
         "exact_bfloat16_prefix": prefix,
         "first_nonexact_stage": None,
+    }
+
+
+def complete_evidence_outcome(
+    analyses: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    exact_layers = sorted(
+        int(layer)
+        for layer, value in analyses.items()
+        if value["decision"]["classification"]
+        == "single_token_sparse_layer_is_bfloat16_exact"
+    )
+    nonexact_layers = sorted(
+        int(layer) for layer in analyses if int(layer) not in exact_layers
+    )
+    return {
+        "classification": (
+            "complete_sparse_layers_are_bfloat16_exact"
+            if not nonexact_layers
+            else "complete_sparse_layer_mismatch_observed"
+        ),
+        "exact_layers": exact_layers,
+        "nonexact_layers": nonexact_layers,
     }
 
 
@@ -626,6 +749,8 @@ def main(argv: list[str] | None = None) -> int:
             "executed_position": 0,
             "input_dtype": args.dtype,
             "inputs_sha256": input_sha256(inputs, dtype),
+            "execution_profile": collect_execution_profile(),
+            "evidence_outcome": complete_evidence_outcome(analyses),
             "source": source,
             "layers": analyses,
         }

@@ -84,9 +84,11 @@ Attempt 8, workflow run `31267172029`, used one AMD EPYC 9V74 runner in Azure
 `westus3`, one CRC-verified fixture, and fresh native-AVX512 and forced-AVX2
 processes. Both arms were nonexact and their complete core evidence payloads
 were identical. The exact routed and shared weights matched the official
-weights in both layers, while the first mismatch was already
-`post_attention_norm`. Torch dispatch and the `logsumexp` denominator are
-therefore not causes of this particular failure.
+weights in both layers, while `post_attention_norm` was nonexact. Forced ATen
+dispatch and the `logsumexp` denominator are therefore not causes of this
+particular failure. At that head, however, `post_attention_norm` was the only
+pre-router point in the composed-stage comparison. It was the first compared
+pre-router mismatch, not the first proven arithmetic divergence.
 
 The same PR head also produced an exact complete-layer run, `31267172012`, on
 an AMD EPYC 9V74 runner in Azure `eastus` under native AVX2. Both runs used the
@@ -98,12 +100,26 @@ itself is causal.
 Execution-profile schema version 3 separates physical host identity from the
 reference runtime and adds the canonical `/proc/cpuinfo` feature set and its
 SHA-256 to the host identity. `host_class_sha256` binds the hosted image, CPU
-identity, and visible hardware features, so native and forced-dispatch
-processes on one job share it. `reference_profile_sha256` additionally binds
-Torch dispatch and thread controls, so the two arms remain distinguishable.
-Version-1 hashes from #54 included both host and runtime categories. Version-2
-hashes omitted CPU feature flags. Both remain valid artifact identifiers but
-must not be compared as version-3 host classes.
+identity, and visible hardware features, so fresh reference processes on one
+job share it. Version-1 hashes from #54 included both host and runtime
+categories. Version-2 hashes omitted CPU feature flags. Both remain valid
+artifact identifiers but must not be compared as version-3 host classes.
+
+The expanded #55 diagnostic uses schema version 4. It retains schema 3's host
+identity and additionally binds the oneDNN version, Torch build-configuration
+hash, MKLDNN enabled state, `ONEDNN_MAX_CPU_ISA`, and `ONEDNN_VERBOSE` into the
+reference-profile hash. Four same-host fresh processes—native, forced ATen
+AVX2, oneDNN capped to AVX2, and MKLDNN disabled—therefore have one host hash
+and four distinct reference hashes.
+
+AMX is not a live explanation for the reproduced failures. The fresh Intel
+profile that reproduced the mismatch did not advertise AMX flags, and the
+earlier Intel 8370C failure likewise predates AMX support. Configured thread
+count is also held at one. The remaining concrete backend seam is oneDNN ISA
+selection: an exact EPYC 9V74 native-AVX2 observation and a nonexact EPYC 9V74
+native-AVX512 observation used the same fixture and inter-op count, while
+forcing only ATen AVX2 on the latter host did not change either payload. That
+is a hypothesis to test, not a proven cause.
 
 ## What is retained
 
@@ -131,13 +147,15 @@ Until that passes, this evidence must not be described as full stateful-layer,
 full-decoder, generation, tokenizer, container, or public-runtime parity.
 
 Separately, position-zero exactness must not become a settled G1 premise. The
-same-host pair rules out Torch dispatch for its reproduced failure, but the
-first divergence precedes routing. The next bounded experiment should retain
-bitwise official and candidate payloads at `post_attention_norm` and the
-immediately preceding attention/residual boundary across schema-version-3
-hardware classes. The router-denominator branch remains a distinct stateful
-frontier; it is not a cause of the paired position-zero failure because that
-run's official routed/shared weights already match exactly.
+same-host pair rules out forced ATen dispatch for its reproduced failure, but
+the first divergence precedes routing. The next bounded experiment is the
+schema-version-4 same-host matrix: retain bitwise official and candidate
+payloads for all eleven ordered pre-router points, compare native, forced ATen
+AVX2, oneDNN-AVX2, and MKLDNN-off processes, and preserve oneDNN dispatch logs.
+Its classifications are predeclared in `docs/INKLING-REFERENCE-PROFILES.md`.
+The router-denominator branch remains a distinct stateful frontier; it is not a
+cause of the paired position-zero failure because that run's official
+routed/shared weights already match exactly.
 
 ## Safety boundary
 

@@ -1,9 +1,10 @@
-name: Evidence Inkling BF16 native and forced-AVX2 pair
+name: Evidence Inkling BF16 same-host reference matrix
 
 on:
   pull_request:
     paths:
       - "experiments/inkling/run_inkling_portable_bf16_complete_sparse_layer.py"
+      - "experiments/inkling/run_inkling_portable_bf16_composed_moe.py"
       - "experiments/inkling/diagnose_inkling_portable_bf16_composed_moe.py"
       - "experiments/inkling/test_inkling_portable_bf16_complete_sparse_layer.py"
       - "mvp/discover_inkling_router_experts.py"
@@ -29,7 +30,7 @@ env:
 
 jobs:
   dispatch-pair:
-    name: Native AVX512 and forced AVX2 on one host
+    name: Native, ATen AVX2, oneDNN AVX2, and MKLDNN-off on one host
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -56,8 +57,8 @@ jobs:
           flags_sha256 = hashlib.sha256(" ".join(flags).encode()).hexdigest()
           eligible = "avx512f" in flags
           gate = {
-              "format": "inkling-bfloat16-dispatch-pair-gate",
-              "version": 2,
+              "format": "inkling-bfloat16-reference-matrix-gate",
+              "version": 3,
               "classification": (
                   "hardware_avx512_supported"
                   if eligible
@@ -99,7 +100,7 @@ jobs:
         if: steps.hardware.outputs.eligible != 'true'
         shell: bash
         run: |
-          echo "### Dispatch-pair result: neutral" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Reference-matrix result: neutral" >> "$GITHUB_STEP_SUMMARY"
           echo "Host does not advertise avx512f; no checkout, install, or fixture download was attempted." >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -160,7 +161,7 @@ jobs:
         if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible != 'true'
         shell: bash
         run: |
-          echo "### Dispatch-pair result: neutral" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Reference-matrix result: neutral" >> "$GITHUB_STEP_SUMMARY"
           echo "Hardware advertises avx512f, but pinned Torch selected ${{ steps.native.outputs.dispatch }}; no fixture download was attempted." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run focused profile and payload contracts
@@ -282,6 +283,8 @@ jobs:
       - name: Execute the native AVX512 arm
         if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
         shell: bash
+        env:
+          ONEDNN_VERBOSE: dispatch
         run: |
           set -euo pipefail
           root="${RUNNER_TEMP}/dispatch-pair"
@@ -294,13 +297,15 @@ jobs:
             --selection docs/OFFICIAL-ROUTER-SELECTION.json \
             --layers 2,5 \
             --dtype bfloat16 \
-            --out "${root}/native.json" > /dev/null
+            --quiet \
+            --out "${root}/native.json" > "${root}/native-onednn.log" 2>&1
 
       - name: Execute the forced AVX2 arm in a fresh process
         if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
         shell: bash
         env:
           ATEN_CPU_CAPABILITY: avx2
+          ONEDNN_VERBOSE: dispatch
         run: |
           set -euo pipefail
           root="${RUNNER_TEMP}/dispatch-pair"
@@ -313,9 +318,52 @@ jobs:
             --selection docs/OFFICIAL-ROUTER-SELECTION.json \
             --layers 2,5 \
             --dtype bfloat16 \
-            --out "${root}/forced-avx2.json" > /dev/null
+            --quiet \
+            --out "${root}/forced-avx2.json" > "${root}/forced-avx2-onednn.log" 2>&1
 
-      - name: Classify the bitwise same-host pair
+      - name: Execute the oneDNN AVX2 arm in a fresh process
+        if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
+        shell: bash
+        env:
+          ONEDNN_MAX_CPU_ISA: AVX2
+          ONEDNN_VERBOSE: dispatch
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/dispatch-pair"
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/run_inkling_portable_bf16_complete_sparse_layer.py \
+            --fixture "${root}/fixture" \
+            --model-config "${root}/config.json" \
+            --c-config "${root}/c-config.json" \
+            --inputs "${root}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --quiet \
+            --out "${root}/onednn-avx2.json" > "${root}/onednn-avx2.log" 2>&1
+
+      - name: Execute the MKLDNN-off arm in a fresh process
+        if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
+        shell: bash
+        env:
+          ONEDNN_VERBOSE: dispatch
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/dispatch-pair"
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/run_inkling_portable_bf16_complete_sparse_layer.py \
+            --fixture "${root}/fixture" \
+            --model-config "${root}/config.json" \
+            --c-config "${root}/c-config.json" \
+            --inputs "${root}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --disable-mkldnn \
+            --quiet \
+            --out "${root}/mkldnn-off.json" > "${root}/mkldnn-off.log" 2>&1
+
+      - name: Classify the same-host reference matrix
         if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
         shell: bash
         run: |
@@ -324,62 +372,92 @@ jobs:
           import json
           import os
           from pathlib import Path
-          from diagnose_inkling_portable_bf16_composed_moe import classify_dispatch_pair
+          from diagnose_inkling_portable_bf16_composed_moe import (
+              PRE_ROUTER_POINTS,
+              classify_dispatch_pair,
+              classify_reference_matrix,
+          )
 
           root = Path(os.environ["RUNNER_TEMP"]) / "dispatch-pair"
-          native = json.loads((root / "native.json").read_text(encoding="utf-8"))
-          forced = json.loads((root / "forced-avx2.json").read_text(encoding="utf-8"))
-          for result in (native, forced):
+          results = {
+              "native": json.loads((root / "native.json").read_text(encoding="utf-8")),
+              "aten_avx2": json.loads((root / "forced-avx2.json").read_text(encoding="utf-8")),
+              "onednn_avx2": json.loads((root / "onednn-avx2.json").read_text(encoding="utf-8")),
+              "mkldnn_off": json.loads((root / "mkldnn-off.json").read_text(encoding="utf-8")),
+          }
+          for result in results.values():
               profile = result["execution_profile"]
-              assert profile["schema_version"] == 3
+              assert profile["schema_version"] == 4
               assert profile["cpu"]["flags"]
               assert len(profile["cpu"]["flags_sha256"]) == 64
+              assert profile["torch"]["mkldnn_available"] is True
+              assert profile["torch"]["onednn_version"]
+              assert len(profile["torch"]["torch_build_config_sha256"]) == 64
+              for layer in result["layers"].values():
+                  assert set(layer["stage_payloads"]) == set(PRE_ROUTER_POINTS)
+          native = results["native"]
+          forced = results["aten_avx2"]
+          onednn = results["onednn_avx2"]
+          mkldnn_off = results["mkldnn_off"]
           assert native["execution_profile"]["torch"]["cpu_capability"] == "AVX512"
           assert forced["execution_profile"]["torch"]["cpu_capability"] == "AVX2"
           assert forced["execution_profile"]["thread_environment"][
               "ATEN_CPU_CAPABILITY"
           ] == "avx2"
-          assert native["execution_profile"]["reference_profile_sha256"] != (
-              forced["execution_profile"]["reference_profile_sha256"]
+          assert onednn["execution_profile"]["thread_environment"][
+              "ONEDNN_MAX_CPU_ISA"
+          ] == "AVX2"
+          assert mkldnn_off["execution_profile"]["torch"]["mkldnn_enabled"] is False
+          assert all(
+              result["execution_profile"]["torch"]["mkldnn_enabled"] is True
+              for result in (native, forced, onednn)
           )
+          assert len({
+              result["execution_profile"]["host_class_sha256"]
+              for result in results.values()
+          }) == 1
+          assert len({
+              result["execution_profile"]["reference_profile_sha256"]
+              for result in results.values()
+          }) == 4
           pair = classify_dispatch_pair(native, forced)
+          matrix = classify_reference_matrix(native, forced, onednn, mkldnn_off)
           (root / "pair.json").write_text(
               json.dumps(pair, indent=2, sort_keys=True) + "\n",
               encoding="utf-8",
           )
+          (root / "matrix.json").write_text(
+              json.dumps(matrix, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
           print(
-              "DISPATCH_PAIR_DECISION "
-              f"classification={pair['classification']} "
-              f"host_class={pair['host_class_sha256']} "
-              f"native_exact={pair['native_exact']} "
-              f"forced_avx2_exact={pair['forced_avx2_exact']} "
-              f"arms_bitwise_equal={pair['arms_bitwise_equal']} "
-              f"routing_weights_match_official={pair['routing_weights_match_official']} "
-              f"denominator_live={pair['denominator_defect_branch_live']}"
+              "REFERENCE_MATRIX_DECISION "
+              f"classification={matrix['classification']} "
+              f"host_class={matrix['host_class_sha256']} "
+              f"exact={matrix['exact']} "
+              f"first={matrix['first_actual_compared_pre_router_divergence']}"
           )
           summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
           with summary.open("a", encoding="utf-8") as out:
-              out.write("### Dispatch-pair classification\n\n")
-              out.write(f"- Classification: `{pair['classification']}`\n")
-              out.write(f"- Host class: `{pair['host_class_sha256']}`\n")
-              out.write(f"- Native exact: `{pair['native_exact']}`\n")
-              out.write(f"- Forced AVX2 exact: `{pair['forced_avx2_exact']}`\n")
-              out.write(f"- Arms bitwise equal: `{pair['arms_bitwise_equal']}`\n")
+              out.write("### Same-host reference-matrix classification\n\n")
+              out.write(f"- Classification: `{matrix['classification']}`\n")
+              out.write(f"- Host class: `{matrix['host_class_sha256']}`\n")
+              out.write(f"- Exact by arm: `{matrix['exact']}`\n")
               out.write(
-                  "- Routing weights match official: "
-                  f"`{pair['routing_weights_match_official']}`\n"
+                  "- First actual compared pre-router divergence: "
+                  f"`{matrix['first_actual_compared_pre_router_divergence']}`\n"
               )
-              out.write(
-                  f"- First nonexact stages: `{pair['first_nonexact_stages']}`\n"
-              )
-              out.write(f"- Next action: `{pair['next_action']}`\n")
+              out.write(f"- Next action: `{matrix['next_action']}`\n")
+              out.write(f"- Legacy pair classification: `{pair['classification']}`\n")
           PY
 
-      - name: Preserve gate and paired evidence
+      - name: Preserve gate, profiles, payloads, and oneDNN logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: inkling-bf16-dispatch-pair-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/dispatch-pair/*.json
+          name: inkling-bf16-reference-matrix-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/dispatch-pair/*.json
+            ${{ runner.temp }}/dispatch-pair/*.log
           if-no-files-found: error
           retention-days: 30

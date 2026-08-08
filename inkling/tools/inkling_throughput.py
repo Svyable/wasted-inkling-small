@@ -235,6 +235,22 @@ class Geometry:
     def expert_bank_bytes(self) -> int:
         return self.sparse_layers * self.n_routed_experts * self.record_bytes
 
+    def mlp_flops_per_token(self, dense_intermediate: int) -> dict[str, int]:
+        """Multiply-accumulates x2 for one decoded position's MLP work.
+
+        This is the number no amount of cache or prefetch touches. An expert
+        is gate + up + down, so 2 * 3 * intermediate * hidden flops, and the
+        shared experts are paid on every token of every sparse layer whether
+        or not anything was routed."""
+        def mlp(inter: int) -> int:
+            return 2 * 3 * inter * self.hidden
+
+        return {
+            "routed": self.sparse_layers * self.top_k * mlp(self.moe_intermediate),
+            "shared": self.sparse_layers * self.n_shared_experts * mlp(self.moe_intermediate),
+            "dense": self.dense_layers * mlp(dense_intermediate),
+        }
+
     def budget(self, ram_gib: float) -> tuple[float, int]:
         """Reproduce upstream's default-budget resolver. Returns
         (budget_gib, k); k == 0 means not even one working set fits, which
@@ -504,6 +520,40 @@ def cmd_project(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ceiling(args: argparse.Namespace) -> int:
+    """What arithmetic rate a target decode speed demands.
+
+    Every other lever in this repository moves bytes. This one does not move,
+    and it is what decides whether a target is reachable at all: no cache
+    policy, chunk size or prefetch depth changes how many multiplies a token
+    costs."""
+    cfg = load_config(args.config)
+    geo = _geometry(args)
+    dense_inter = cfg.get("dense_intermediate_size", cfg.get("intermediate_size"))
+    if not isinstance(dense_inter, int) or dense_inter <= 0:
+        print("inkling_throughput: config has no usable dense MLP width",
+              file=sys.stderr)
+        return 2
+
+    parts = geo.mlp_flops_per_token(dense_inter)
+    total = sum(parts.values())
+    print("MLP arithmetic per decoded position (exact)")
+    print(f"  routed experts ({geo.records_per_token:>4})   {parts['routed'] / 1e9:6.2f} GFLOP")
+    print(f"  shared experts ({geo.sparse_layers * geo.n_shared_experts:>4})   {parts['shared'] / 1e9:6.2f} GFLOP")
+    print(f"  dense MLP      ({geo.dense_layers:>4})   {parts['dense'] / 1e9:6.2f} GFLOP")
+    print(f"  total                  {total / 1e9:6.2f} GFLOP")
+    print()
+    print("Sustained arithmetic a target decode rate requires, before any")
+    print("attention, norm, router or dequantization overhead:")
+    print()
+    print("   tok/s     GFLOP/s")
+    for rate in args.tok_s:
+        print(f"   {rate:6.1f}   {total * rate / 1e9:9.1f}")
+    print()
+    print("No cache policy, chunk size or prefetch depth changes this column.")
+    return 0
+
+
 def cmd_compare(args: argparse.Namespace) -> int:
     geo = _geometry(args)
     k3_bytes = CAL.k3_bytes_per_token()
@@ -553,6 +603,11 @@ def main(argv: list[str] | None = None) -> int:
 
     c = sub.add_parser("compare", help="Inkling-Small against K3")
     c.set_defaults(func=cmd_compare)
+
+    k = sub.add_parser("ceiling", help="arithmetic a target decode rate demands")
+    k.add_argument("--tok-s", type=float, nargs="+",
+                   default=[1, 3.4, 7, 10, 34])
+    k.set_defaults(func=cmd_ceiling)
 
     args = ap.parse_args(argv)
     try:

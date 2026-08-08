@@ -145,6 +145,35 @@ Building it also found a real bug in upstream's I/O benchmark: on Linux
 true random-read rate under the label "cache bypassed". Fixed, with the
 before/after measured.
 
+### Where an order of magnitude is
+
+The cache is now measured rather than assumed — `tools/inkling_cache_sim.c`
+links upstream's **real** `ecache.c` and runs the shipping LFRU over Inkling
+routing traces, reproducing Gate 5's published curve (conservatively, by a mean
+9.9pp) and independently reproducing its sharpest finding: a cache below one
+token's 2.11 GiB working set hits **exactly zero**.
+
+With every I/O lever stacked — a 34.7% measured hit rate at the laptop budget
+plus chunk-64 dedup — reads fall 2.11 → 0.591 GiB/token. And it barely matters:
+
+| | s/token | tok/s |
+| --- | ---: | ---: |
+| measured cache, chunk 1 | 0.294 | 3.4 |
+| measured cache, chunk 64 | 0.228 | 4.4 |
+| **I/O made free** | **0.228** | **4.4** |
+
+**Every remaining I/O lever is worth about 1.3x combined, and free I/O
+asymptotes at 4.4 tok/s.** A decoded position costs **16.91 GFLOP** exactly,
+so 34 tok/s demands **575 GFLOP/s** sustained — which no cache policy, chunk
+size or prefetch depth produces.
+
+So the order of magnitude is a **GPU backend for the expert matmul**, and
+WASTE is already shaped for it: `ecache.h` aligns slots to 16 KiB precisely so
+Metal can read a streamed record with no copy. Batching's real value is not the
+1.3x — it is that chunk 32-64 turns the expert GEMV into a GEMM, the shape a
+GPU can saturate. Full analysis, with what would falsify it:
+**[docs/THROUGHPUT.md](docs/THROUGHPUT.md) §6**.
+
 ## Where the code is
 
 | Doc | Purpose |

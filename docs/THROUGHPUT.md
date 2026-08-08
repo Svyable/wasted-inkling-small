@@ -211,14 +211,175 @@ which any instrumented run of the official model can emit.
 
 ---
 
-## 6. What this changes about the plan
+## 6. Where an order of magnitude is, and is not (2026-08-08)
+
+§3 projected the cache's contribution from K3's measured hit rates. That was
+the weakest input in the document, and it is now measured for Inkling's own
+geometry — against upstream's **real** `ecache.c`, not a second Python
+reimplementation of the policy, because Gate 5 already established that a
+Python model of this cache is wrong in a known direction.
+
+`tools/inkling_cache_sim.c` links `src/ecache.c` and runs the shipping LFRU
+implementation — sampled eviction, frequency-first ordering, hash table and
+all — over traces from `tools/inkling_cache_trace.py`.
+
+### The trace is a model, and it earns its keep or it does not
+
+Inkling's router has never been observed. The Kimi family's has, twice:
+Gate 2 measured its concentration (top 8.7% of experts cover 50% of
+activations) and its next-token reuse (33.6%). The generator has exactly two
+free parameters, one fitted to each.
+
+Concentration alone reproduces only **11.6%** reuse against a measured 33.6%,
+so routing carries real temporal correlation that an IID draw does not
+produce. That gap *is* the second parameter, and nothing more.
+
+Two parameters, two measurements — so the model predicts nothing yet. What it
+has to earn is Gate 5's **real-cache hit curve**, which it was not fitted to:
+
+| frac of expert set | Gate 5 measured | model | delta |
+| ---: | ---: | ---: | ---: |
+| 3.0% | 13.2% | 5.2% | −8.0pp |
+| 6.0% | 40.3% | 24.3% | −16.0pp |
+| 12.1% | 61.9% | 53.1% | −8.8pp |
+| 24.2% | 84.8% | 74.6% | −10.2pp |
+| 48.4% | 93.9% | 87.6% | −6.3pp |
+
+It reproduces the shape and the knee and **under-predicts the level at every
+budget**, mean −9.9pp. The cause is structural: the trace's correlation is
+first-order, so reuse decays geometrically, while real routing also has
+session-scale structure — a prompt's domain keeps a subset of experts warm for
+hundreds of tokens, which is exactly what a cache converts into hits.
+
+**So every cache figure below is a lower bound on hit rate and an upper bound
+on bytes read.** That is the safe direction for a throughput claim, and it is
+why the model was not tuned until the gap closed: a third parameter fitted to
+Gate 5 would have made the model fit everything and predict nothing.
+
+### Measured: the cache on Inkling's geometry
+
+300 decode tokens, 40 sparse layers, top-6 of 256, 9,457,664 B records.
+
+| cache | slots | % of bank | LFRU hit | GiB/token | LRU hit |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1.00 GiB | 113 | 1.1% | **0.0%** | 2.114 | 0.0% |
+| 2.11 GiB | 239 | 2.3% | 4.6% | 2.017 | 15.9% |
+| 4.00 GiB | 454 | 4.4% | 18.0% | 1.734 | 34.2% |
+| **6.34 GiB** | 719 | 7.0% | **34.7%** | **1.355** | 40.7% |
+| 8.00 GiB | 908 | 8.9% | 43.7% | 1.190 | 45.1% |
+| 16.00 GiB | 1816 | 17.7% | 66.7% | 0.704 | 62.5% |
+| 32.00 GiB | 3633 | 35.5% | 82.2% | 0.376 | 80.4% |
+
+The first row reproduces upstream's most predictive measurement independently:
+**a cache below one token's 2.11 GiB working set hits exactly zero.**
+
+The 16 GiB-laptop budget of §4 — 6.34 GiB of cache — gives **34.7%**, so
+1.355 GiB/token rather than 2.11.
+
+One anomaly, flagged rather than acted on: **LRU beats LFRU below ~8 GiB
+here**, which is the reverse of Gate 2's measurement on a real trace (LRU
+collapsing to 5.1% where LFRU held 29.4%). A first-order trace is structurally
+recency-friendly, so this is most likely an artifact of the generator and
+**not** a reason to change policy. It is a reason to distrust the small-cache
+rows specifically.
+
+### Measured: the batching lever, isolated
+
+Positions routed together share every record but keep all their arithmetic.
+EFFICIENCY.md §1 measured 0.24x reads/token at N=32 on K3.
+
+| chunk | no cache | with 6.34 GiB cache |
+| ---: | ---: | ---: |
+| 1 | 2.114 GiB (1.00x) | 1.355 GiB (1.00x) |
+| 4 | 1.564 (0.74x) | 1.335 (0.99x) |
+| 16 | 1.095 (0.52x) | 1.095 (0.81x) |
+| 32 | 0.834 (0.39x) | 0.834 (0.62x) |
+| 64 | 0.591 (0.28x) | 0.591 (0.44x) |
+
+Two findings, neither of them the expected one:
+
+1. **Batching is worth less on Inkling than on K3** — 0.39x at chunk 32 against
+   K3's 0.24x. Inkling already reads 8x less per token, so there is less
+   redundancy left to remove. The lever shrinks as the model gets leaner.
+2. **The cache and the chunk are substitutes, not complements.** At chunk ≥ 16
+   the two columns are *identical* — a 6.34 GiB cache buys exactly nothing that
+   chunking has not already taken. (Caveat: with the generator's short memory,
+   cross-chunk reuse is understated, so a real trace would leave the cache
+   more to do. The convergence is directionally right and quantitatively soft.)
+
+### The ceiling nobody can move
+
+`tools/inkling_throughput.py ceiling`. Exact, and nothing above touches it:
+
+| | GFLOP per decoded position |
+| --- | ---: |
+| routed experts (240) | 12.08 |
+| shared experts (80) | 4.03 |
+| dense MLP (2) | 0.81 |
+| **total** | **16.91** |
+
+Put the best I/O case against it. At 7 GiB/s with chunk 64 — every lever in
+this document stacked — I/O is 0.084 s/token, while the expert matmul alone is
+~0.128 s. **The step is compute-bound, and it was I/O-bound before any of this.**
+
+| what | s/token | tok/s |
+| --- | ---: | ---: |
+| §3 baseline, chunk 1, modelled cache | 0.294 | 3.4 |
+| measured cache, chunk 1 | 0.294 | 3.4 |
+| measured cache, chunk 64 | 0.228 | 4.4 |
+| **I/O made free (0 s)** | **0.228** | **4.4** |
+
+**Every remaining I/O lever combined is worth about 1.3x, and the asymptote of
+free I/O is 4.4 tok/s.** An order of magnitude on top of §3's 3.4 tok/s means
+34 tok/s, which demands **575 GFLOP/s sustained** before attention, norms,
+routing or dequantization. There is no cache policy, chunk size or prefetch
+depth that produces it.
+
+### So the 10x is a compute backend
+
+That is the conclusion, and it is a redirection of the roadmap rather than a
+tuning note:
+
+- 575 GFLOP/s at batch 1 is out of reach for a CPU doing gather-heavy VQ
+  dequantization, which is what `vq_rows` does — `stages` gathers per row per
+  vector position.
+- It is a **single-digit percentage** of a laptop GPU. That is the only place
+  an order of magnitude is available.
+- WASTE is already shaped for it. `ecache.h` allocates slots at 16 KiB
+  alignment specifically so that "Metal's `newBufferWithBytesNoCopy`" can read
+  a record the CPU already holds — a streamed expert lands in a buffer the GPU
+  can use without a copy. The hard part of GPU MoE offload is feeding it, and
+  the feeding is what this engine already does.
+- And **batching's real value is not the 1.3x**. It is that chunk 32-64 turns
+  the expert matmul from a GEMV into a GEMM, which is the shape a GPU can
+  actually saturate. The two levers are one lever.
+
+**Not claimed:** that a GPU backend exists, that 575 GFLOP/s has been reached,
+or that the dequantization pipeline survives the move. The claim is narrower
+and, I think, more useful — the I/O work that looked like the frontier is
+nearly finished, and everything after it is arithmetic.
+
+## 7. What this changes about the plan
 
 - **G2 (quantized tolerance) is promoted.** It was fourth; it is now the gate
   that decides whether the headline survives, because every geometry figure in
   this document is downstream of VQ3R being usable.
 - **A routing trace is worth more than it looks.** It closes falsifier 4 for
-  the cost of one instrumented run, and it feeds a tool that already exists.
-- **Cache and prefetch work still pays**, contrary to the compute-bound guess.
+  the cost of one instrumented run, and it replaces the fitted generator in §6
+  with the real thing, which is the largest uncertainty in every cache number
+  here.
+- **The I/O frontier is nearly closed.** §6 measures every remaining I/O lever
+  at about 1.3x combined, with free I/O asymptoting at 4.4 tok/s. Further cache
+  and prefetch work is no longer the highest-value engineering.
+
+  *(This supersedes the line that stood here before §6 was measured. §3's
+  bandwidth grid put Inkling I/O-bound at every realistic disk and I concluded
+  that cache work still paid. That was right about the grid and wrong about the
+  consequence: with the cache measured rather than assumed, the step is
+  compute-bound at the operating point, and it is the arithmetic that binds.)*
+- **A GPU backend for the expert matmul is where the order of magnitude is**,
+  and batching is its enabler rather than a lever in its own right, because
+  chunk 32-64 is what turns the expert GEMV into a GEMM.
 - **The demo is the deliverable.** A parity report is evidence; a terminal
   recording of a 276B model generating text on a 16 GiB laptop, with a command
   anyone can paste, is the thing that travels.

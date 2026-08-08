@@ -25,19 +25,19 @@ _FINAL_RESIDUAL_NEW = """    for (int i = 0; i < hidden; i++) {
 """
 
 
-def transform_complete_sparse_layer_source(source: str) -> str:
-    transformed = _base_transform_aggregation_source(source)
-    count = transformed.count(_FINAL_RESIDUAL_OLD)
+def apply_final_residual_source(source: str) -> str:
+    count = source.count(_FINAL_RESIDUAL_OLD)
     if count != 1:
         raise implementation.ComposedMoeError(
             f"expected exactly one final layer residual; found {count}"
         )
-    transformed = transformed.replace(
-        _FINAL_RESIDUAL_OLD,
-        _FINAL_RESIDUAL_NEW,
-        1,
+    return source.replace(_FINAL_RESIDUAL_OLD, _FINAL_RESIDUAL_NEW, 1)
+
+
+def transform_complete_sparse_layer_source(source: str) -> str:
+    return apply_final_residual_source(
+        _base_transform_aggregation_source(source)
     )
-    return transformed
 
 
 implementation.transform_aggregation_source = transform_complete_sparse_layer_source

@@ -75,8 +75,9 @@ correlates a second failure with a host class or rules host class out.
   requested #19–#36/#38/#44–#51 lineage;
 - one dependency-light workflow that compiles every retained module and runs
   every BF16 unit contract in a fresh process;
-- the two final official-weight workflows: complete position-zero sparse-layer
-  parity and eight-position router-denominator parity.
+- the complete position-zero sparse-layer and eight-position router-denominator
+  workflows, plus a separate bounded workflow that composes those policies
+  statefully without rewriting the retained historical harnesses.
 
 The 23 per-checkpoint workflows are intentionally omitted. They were useful
 while locating the boundary, but keeping all of them would turn historical
@@ -86,12 +87,22 @@ search steps into permanent CI surface.
 
 The current arithmetic policy is stronger than the #46 stateful candidate
 because #51 closes its eight-position router-weight defect. However, #51 is a
-router-only proof: it does not rerun the complete stateful sparse layer with
-the corrected denominator policy.
+router-only proof: by itself it does not establish complete stateful sparse-
+layer parity.
 
-The next justified experiment is therefore one bounded stateful sparse-layer
-run that composes the #51 denominator rule with the retained #44–#46 candidate.
-Until that passes, this evidence must not be described as full stateful-layer,
+The repository now has one bounded composition runner for that missing seam.
+It preserves the #44–#46 harnesses, injects #51's fixed `0x7f` post-reduction
+policy through their existing trace adapter, and reruns the full sparse-MLP
+ladder for the previously failing local layer 2 across all eight source-bound
+positions. The workflow pins the exact 33-expert, 87-entry,
+1,851,934,212-byte fixture, records the complete execution profile, and
+preserves its result JSON even when the exactness assertion fails.
+
+Acceptance is deliberately narrow: the position-zero regression anchors must
+hold, all eight routed/shared weights and downstream ladder stages must satisfy
+their established raw/BF16 contracts, and the terminal classification must be
+`tested_stateful_sparse_mlp_ladders_exact`. Until a hosted official-weight run
+passes those checks, this evidence must not be described as full stateful-layer,
 full-decoder, generation, tokenizer, container, or public-runtime parity.
 
 Separately, position-zero exactness must not become a settled G1 premise until

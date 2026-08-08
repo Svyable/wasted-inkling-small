@@ -61,6 +61,7 @@ jobs:
             experiments/inkling/test_inkling_portable_bf16_preexpert.py
             experiments/inkling/test_inkling_portable_bf16_single_token_moe.py
             experiments/inkling/test_inkling_portable_bf16_single_token_moe_activation.py
+            experiments/inkling/test_inkling_portable_bf16_stateful_post_reduction.py
             experiments/inkling/test_inkling_portable_bf16_stateful_sparse_layer.py
             mvp/test_inkling_bf16_attention_head_norm.py
             mvp/test_inkling_bf16_attention_lattice.py
@@ -70,7 +71,7 @@ jobs:
             mvp/test_inkling_bf16_projection_granularity.py
             mvp/test_inkling_native_bf16_backend.py
           )
-          test "${#tests[@]}" -eq 24
+          test "${#tests[@]}" -eq 25
           for test_file in "${tests[@]}"; do
             test -f "$test_file"
             python3 -m unittest discover \

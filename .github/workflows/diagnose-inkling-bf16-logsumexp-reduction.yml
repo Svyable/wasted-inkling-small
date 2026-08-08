@@ -1,0 +1,217 @@
+name: Diagnose Inkling BF16 logsumexp reduction
+
+on:
+  pull_request:
+    paths:
+      - "experiments/inkling/diagnose_inkling_bf16_logsumexp_reduction.py"
+      - "experiments/inkling/test_inkling_bf16_logsumexp_reduction.py"
+      - "mvp/diagnose_inkling_pre_router.py"
+      - "mvp/inkling_canonical_route_layer_parity.py"
+      - "mvp/inkling_fixture_reference.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "docs/OFFICIAL-ROUTER-SELECTION.json"
+      - ".github/workflows/diagnose-inkling-bf16-logsumexp-reduction.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-logsumexp-reduction-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  logsumexp-reduction:
+    name: Layer-2 BF16 logsumexp reduction
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      OMP_NUM_THREADS: 1
+      MKL_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install and fingerprint the pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            'torch==2.13.0' 'transformers==5.14.1'
+          python3 - <<'PY'
+          import torch
+          assert torch.__version__.split('+', 1)[0] == "2.13.0"
+          print(
+              "LOGSUMEXP_BACKEND "
+              f"torch={torch.__version__} "
+              f"dispatch={torch.backends.cpu.get_cpu_capability()} "
+              f"threads={torch.get_num_threads()}"
+          )
+          PY
+
+      - name: Run focused logsumexp contracts
+        run: |
+          python3 -m compileall -q experiments/inkling
+          PYTHONPATH=mvp:experiments/inkling python3 -m unittest discover \
+            -s experiments/inkling \
+            -p 'test_inkling_bf16_logsumexp_reduction.py' -v
+
+      - name: Reproduce the exact router fixture plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          plan="${RUNNER_TEMP}/logsumexp-plan.json"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" \
+            --layers 2 \
+            --experts '2:150' \
+            --max-total-gib 1 \
+            --plan-only > "$plan"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"])
+          plan = json.loads((root / "logsumexp-plan.json").read_text())
+          selection = json.loads(Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text())
+          assert plan["experts"] == {"2": [150]}
+          assert plan["entries"] == 23
+          assert plan["payload_bytes"] == 241321476
+          assert plan["requests"] == 26
+          assert plan["revision"] == selection["revision"]
+          assert plan["config_sha256"] == selection["config_sha256"]
+          assert plan["index_sha256"] == selection["index_sha256"]
+          print(
+              "LOGSUMEXP_PLAN "
+              f"entries={plan['entries']} payload_bytes={plan['payload_bytes']} "
+              f"requests={plan['requests']} experts={plan['experts']}"
+          )
+          PY
+
+      - name: Extract and bind the exact router fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          fixture="${RUNNER_TEMP}/logsumexp-fixture"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" \
+              --layers 2 \
+              --experts '2:150' \
+              --max-total-gib 1 \
+              --out "$fixture" > "${RUNNER_TEMP}/logsumexp-manifest.json"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((10 << (attempt - 1)))
+              echo "fixture attempt ${attempt} failed; retrying after ${delay}s" >&2
+              sleep "$delay"
+            fi
+          done
+          if [ "$extracted" != true ]; then
+            echo "logsumexp fixture extraction exhausted four attempts" >&2
+            exit 2
+          fi
+          python3 inkling/tools/inkling_fixture.py --fixture "$fixture" --verify
+
+          PYTHONPATH=mvp python3 - <<PY
+          import json, time
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import deterministic_hidden_states, input_sha256
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+          root = Path("${RUNNER_TEMP}")
+          config = None
+          for attempt in range(4):
+              try:
+                  source = HttpRangeSource(
+                      "https://huggingface.co/thinkingmachines/Inkling-Small",
+                      "$revision",
+                  )
+                  config = source.file("config.json")
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3:
+                      raise
+                  time.sleep(10 * (2**attempt))
+          assert config is not None
+          (root / "config.json").write_bytes(config)
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text())
+          assert input_sha256(inputs, torch.bfloat16) == selection["inputs_sha256"]
+          (root / "inputs.json").write_text(
+              json.dumps(inputs.tolist()) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Dissect the BF16 logsumexp reduction
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/diagnose_inkling_bf16_logsumexp_reduction.py \
+            --fixture "${RUNNER_TEMP}/logsumexp-fixture" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2 \
+            --dtype bfloat16 \
+            --out "${RUNNER_TEMP}/logsumexp.json" > /dev/null
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = json.loads((Path(os.environ["RUNNER_TEMP"]) / "logsumexp.json").read_text())
+          assert result["production_source_modified"] is False
+          value = result["layers"]["2"]
+          assert len(value["positions"]) == 8
+          # #49's unique causal row remains position 3; do not assume the new
+          # primitive classification before reading it.
+          position3 = value["positions"][3]
+          print(
+              "LOGSUMEXP_DECISION "
+              f"first_nonexact_position={value['first_nonexact_position']} "
+              f"position3_classification={position3['decision']['classification']} "
+              f"position3_boundary={position3['decision']['first_boundary']}"
+          )
+          for item in value["positions"]:
+              c = item["comparisons"]
+              tree = item["tree_search"]
+              print(
+                  "LOGSUMEXP_POSITION "
+                  f"position={item['position']} "
+                  f"classification={item['decision']['classification']} "
+                  f"boundary={item['decision']['first_boundary']} "
+                  f"torch_staged={c['torch_staged_lse']['raw_exact_fraction']:.9f} "
+                  f"fp32_to_bf16={c['torch_fp32_lse_to_bfloat16']['raw_exact_fraction']:.9f} "
+                  f"scalar_delta={c['scalar_delta']['raw_exact_fraction']:.9f} "
+                  f"scalar_terms={c['scalar_terms']['raw_exact_fraction']:.9f} "
+                  f"left_sum={c['scalar_left_sum']['raw_exact_fraction']:.9f} "
+                  f"right_sum={c['scalar_right_sum']['raw_exact_fraction']:.9f} "
+                  f"balanced_sum={c['scalar_balanced_sum']['raw_exact_fraction']:.9f} "
+                  f"f32_sum={c['scalar_f32_sum']['raw_exact_fraction']:.9f} "
+                  f"scalar_log={c['scalar_logdenom']['raw_exact_fraction']:.9f} "
+                  f"scalar_lse={c['scalar_lse']['raw_exact_fraction']:.9f} "
+                  f"tree_reachable={tree['reachable']} "
+                  f"tree_results={tree['possible_result_count']}"
+              )
+          print(
+              "LOGSUMEXP_POSITION3_VALUES "
+              + json.dumps(
+                  {
+                      "torch": position3["torch_values"],
+                      "scalar": position3["scalar_values"],
+                      "tree": {
+                          "target": position3["tree_search"]["target"],
+                          "reachable": position3["tree_search"]["reachable"],
+                          "witness": position3["tree_search"]["witness"],
+                      },
+                  },
+                  sort_keys=True,
+              )
+          )
+          PY

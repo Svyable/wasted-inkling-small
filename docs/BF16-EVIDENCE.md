@@ -26,6 +26,7 @@ replay the 99-commit research history.
 | Stateful execution | #45, #46 | Eight-token stateful execution first develops a large mismatch in layer-2 fixed-ID router weights at positions 3 and 4; attention state and expert arithmetic are not the first large boundary. |
 | Router projection and normalization | #48, #49 | Selected router logits are raw-exact across all eight positions for both batched and row-wise projection shapes. Position 3 first loses parity inside `logsumexp`, not in the projection or `logsigmoid`. |
 | Denominator reduction | #50, #51 | The exact BF16 exponential terms must be accumulated in float32 and the completed denominator exposed to BF16 once after the full reduction. With that boundary, the expected post-reduction policy is raw-exact for complete routed/shared weights at all eight tested positions. |
+| Stateful sparse-layer composition | #57 | Supplying the fixed `0x7f` post-reduction policy through the retained trace adapter closes the previously failing layer-2 stateful ladder at all eight positions on the recorded AVX2 profile. Routed/shared weights, `moe_out`, `mlp_branch`, and `layer_out` are BF16-exact; no first mismatch is present. |
 
 ## Authoritative final runs
 
@@ -40,6 +41,14 @@ replay the 99-commit research history.
 - Post-reduction denominator: workflow `31239470605` on #51. Its terminal
   classification was `expected_post_reduction_policy_is_raw_exact`, with no
   failure position and exact official routed/shared weights at positions 0–7.
+- Stateful post-reduction composition: workflow `31277195747`, attempt 2, on
+  #57. Its terminal classification was
+  `tested_stateful_sparse_mlp_ladders_exact`; all eight positions passed and
+  the profiled result was preserved as artifact `9027735369` with ZIP SHA-256
+  `b3b7d066d42068156bc2d32455703cff7a359b3f8bc7d224ab15d5311b9f87c5`.
+- Retained contract validation at the same #57 head: workflow `31277195712`,
+  attempt 3. Every evidence module compiled and all 25 isolated BF16 contract
+  files passed.
 
 Every run used immutable model revision
 `21152b5312c653be115f33a8342759064144e281`, source-bound fixture metadata,
@@ -59,15 +68,21 @@ tolerance-based. Those facts exclude variable configured thread count,
 differing fixture bytes, and a threshold knife edge, but they do not identify
 the cause.
 
-The durable claim is therefore scoped to repeated measurement on GitHub-hosted
-`ubuntu-24.04`, with host class still unknown. The complete-layer result JSON
-records the workflow/run attempt, runner ID, hosted image, first `/proc/cpuinfo`
-model block, Torch CPU dispatch, Torch thread counts, and thread-control
-environment. It also records a stable host-class SHA over those class-defining
-fields while excluding the ephemeral run and runner IDs. The workflow preserves
-that JSON even when its exactness assertion fails. A named official-reference
-profile should replace this provisional scope only after the metadata either
-correlates a second failure with a host class or rules host class out.
+The complete-layer claim therefore remains scoped to repeated measurement on
+GitHub-hosted `ubuntu-24.04`; the 4/5 result is not a platform-independent
+theorem. The result JSON records the workflow/run attempt, runner ID, hosted
+image, first `/proc/cpuinfo` model block, Torch CPU dispatch, Torch thread
+counts, and thread-control environment. It also records a stable host-class SHA
+over those class-defining fields while excluding ephemeral run and runner IDs.
+The workflow preserves that JSON even when its exactness assertion fails.
+
+The successful #57 stateful composition is a separate, narrower observation on
+the named Linux AVX2 profile: Torch `2.13.0+cu130`, one compute thread, AMD EPYC
+7763, and host class
+`67b28be7a887a766b02e9896d80a16dfa47321243117592abdd92ce047d8322b`.
+It closes the layer-2 eight-position sparse-MLP seam under that profile. It does
+not explain the earlier position-zero failure or establish the same result for
+another dispatch/backend profile.
 
 ## What is retained
 
@@ -85,31 +100,32 @@ search steps into permanent CI surface.
 
 ## Current frontier
 
-The current arithmetic policy is stronger than the #46 stateful candidate
-because #51 closes its eight-position router-weight defect. However, #51 is a
-router-only proof: by itself it does not establish complete stateful sparse-
-layer parity.
+The #57 hosted run satisfies the deliberately narrow acceptance rule for the
+previously failing local sparse layer 2: the position-zero anchors held, all
+eight routed/shared weights and downstream ladder stages satisfied their
+established raw/BF16 contracts, and the terminal classification was
+`tested_stateful_sparse_mlp_ladders_exact`. The exact 33-expert, 87-entry,
+1,851,934,212-byte fixture was CRC-verified before execution.
 
-The repository now has one bounded composition runner for that missing seam.
-It preserves the #44–#46 harnesses, injects #51's fixed `0x7f` post-reduction
-policy through their existing trace adapter, and reruns the full sparse-MLP
-ladder for the previously failing local layer 2 across all eight source-bound
-positions. The workflow pins the exact 33-expert, 87-entry,
-1,851,934,212-byte fixture, records the complete execution profile, and
-preserves its result JSON even when the exactness assertion fails.
+That result must be described as **profile-bound stateful layer-2 evidence**.
+It is not full stateful-layer, full-decoder, generation, tokenizer, container,
+or public-runtime parity. In particular:
 
-Acceptance is deliberately narrow: the position-zero regression anchors must
-hold, all eight routed/shared weights and downstream ladder stages must satisfy
-their established raw/BF16 contracts, and the terminal classification must be
-`tested_stateful_sparse_mlp_ladders_exact`. Until a hosted official-weight run
-passes those checks, this evidence must not be described as full stateful-layer,
-full-decoder, generation, tokenizer, container, or public-runtime parity.
+- the policy is still supplied by evidence-only transforms/adapters rather than
+  checked-in production C;
+- the unexplained 4/5 position-zero observation remains open across hosted
+  profiles;
+- stateful dense layer 0 and global sparse layer 5 are not closed by #57;
+- cross-layer decoder continuity, final normalization, logits, tokenization,
+  and generation have not been tested under the composed policy.
 
-Separately, position-zero exactness must not become a settled G1 premise until
-the 4/5 observation is resolved. Repeat the profiled complete-layer run until a
-second failure is captured. If failures cluster by CPU/runner profile, bind the
-claim to that named profile; otherwise investigate the `logsumexp` denominator
-reduction as an unresolved arithmetic defect.
+The next evidence action is the predeclared same-host backend matrix: native
+AVX512, forced ATen AVX2, oneDNN AVX2, and MKLDNN disabled against one bound
+fixture. Once that classifies the profile-sensitive seam, the smallest useful
+implementation change is to promote the proven arithmetic policy into a
+private, fail-closed C execution profile and rerun the representative
+dense/local-sparse/global-sparse fixtures without rewriting production source
+at test time. Public dispatch remains out of scope for that promotion.
 
 ## Safety boundary
 

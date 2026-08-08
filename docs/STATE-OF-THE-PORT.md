@@ -1,5 +1,11 @@
 # State of the WASTE Inkling port — 2026-08-02
 
+> [!NOTE]
+> This is a dated foundation audit and its counts and “next enhancement” wording
+> are intentionally preserved as observed on 2026-08-02. For the current
+> post-#57 handoff, use [MVP-READINESS.md](MVP-READINESS.md); for the current
+> numerical frontier, use [BF16-EVIDENCE.md](BF16-EVIDENCE.md).
+
 An independent audit of what this repository actually contains, what was
 re-verified today from a clean clone, and what stands between the current
 artifact and running the released `thinkingmachines/Inkling-Small` open weights
@@ -181,11 +187,12 @@ claim about a model whose official weights this code has never read.
 
 ## 7. Verdict
 
-The foundation is sound and current; the ceremony around it was heavier than
-the code it protected. That is now fixed: the C is readable as C, the patch is
-a build product, and the differential suite runs instead of being quoted. The
-next enhancement is not a new subsystem — it is closing the parity loop on real
-weights.
+At the time of this audit, the foundation was sound and current; the ceremony
+around it was heavier than the code it protected. That was fixed: the C became
+readable as C, the patch became a build product, and the differential suite ran
+instead of being quoted. Subsequent work did close bounded portions of the
+official-weight parity loop; the live scope and next gate are recorded in the
+handoff and evidence documents linked above.
 
 - Path to open-weight execution: [ROADMAP-V19.md](ROADMAP-V19.md)
 - Structure and refactor: [CODEBASE-MAP.md](CODEBASE-MAP.md)

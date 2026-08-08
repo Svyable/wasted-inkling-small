@@ -1,10 +1,12 @@
 # MVP readiness handoff
 
-## Where the previous work stopped
+## Current handoff
 
 The public memory planner is live for valid Inkling manifests. Public loading,
-step execution, chat, and serving remain deliberately refused. The next hard
-gate is official-weight layer parity, not another loader branch.
+step execution, chat, and serving remain deliberately refused. The bounded
+official-weight loop is now real and reproducible; the next hard gate is moving
+its proven BF16 policy into a private checked-in runtime path without confusing
+that promotion with public model support.
 
 The repository has bounded checkpoint fixtures, a fixture-backed C decoder
 layer runner, and an official `InklingDecoderLayer` harness that avoids
@@ -17,7 +19,26 @@ have different meanings. See `docs/CONFIG-SCHEMA-RESOLUTION.md`.
 
 PR #13 established an independent synthetic oracle: the C decoder layer and
 official Transformers layer compute the same dense/local and sparse/global
-functions to float32 epsilon. Official-weight parity is still not established.
+functions to float32 epsilon. The later evidence stack then ran immutable,
+CRC-verified official tensors through representative layers and isolated the
+required BF16 completion boundaries.
+
+The strongest current result is PR #57 / workflow `31277195747`, attempt 2.
+On the recorded Linux AVX2 reference profile, local sparse layer 2 is BF16-exact
+through routed/shared weights, `moe_out`, `mlp_branch`, and `layer_out` for all
+eight source-bound positions. The run used 33 experts, 87 fixture entries,
+1,851,934,212 verified payload bytes, and recorded 240 backend calls. That is a
+profile-bound layer result, not full decoder or generation parity.
+
+Three boundaries remain between this result and a production implementation:
+
+1. one unchanged position-zero complete-layer run failed among five serial
+   runs, so the same-host backend/dispatch matrix must classify the remaining
+   profile sensitivity;
+2. the proven `0x7f` arithmetic policy is still injected by evidence-only
+   transforms and adapters rather than implemented in checked-in production C;
+3. stateful dense layer 0, global sparse layer 5, cross-layer continuity, final
+   normalization, and logits remain unproven under the composed policy.
 
 ## Evidence harness
 
@@ -44,9 +65,12 @@ archives before calling the existing activation comparator. This matters
 because the official router uses `topk(sorted=False)` while the C side emits a
 different slot order.
 
-These tools intentionally remain outside the generated WASTE patch until they
-have run against an official fixture. Promotion into `inkling/tools/` should be
-the commit that records the run and regenerates the bundle.
+The historical official-reference and diagnostic harnesses intentionally remain
+outside the generated WASTE patch. They have now run against official fixtures;
+their purpose is to specify and audit the production policy, not to become a
+second runtime. Promotion should move only reviewed arithmetic behavior and the
+minimum private test seam into `inkling/`, then regenerate and verify the
+distribution bundle.
 
 ## Routed expert coverage is now evidence-driven
 
@@ -102,7 +126,7 @@ The extractor refuses mutable revisions, unsafe index paths, missing tensors,
 invalid safetensors geometry, incomplete sparse expert selections, and any
 server that ignores HTTP `Range`. See `docs/REMOTE-FIXTURES.md`.
 
-## Run the G0 loop
+## Reproduce the bounded official loop
 
 Generate the same deterministic BF16 input sequence recorded by the router
 selection artifact:
@@ -149,18 +173,36 @@ The committed expert set covers this exact eight-position input sequence.
 Different hidden states may route differently and require a separately recorded
 selection artifact rather than silent fixture expansion.
 
-## MVP sequence from here
+## Immediate next enhancement
 
-1. Extract and CRC-verify the 3.58 GiB official fixture.
-2. Run the official and C archives over the committed deterministic hidden
-   states and commit the first comparison report, whatever it says.
-3. Require exact routing-index agreement first; then fix the first activation
-   mismatch until every recorded activation is within the G1 `1e-3` bound.
-4. Promote the evidence tools into `inkling/tools/`, regenerate the distribution
-   patch, and update the applied-tree hash.
-5. Establish tokenizer and chat-template parity in parallel.
-6. Only after BF16 and text-interface evidence is green, promote public loading
-   and stepping. Keep unsupported behavior for every unverified variant.
+Finish the same-host reference matrix before changing production arithmetic.
+Run native AVX512, forced `ATEN_CPU_CAPABILITY=avx2`,
+`ONEDNN_MAX_CPU_ISA=AVX2`, and MKLDNN-disabled arms as fresh processes on one
+eligible host and one CRC-verified fixture. Preserve every arm even when it is
+nonexact. This decides whether the unresolved position-zero failure follows
+oneDNN ISA selection, MKLDNN, a projection backend, or a later reduction.
+
+After that measurement, make one private-runtime promotion PR with this
+acceptance contract:
+
+1. introduce an internal Inkling BF16 execution profile; do not change the
+   public ABI, public loader dispatch, or unsupported behavior;
+2. port only the proven normalization, attention, residual, expert, router, and
+   post-reduction denominator boundaries from the evidence transforms;
+3. keep deterministic WASTE routing and profile-bound official routing as
+   distinct contracts at ambiguous BF16 cutoffs;
+4. exercise the checked-in path against representative stateful dense layer 0,
+   local sparse layer 2, and global sparse layer 5 fixtures without rewriting C
+   source at test time;
+5. preserve the first mismatch and execution profile rather than relaxing an
+   assertion or comparison threshold;
+6. regenerate the WASTE bundle, verify its tree/contracts, and leave public
+   Inkling loading, stepping, generation, chat, and serving fail-closed.
+
+Then extend the private path through cross-layer decoder continuity, final
+normalization, and logits. Tokenizer/chat-template parity can proceed in
+parallel because it does not depend on arithmetic promotion. Quantized
+tolerances and public dispatch remain downstream gates.
 
 ## Definition of an MVP
 

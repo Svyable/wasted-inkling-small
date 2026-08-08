@@ -94,7 +94,7 @@ An exact route claim must follow these rules:
 
 ## Current evidence frontier
 
-The stacked evidence through #42 establishes the following bounded facts:
+The stacked evidence through #57 establishes the following bounded facts:
 
 - sparse layer classes 2 and 5, position zero, are exact through final
   `layer_out` when canonical routed IDs are supplied and the proven BF16
@@ -105,27 +105,36 @@ The stacked evidence through #42 establishes the following bounded facts:
 - identical BF16 choice bits select different tied expert sets across Linux,
   Windows, and macOS Torch 2.13 CPU builds, while unambiguous rows remain fixed
   (#42).
+- on the recorded Linux AVX2 profile, the #51 post-reduction denominator policy
+  composes through all eight source-bound positions of local sparse layer 2:
+  routed/shared weights, `moe_out`, `mlp_branch`, and `layer_out` are BF16-exact
+  and no first mismatch is present (#57).
 
-This is **not** full-model parity. It does not cover multi-position state,
-end-to-end token generation, tokenizer/chat-template parity, a quantized public
-container, or public loader/server execution.
+This is **not** full-model parity. The stateful result covers one local sparse
+layer on one named reference profile. It does not cover stateful dense/global
+layer classes, cross-layer decoder continuity, logits, end-to-end token
+generation, tokenizer/chat-template parity, a quantized public container, or
+public loader/server execution.
 
 ## Promotion gates after this contract
 
-The next numerical work should keep portable semantics and official-reference
-semantics separate. The BF16 evidence consolidation carries the stateful
-investigation through #51; see `docs/BF16-EVIDENCE.md`.
+The next numerical work must keep portable semantics and official-reference
+semantics separate. The BF16 evidence consolidation now carries the stateful
+investigation through #57; see `docs/BF16-EVIDENCE.md`.
 
-1. Rerun the bounded stateful sparse layer with #51's proven mixed-precision
-   router denominator while forcing the official counterfactual to the same
-   route at each audited position.
-2. In parallel, retain profile-bound official-reference checks for exact route
-   and output reproduction where the profile is fully specified.
-3. Extend the evidence across the remaining relevant layer/state classes before
-   claiming full decoder parity.
-4. Establish tokenizer and chat-template parity.
-5. Validate the intended quantized container, resource budgets, and laptop
-   storage/I/O behavior.
+1. Complete the predeclared same-host backend matrix for the unresolved
+   position-zero sensitivity: native AVX512, forced ATen AVX2, oneDNN AVX2, and
+   MKLDNN disabled against one CRC-bound fixture.
+2. Retain profile-bound official-reference checks for exact route and output
+   reproduction, while keeping deterministic low-ID WASTE routing as the
+   portable contract.
+3. Promote the proven BF16 boundaries into a private, fail-closed C execution
+   profile; do not enable public dispatch as part of that change.
+4. Rerun representative stateful dense, local-sparse, and global-sparse layers
+   without temporary source rewriting, then extend through decoder continuity
+   and logits before claiming full decoder parity.
+5. Establish tokenizer and chat-template parity, and validate the intended
+   quantized container and measured resource budgets.
 6. Only after those gates are green and explicitly reviewed may public loading,
    stepping, generation, chat, or serving be considered.
 
@@ -143,6 +152,9 @@ Until then, the public Inkling runtime remains deliberately unsupported.
   unambiguous rows remain stable.
 - #43 / workflow `31227218253`: the portable WASTE and pinned official
   reference profiles are distinct, explicit contracts.
+- #57 / workflow `31277195747`, attempt 2: the named Linux AVX2 profile is
+  exact through the eight-position layer-2 stateful sparse-MLP ladder; artifact
+  `9027735369` preserves the profiled result.
 
 ## What this contract does not change
 

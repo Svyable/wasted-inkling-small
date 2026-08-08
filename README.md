@@ -14,7 +14,8 @@
 > [!IMPORTANT]
 > `waste plan` supports Inkling geometry today. Public loading, generation, chat,
 > and serving remain intentionally disabled until official-weight numerical
-> parity, tokenizer/chat-template parity, and measured resource gates pass.
+> parity covers the decoder and logits, tokenizer/chat-template parity is
+> recorded, and the measured resource gates pass.
 
 This repository develops Inkling-Small support for
 [`sqliteai/waste`](https://github.com/sqliteai/waste): a portable C inference
@@ -200,6 +201,7 @@ Today only the planning path crosses the public boundary. Execution APIs return
 | Official router evidence | Eight deterministic BF16 states record exact `(expert_id, weight)` pairs for layers 2 and 5 |
 | Evidence-selected fixture plan | 175 entries, 3,842,395,658 payload bytes, 52 metadata/range requests, 25 touched shards |
 | Sparse memory bound | Selected experts are supplied through `expert_get`; no full 256-expert float32 bank expansion |
+| Stateful sparse-layer evidence | Layer 2 is BF16-exact through routed/shared weights, MoE output, MLP branch, and final residual at all eight tested positions on the named Linux AVX2 profile — [docs/BF16-EVIDENCE.md](docs/BF16-EVIDENCE.md) |
 | Decode cost model | Exact per-token geometry, the expert cache measured against upstream's real `ecache.c`, and a throughput projection calibrated to reproduce K3's measured decode — [docs/THROUGHPUT.md](docs/THROUGHPUT.md) |
 | Chat API surface | `/v1/chat/completions` served over the staged runtime, streaming and not, run end to end; public `waste_open` still refused |
 
@@ -207,29 +209,33 @@ The committed official selection contains **33 unique routed experts for layer
 2** and **26 unique routed experts for layer 5** across the eight deterministic
 positions.
 
-### Completed in the active parity work
+### Measured official-weight frontier
 
 The official 532 GB checkpoint has **not** been run end to end, but bounded
 official-weight execution has now crossed several important gates:
 
-- the 3.58 GiB fixture was downloaded and CRC-verified;
+- immutable bounded fixtures have been downloaded and CRC-verified;
 - official and C execution completed for representative dense, local-sparse,
   and global-sparse layers;
-- C route differences were shown to remain inside valid official BF16 cutoff
-  ties, with attached weights below the `1e-3` comparison bound;
-- canonical official routes were used to separate routing ambiguity from
-  arithmetic drift;
-- the first numerical mismatch was isolated to BF16 execution semantics rather
-  than config, fixture, binding, or expert coverage.
+- the retained arithmetic investigation identified explicit BF16 completion
+  points for normalization, attention, residuals, expert arithmetic, routing,
+  and the router denominator;
+- PR #57 composed those policies through the full layer-2 sparse-MLP ladder for
+  eight source-bound positions: all five recorded stages were BF16-exact, no
+  first mismatch was found, and 240 backend calls were retained;
+- that success is scoped to Torch 2.13.0, one compute thread, AVX2 dispatch,
+  and the recorded AMD EPYC 7763 host class. It is not a platform-independent
+  theorem or a full-decoder result;
+- portable deterministic WASTE routing remains distinct from exact
+  profile-bound official routing at ambiguous BF16 cutoffs.
 
 ### Still in progress
 
 | Gate | Current boundary |
 | --- | --- |
-| Official-weight activation parity | Numerical drift remains; the first mismatch begins at BF16 RMSNorm / matrix boundaries |
-| BF16 RMSNorm | Required cast-before-scale ordering has been identified in diagnostics, but production F32 behavior remains unchanged |
-| BF16 matrix execution | Simple float32 or double accumulation plus output rounding does not reproduce every native BF16 GEMM threshold case |
-| Dense and expert-path end-to-end parity | Must be rerun after a validated BF16 execution policy exists |
+| Reference-profile stability | Position-zero complete-layer evidence passed 4/5 unchanged runs; the cause of the one failure is still unresolved and the same-host backend matrix remains the next measurement |
+| Production BF16 execution | The proven policy still lives in evidence-only transforms and adapters; checked-in production C remains F32 and public execution remains refused |
+| Coverage beyond local sparse layer 2 | Stateful dense layer 0, global sparse layer 5, cross-layer decoder continuity, final normalization, and logits are not yet established |
 | Tokenizer and chat-template parity | Not yet promoted into the release gate |
 | Quantized model quality | Q8/Q4/VQ tolerances, throughput, conversion time, and memory floors still require official measurement |
 | Public loader and generation | Deliberately disabled |
@@ -311,8 +317,8 @@ flowchart LR
     classDef active fill:#8a5a00,color:#fff,stroke:#6b4500;
     classDef future fill:#374151,color:#fff,stroke:#111827;
 
-    class G0,G1 done;
-    class G2 active;
+    class G0 done;
+    class G1,G2 active;
     class G3,G4,G5,G6 future;
 ```
 
@@ -338,6 +344,8 @@ stack.
 | [`docs/REMOTE-FIXTURES.md`](docs/REMOTE-FIXTURES.md) | Strict HTTP range extraction and safety contract |
 | [`docs/OFFICIAL-ROUTER-SELECTION.json`](docs/OFFICIAL-ROUTER-SELECTION.json) | Exact official routed expert/weight pairs for deterministic inputs |
 | [`docs/OFFICIAL-FIXTURE-PLAN.json`](docs/OFFICIAL-FIXTURE-PLAN.json) | Hash-bound 3.58 GiB evidence fixture plan |
+| [`docs/BF16-EVIDENCE.md`](docs/BF16-EVIDENCE.md) | Consolidated arithmetic conclusions, authoritative runs, and exact scope |
+| [`docs/INKLING-REFERENCE-PROFILES.md`](docs/INKLING-REFERENCE-PROFILES.md) | Portable routing versus profile-bound official-reference contracts |
 | [`docs/MVP-READINESS.md`](docs/MVP-READINESS.md) | Current handoff and next execution gate |
 | [`docs/STATE-OF-THE-PORT.md`](docs/STATE-OF-THE-PORT.md) | Broader audit of the WASTE integration |
 | [`docs/CODEBASE-MAP.md`](docs/CODEBASE-MAP.md) | Translation units, tools, tests, and generated bundle flow |
@@ -448,7 +456,8 @@ support.
 ### Promote one gate at a time
 
 Planning is public because its geometry is tested. Inference is not public
-because official-weight numerical parity is not yet green.
+because decoder/logit coverage and text-interface parity are not yet green,
+and the proven BF16 policy has not been promoted into checked-in production C.
 
 ---
 

@@ -10,17 +10,20 @@ This document is the path from "recognized" to "running," in the order the
 gates actually unblock each other. It is written so that each gate has an
 owner-free definition of done: a command, an artifact, and a number.
 
-Current state and the evidence behind it: [STATE-OF-THE-PORT.md](STATE-OF-THE-PORT.md).
-Structure: [CODEBASE-MAP.md](CODEBASE-MAP.md).
+Current handoff: [MVP-READINESS.md](MVP-READINESS.md). Numerical evidence:
+[BF16-EVIDENCE.md](BF16-EVIDENCE.md). The dated foundation audit remains in
+[STATE-OF-THE-PORT.md](STATE-OF-THE-PORT.md), and repository structure is in
+[CODEBASE-MAP.md](CODEBASE-MAP.md).
 
 ## The shape of the problem
 
-The private C runtime executes tokens today. What it has never done is execute
-*these* tokens — every parity result in the repository comes from small
-synthetic BF16-rounded weights that validate the binding and execution path,
-not the model. Closing that is not a coding problem, it is an evidence problem,
-and the harness that produces the evidence has one asymmetry that currently
-makes it unrunnable outside a very large machine.
+The private C runtime executes tokens today, and the repository now has bounded
+official-weight evidence in addition to synthetic binding tests. The strongest
+result is eight-position stateful local-sparse layer-2 exactness on a named
+Linux AVX2 reference profile. The remaining problem is no longer making parity
+runnable; it is turning profile-bound evidence into a checked-in private BF16
+runtime policy, expanding coverage through decoder/logit boundaries, and only
+then considering public execution.
 
 So the ordering is: make parity cheap (G0), prove BF16 correctness (G1),
 prove quantized tolerance (G2), measure the conversion (G3), prove the text
@@ -28,7 +31,13 @@ interface (G4), and only then extend the public format and dispatch (G5, G6).
 
 ---
 
-## G0 — Make parity runnable on one machine ⟵ **the next enhancement**
+## G0 — Make parity runnable on one machine — **complete**
+
+> **Completion update (2026-08-08).** The bounded remote extractor, official
+> fixture-backed reference, C layer runner, deterministic inputs, exact router
+> selection, source hashes, and CRC checks are all retained and have run on
+> official checkpoint bytes. The historical design notes below explain how
+> that foundation was reached.
 
 **Problem.** `tools/inkling_reference.py:110` calls
 `AutoModelForCausalLM.from_pretrained(src, …)`. That materializes all 495 GiB
@@ -187,6 +196,19 @@ print(c.intermediate_size, c.moe_intermediate_size, b['intermediate_size'])
 ---
 
 ## G1 — BF16 layerwise and logits parity
+
+**Current status.** Active, not complete. The retained investigation identifies
+the required BF16 boundaries from RMSNorm through the sparse residual. PR #57
+composes them through local sparse layer 2 for all eight source-bound positions
+on the named Linux AVX2 profile, with exact routed/shared weights, `moe_out`,
+`mlp_branch`, and `layer_out`. Production C is unchanged, the earlier
+position-zero complete-layer result remains 4/5 across unchanged hosted runs,
+and dense/global stateful coverage, decoder continuity, final normalization,
+and logits remain open.
+
+**Next.** Complete the predeclared same-host backend matrix, then promote only
+the proven arithmetic policy into a private fail-closed C profile. Rerun layers
+0, 2, and 5 without temporary source rewriting before extending through logits.
 
 **Do.** Run G0's loop and drive the differences to zero, in this order —
 earlier points are cheaper to debug and later ones inherit their errors:
@@ -385,13 +407,13 @@ Inkling-specific executable, and the suite is green with the container present.
 ## Sequencing
 
 ```
-G0  fixture-backed reference + partial stage      ← start here, days
+G0  fixture-backed reference                         ✓
  │
- ├─ G1  BF16 parity ──── G2  quantized tolerance ──┐
- │                                                  ├─ G5 format ── G6 dispatch
- └─ G3  conversion measurement                      │
-                                                    │
-    G4  tokenizer + chat template ──────────────────┘
+ ├─ G1  BF16 private policy + decoder/logit parity ──┐
+ ├─ G2  quantized tolerance ─────────────────────────┤
+ └─ G3  conversion measurement                       ├─ G5 format ── G6 dispatch
+                                                     │
+    G4  tokenizer + chat template ───────────────────┘
 ```
 
 G1 and G3 can run concurrently once G0 lands; G4 is independent of all of them
@@ -401,9 +423,9 @@ and is the best parallel track for a second contributor.
 
 | Gate | Status | Evidence |
 | --- | --- | --- |
-| G0 fixture parity | **in progress** — reader and C side landed; official side remains | `inkling_fixture.py`, `inkling_layer_parity.py`, 53 tests |
-| G1 BF16 parity | not started | — |
-| G2 quantized tolerance | **promoted** — now the gate the throughput claim rests on | [THROUGHPUT.md](THROUGHPUT.md) §5 |
+| G0 fixture parity | **done** — bounded official and C sides execute immutable CRC-verified fixtures | `inkling_fixture.py`, `inkling_fixture_reference.py`, `inkling_layer_parity.py`, [REMOTE-FIXTURES.md](REMOTE-FIXTURES.md) |
+| G1 BF16 parity | **active** — layer-2 eight-position sparse ladder exact on named AVX2 profile; production policy, profile stability, remaining layer classes, decoder continuity, and logits open | [BF16-EVIDENCE.md](BF16-EVIDENCE.md), [INKLING-REFERENCE-PROFILES.md](INKLING-REFERENCE-PROFILES.md), #57 |
+| G2 quantized tolerance | **tooling promoted; official quality gate open** | [THROUGHPUT.md](THROUGHPUT.md) §5 |
 | — decode cost model | **done** — geometry exact, throughput projected and labelled | [THROUGHPUT.md](THROUGHPUT.md), `inkling_throughput.py`, 38 tests |
 | G3 conversion measurement | not started | — |
 | G4 tokenizer / chat | not started | — |

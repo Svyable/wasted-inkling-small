@@ -284,8 +284,9 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' \
 
 Every response carries `x-waste-provenance` — today `weights=synthetic
 tokenizer=fallback` — so a caller cannot mistake staged synthetic output for
-the model's. The server refuses to start against an unattested stage without
-that deliberately tedious flag.
+the model's. The server first requires the C runtime's verified official
+Inkling-Small profile gate; only the explicit, deliberately tedious flag
+permits reopening a stage as synthetic.
 
 It drives the **converter-private** path on purpose. Upstream's `serve/`
 reaches the engine only through `waste_open`, so when the loader dispatch
@@ -350,7 +351,7 @@ stack.
 inkling/                     source of truth: C runtime, tools, tests, design
 mvp/                         bounded official-reference and evidence harnesses
 integration/waste/           upstream pin, overlays, generation, verification
-dist/waste-inkling-6931570/  generated and checksummed patch bundle
+dist/waste-inkling-d9b919a/  generated and checksummed WASTE 0.6.6 bundle
 docs/                        architecture, evidence, audit, and roadmap
 waste-inkling-patch-v16..18/ frozen provenance and historical audit trail
 ```
@@ -412,14 +413,14 @@ integration/waste/verify.sh /tmp/waste
 git clone https://github.com/sqliteai/waste.git
 cd waste
 git checkout d9b919a791148b571e643d0af666bf19b4d733ab
-git am /path/to/dist/waste-inkling-6931570/patches/0001-Add-the-Inkling-Small-runtime-foundation-to-WASTE.patch
+git am /path/to/dist/waste-inkling-d9b919a/patches/0001-Add-the-Inkling-Small-runtime-foundation-to-WASTE.patch
 PATH=/usr/bin:/bin make check
 ```
 
 Verify the bundle before applying it:
 
 ```sh
-cd /path/to/dist/waste-inkling-6931570
+cd /path/to/dist/waste-inkling-d9b919a
 sha256sum -c SHA256SUMS
 ```
 

@@ -333,9 +333,10 @@ step 2 below lands, `serve/` becomes the chat server unchanged and
 `inkling_serve.py` becomes redundant. It exists so the wire format is
 reviewable now rather than after.
 
-Everything it produces is labelled `weights=synthetic tokenizer=fallback`
-until the checkpoint and G4 say otherwise, and it refuses to start against an
-unattested stage without `--i-know-the-weights-are-synthetic`.
+Every response states its weight and tokenizer provenance. The server labels
+weights official only after the C runtime accepts its verified
+Inkling-Small profile gate; otherwise it refuses to reopen the stage without
+`--i-know-the-weights-are-synthetic`.
 
 Running it for real found three defects the unit tests had not: an unenforced
 context limit that surfaced as an opaque `step failed at position 16`, a

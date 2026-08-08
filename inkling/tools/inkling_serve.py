@@ -25,8 +25,8 @@ A staged directory built from synthetic weights produces synthetic text. This
 server says so, in the startup banner, in `/v1/models`, and in a
 `x-waste-provenance` header on every response. It refuses to hide it:
 `--i-know-the-weights-are-synthetic` is required to start against a stage that
-does not carry an official-weight attestation, and the flag is deliberately
-tedious to type.
+does not pass the C runtime's verified official Inkling-Small profile gate,
+and the flag is deliberately tedious to type.
 
 TOKENIZER
 ---------
@@ -47,6 +47,7 @@ GET /healthz. Stdlib only.
 from __future__ import annotations
 
 import argparse
+import codecs
 import ctypes as C
 import json
 import math
@@ -62,6 +63,7 @@ from pathlib import Path
 # ------------------------------------------------------------ C bindings ----
 
 PRIVATE_OK = 0
+PRIVATE_E_UNSUPPORTED = -5
 PRIVATE_STATUS = {
     0: "ok", -1: "argument", -2: "io", -3: "format",
     -4: "out of memory", -5: "unsupported", -6: "runtime",
@@ -75,7 +77,9 @@ class PrivateOptions(C.Structure):
 
 
 class InklingError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 def _soext() -> str:
@@ -123,7 +127,8 @@ class Runtime:
         if st != PRIVATE_OK:
             raise InklingError(
                 f"cannot open stage {stage}: {PRIVATE_STATUS.get(st, st)}"
-                + (f" — {detail.value.decode(errors='replace')}" if detail.value else ""))
+                + (f" — {detail.value.decode(errors='replace')}" if detail.value else ""),
+                status=st)
         self.handle = handle
         cfg = self.lib.waste_inkling_private_config(handle)
         if not cfg:
@@ -205,8 +210,11 @@ class Tokenizer:
     def encode(self, text: str) -> list[int]:
         return [b % self.vocab for b in text.encode("utf-8")]
 
+    def decode_bytes(self, ids: list[int]) -> bytes:
+        return bytes(i % 256 for i in ids)
+
     def decode(self, ids: list[int]) -> str:
-        return bytes(i % 256 for i in ids).decode("utf-8", errors="replace")
+        return self.decode_bytes(ids).decode("utf-8", errors="replace")
 
     @property
     def eos(self) -> int:
@@ -241,14 +249,14 @@ class OfficialTokenizer(Tokenizer):
             raise InklingError("tokenizer refused the input")
         return list(buf[:n])
 
-    def decode(self, ids: list[int]) -> str:
+    def decode_bytes(self, ids: list[int]) -> bytes:
         if not ids:
-            return ""
+            return b""
         arr = (C.c_int32 * len(ids))(*ids)
         cap = 4 * len(ids) + 64
         buf = C.create_string_buffer(cap)
         n = self.lib.waste_tok_decode(self.tok, arr, len(ids), buf, cap)
-        return buf.raw[:max(n, 0)].decode("utf-8", errors="replace")
+        return buf.raw[:max(n, 0)]
 
     @property
     def eos(self) -> int:
@@ -330,6 +338,31 @@ def sample(logits, n: int, temperature: float, top_p: float,
     return probs[-1][1]
 
 
+def collect_generation(gen) -> tuple[list[int], str]:
+    """Consume a generation without losing the generator's finish reason."""
+    ids = []
+    while True:
+        try:
+            ids.append(next(gen))
+        except StopIteration as done:
+            reason = done.value if done.value in ("stop", "length") else "stop"
+            return ids, reason
+
+
+def request_number(req: dict, name: str, default: float) -> float:
+    """Read a finite JSON number. Booleans and numeric strings are not numbers."""
+    value = req.get(name, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise InklingError(f"{name} must be a number")
+    try:
+        value = float(value)
+    except OverflowError as exc:
+        raise InklingError(f"{name} must be finite") from exc
+    if not math.isfinite(value):
+        raise InklingError(f"{name} must be finite")
+    return value
+
+
 # ---------------------------------------------------------------- server ----
 
 
@@ -372,8 +405,9 @@ class Session:
                 pos += 1
                 nxt = sample(logits, self.runtime.vocab, temperature, top_p, rng)
                 if nxt == self.tokenizer.eos:
-                    return
+                    return "stop"
                 yield nxt
+            return "length"
 
 
 def make_handler(session: Session, provenance: str, model_name: str):
@@ -427,23 +461,34 @@ def make_handler(session: Session, provenance: str, model_name: str):
             messages = req.get("messages")
             if not isinstance(messages, list) or not messages:
                 return self._error(400, "messages must be a non-empty array")
+            if not all(isinstance(message, dict) for message in messages):
+                return self._error(400, "each message must be an object")
             max_tokens = req.get("max_tokens", 128)
-            if not isinstance(max_tokens, int) or not 1 <= max_tokens <= 4096:
+            if (isinstance(max_tokens, bool) or not isinstance(max_tokens, int)
+                    or not 1 <= max_tokens <= 4096):
                 return self._error(400, "max_tokens must be 1..4096")
-            temperature = float(req.get("temperature", 1.0))
+            try:
+                temperature = request_number(req, "temperature", 1.0)
+                top_p = request_number(req, "top_p", 1.0)
+            except InklingError as exc:
+                return self._error(400, str(exc))
             if not 0.0 <= temperature <= 4.0:
                 return self._error(400, "temperature must be 0..4")
-            top_p = float(req.get("top_p", 1.0))
             if not 0.0 < top_p <= 1.0:
                 return self._error(400, "top_p must be in (0, 1]")
             seed = req.get("seed")
-            stream = bool(req.get("stream", False))
+            if (seed is not None
+                    and (isinstance(seed, bool) or not isinstance(seed, int))):
+                return self._error(400, "seed must be an integer")
+            stream = req.get("stream", False)
+            if not isinstance(stream, bool):
+                return self._error(400, "stream must be a boolean")
 
             try:
                 gen = session.generate(messages, max_tokens, temperature, top_p, seed)
                 if stream:
                     return self._stream(gen)
-                ids = list(gen)
+                ids, finish_reason = collect_generation(gen)
             except InklingError as exc:
                 return self._error(400, str(exc))
 
@@ -457,7 +502,7 @@ def make_handler(session: Session, provenance: str, model_name: str):
                 "choices": [{
                     "index": 0,
                     "message": {"role": "assistant", "content": text},
-                    "finish_reason": "length" if len(ids) >= max_tokens else "stop",
+                    "finish_reason": finish_reason,
                 }],
                 "usage": {"completion_tokens": len(ids)},
             })
@@ -470,6 +515,7 @@ def make_handler(session: Session, provenance: str, model_name: str):
             self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
             ident = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
             def chunk(delta, finish=None):
                 payload = json.dumps({
@@ -484,9 +530,21 @@ def make_handler(session: Session, provenance: str, model_name: str):
 
             try:
                 chunk({"role": "assistant"})
-                for tok in gen:
-                    chunk({"content": session.tokenizer.decode([tok])})
-                chunk({}, finish="stop")
+                while True:
+                    try:
+                        tok = next(gen)
+                    except StopIteration as done:
+                        finish = (done.value
+                                  if done.value in ("stop", "length") else "stop")
+                        break
+                    content = decoder.decode(
+                        session.tokenizer.decode_bytes([tok]), final=False)
+                    if content:
+                        chunk({"content": content})
+                content = decoder.decode(b"", final=True)
+                if content:
+                    chunk({"content": content})
+                chunk({}, finish=finish)
                 done = b"data: [DONE]\n\n"
                 self.wfile.write(b"%x\r\n" % len(done) + done + b"\r\n")
                 self.wfile.write(b"0\r\n\r\n")
@@ -503,13 +561,30 @@ def make_handler(session: Session, provenance: str, model_name: str):
     return Handler
 
 
-ATTESTATION = "official-weights.json"
+def open_runtime(lib_path: Path, stage: Path, ctx: int,
+                 allow_synthetic: bool, runtime_cls=Runtime):
+    """Let the C runtime prove official provenance before we claim it.
 
-
-def stage_provenance(stage: Path) -> str:
-    """An official run has to prove it. Absent proof, the stage is synthetic
-    and every response says so."""
-    return "official" if (Path(stage) / ATTESTATION).is_file() else "synthetic"
+    The first open requires the verified official Inkling-Small stage flag and
+    geometry. Only that specific fail-closed refusal may fall back to a
+    synthetic open, and only after the caller supplies the explicit override.
+    Corrupt, incomplete, or unreadable stages never take the fallback path.
+    """
+    try:
+        return (runtime_cls(lib_path, stage, ctx=ctx, require_official=True),
+                "official")
+    except InklingError as exc:
+        if exc.status != PRIVATE_E_UNSUPPORTED:
+            raise
+        if not allow_synthetic:
+            raise InklingError(
+                f"refusing to serve {stage}: the runtime stage did not pass "
+                "the verified official Inkling-Small profile gate, so the "
+                "weights must be treated as synthetic. Pass "
+                "--i-know-the-weights-are-synthetic to serve it anyway.",
+                status=exc.status) from exc
+    return (runtime_cls(lib_path, stage, ctx=ctx, require_official=False),
+            "synthetic")
 
 
 def main(argv=None) -> int:
@@ -531,18 +606,10 @@ def main(argv=None) -> int:
                     dest="allow_synthetic")
     args = ap.parse_args(argv)
 
-    provenance = stage_provenance(args.stage)
-    if provenance == "synthetic" and not args.allow_synthetic:
-        print(
-            f"refusing to serve {args.stage}: it carries no {ATTESTATION}, so the\n"
-            "weights are synthetic and the text will be meaningless. Pass\n"
-            "--i-know-the-weights-are-synthetic to serve it anyway.",
-            file=sys.stderr)
-        return 2
-
     try:
         lib_path = find_library(args.lib)
-        runtime = Runtime(lib_path, args.stage, ctx=args.context)
+        runtime, weights_kind = open_runtime(
+            lib_path, args.stage, args.context, args.allow_synthetic)
         if args.tokenizer:
             tokenizer = OfficialTokenizer(runtime.lib, args.tokenizer, runtime.vocab)
         else:
@@ -552,7 +619,8 @@ def main(argv=None) -> int:
         print(f"inkling_serve: {exc}", file=sys.stderr)
         return 2
 
-    provenance = f"weights={provenance} tokenizer={tokenizer.kind} template={template_kind}"
+    provenance = (f"weights={weights_kind} tokenizer={tokenizer.kind} "
+                  f"template={template_kind}")
     session = Session(runtime, tokenizer, template)
     httpd = ThreadingHTTPServer((args.host, args.port),
                                 make_handler(session, provenance, args.model_name))

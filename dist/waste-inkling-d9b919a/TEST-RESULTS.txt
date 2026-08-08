@@ -5,11 +5,14 @@ Date: 2026-08-08
 Host: Linux x86_64, 15 GB usable RAM, 4 cores, virtio block device
 Compiler: GCC / cc
 Python: 3.11.15, torch 2.13.0, numpy 2.4.6
+Merge-review host: Linux x86_64, 15 GB usable RAM, 9 cores; GCC 13.3.0
+Merge-review Python: 3.12.13, torch 2.13.0+cu130, numpy 2.5.1
 Upstream: sqliteai/waste@d9b919a791148b571e643d0af666bf19b4d733ab
 WASTE: 0.6.6; API 1; format 0
 
-Every result below was produced in this environment on the date above. None of
-it is quoted from an earlier bundle. The official 532 GB checkpoint was not
+The performance measurements below were produced on the original host. The
+bundle hashes and every validation gate affected by the merge-review changes
+were rerun on the merge-review host. The official 532 GB checkpoint was not
 present, so nothing here is official-weight parity.
 
 Correction: the 2026-08-02 revision of this file recorded tree
@@ -37,12 +40,12 @@ PASS  integration/waste/generate.sh is deterministic on a fixed toolchain
       toolchain drift, and identical to what a consumer relies on.
 
 PASS  committed bundle applies to the reviewed tree
-      git am of dist/waste-inkling-6931570/patches/*.patch onto the pinned
-      upstream yields 62a9240fdd169aae8292f88fd225bf51843cd2f6.
-      Patch sha256: c0ad958ddae86896f999d94e69a42b33324af4eb55a1f71f40f1e8e540be3959
+      git am of dist/waste-inkling-d9b919a/patches/*.patch onto the pinned
+      upstream yields 8c51f8c2442bbfda5fd95588d89c5792a839a19a.
+      Patch sha256: a574944854ddb800f5017a1626eec3e89402322150516efd81542e66e1d68ffe
 
 PASS  integration/waste/verify.sh
-      Generated tree: 62a9240fdd169aae8292f88fd225bf51843cd2f6
+      Generated tree: 8c51f8c2442bbfda5fd95588d89c5792a839a19a
 
 VALIDATION
 ----------
@@ -58,28 +61,32 @@ PASS  PATH=/usr/bin:/bin make check
         - upstream serve suite: 168 checks passed
 
 PASS  PATH=/usr/bin:/bin make asan
-      Result: 30 passed, 0 failed, 14 skipped
+      Result: 32 passed, 0 failed, 14 skipped
       AddressSanitizer and UndefinedBehaviorSanitizer were clean.
 
 PASS  PATH=/usr/bin:/bin make fuzz-asan FUZZ_RUNS=200
-      Result: 200 cases; 137 rejected; 63 loaded; 0 crashed; 0 hung
+      Result: 200 cases; 145 rejected; 55 loaded; 0 crashed; 0 hung
 
 PASS  strict compile of src/arch.c and all src/inkling*.c
       Flags: -std=gnu11 -Wall -Wextra -Werror -Isrc
       Result: 12 translation units compiled
 
+PASS  integration/waste/check_upstream_contracts.py
+      WASTE 0.6.6 waste_cfg ABI/defaults, VQ4P and expert-parallel markers,
+      converter controls/refusal, and diskbench cache-bypass contracts hold.
+
 PASS  complete Inkling Python suite
       python3 -m unittest discover -s tests -p "test_ink*.py" -t .
-      Result: 257 tests, OK, process exit 0
+      Result: 262 tests, OK, process exit 0
       python3 -m unittest tests.test_inspect_inkling tests.test_convert_inkling
       Result: 18 tests, OK
-      Total: 275 tests passing.
+      Total: 280 tests passing.
 
       The v16 bundle recorded 99 tests and nothing re-ran them; that number is
       confirmed, and the fixture reader, the layer-parity harness, the
       official-transformers layer comparison, the decode cost model and the
       expert-cache benchmark, the expert-matvec benchmark and the chat
-      endpoint bring the total to 275.
+      endpoint bring the total to 280.
 
       The process exit code is checked deliberately. An earlier revision of
       inkling_layer_parity.py declared waste_inkling_attention_state with six
@@ -253,7 +260,7 @@ CHAT ENDPOINT, RUN END TO END
 PASS  tools/inkling_serve.py serves /v1/chat/completions over the staged
       private runtime. Verified against a real synthetic stage, not a mock:
       HTTP in, waste_inkling_private_step forward pass, sampled tokens,
-      OpenAI-shaped JSON out, plus SSE streaming. 29 tests.
+      OpenAI-shaped JSON out, plus SSE streaming. 34 tests.
 
       Public waste_open still returns WASTE_E_UNSUPPORTED. This drives the
       converter-private path so the wire format is reviewable before G6
@@ -261,8 +268,9 @@ PASS  tools/inkling_serve.py serves /v1/chat/completions over the staged
       so when G6 lands serve/ becomes the chat server unchanged and this
       becomes redundant.
 
-      Every response carries x-waste-provenance and the server refuses to
-      start against an unattested stage without an explicit flag:
+      Every response carries x-waste-provenance. Official weight provenance
+      requires the C runtime's verified Inkling-Small profile gate; only an
+      explicit flag permits reopening a stage as synthetic:
         weights=synthetic tokenizer=fallback template=supplied
 
       Running it for real found three defects the unit tests had not:
@@ -276,6 +284,18 @@ PASS  tools/inkling_serve.py serves /v1/chat/completions over the staged
           stub returned a plain list.
       All three fixed and regression-tested; the stub now returns the type
       the runtime does.
+
+      Merge review then hardened five API contracts:
+        - a file named official-weights.json can no longer claim official
+          provenance; the C runtime must accept require_official_small;
+        - synthetic fallback is allowed only for that specific profile
+          refusal and never for corrupt or unreadable stages;
+        - invalid, non-finite or wrongly typed numeric/boolean request fields
+          return 400 rather than escaping as TypeError/ValueError;
+        - streaming decodes raw token bytes incrementally across UTF-8
+          boundaries;
+        - streaming reports finish_reason=length when max_tokens is exhausted
+          and stop only for EOS.
 
 PUBLIC SURFACE PROMOTED
 -----------------------

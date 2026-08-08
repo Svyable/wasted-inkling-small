@@ -26,17 +26,17 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "tools"))
 
 from inkling_serve import (
-    ATTESTATION,
     DEFAULT_TEMPLATE,
     InklingError,
     Session,
     Tokenizer,
+    collect_generation,
     load_template,
     main,
     make_handler,
+    open_runtime,
     render,
     sample,
-    stage_provenance,
 )
 
 
@@ -66,6 +66,31 @@ class StubRuntime:
 
     def close(self):
         pass
+
+
+class SequenceRuntime(StubRuntime):
+    """Favour a prescribed token at each decode position."""
+
+    def __init__(self, sequence, vocab=256, context=4096):
+        super().__init__(vocab=vocab, context=context)
+        self.sequence = sequence
+
+    def step(self, token, position):
+        self.steps.append((token, position))
+        buf = (C.c_float * self.vocab)()
+        buf[self.sequence[min(position, len(self.sequence) - 1)]] = 10.0
+        return buf
+
+
+class OneTokenByteTokenizer(Tokenizer):
+    def encode(self, _text):
+        return [0]
+
+
+class EosByteTokenizer(OneTokenByteTokenizer):
+    @property
+    def eos(self):
+        return 7
 
 
 def session(vocab=256):
@@ -145,50 +170,100 @@ class SampleTest(unittest.TestCase):
 
 
 class ProvenanceTest(unittest.TestCase):
-    """The gate that stops synthetic text being served as the model's."""
+    """Only the C runtime's official-stage gate can label weights official."""
 
-    def test_a_stage_without_an_attestation_is_synthetic(self):
+    @staticmethod
+    def runtime_factory(mode, calls):
+        class GateRuntime:
+            def __init__(self, _lib, _stage, *, ctx, require_official):
+                calls.append((ctx, require_official))
+                if mode == "corrupt":
+                    raise InklingError("corrupt stage", status=-3)
+                if mode == "synthetic" and require_official:
+                    raise InklingError("not official", status=-5)
+        return GateRuntime
+
+    def test_verified_runtime_is_official(self):
+        calls = []
+        _runtime, kind = open_runtime(
+            Path("libwaste.so"), Path("stage"), 2048, False,
+            self.runtime_factory("official", calls))
+        self.assertEqual(kind, "official")
+        self.assertEqual(calls, [(2048, True)])
+
+    def test_synthetic_runtime_requires_the_explicit_override(self):
+        calls = []
+        with self.assertRaisesRegex(InklingError, "must be treated as synthetic"):
+            open_runtime(
+                Path("libwaste.so"), Path("stage"), 4096, False,
+                self.runtime_factory("synthetic", calls))
+        self.assertEqual(calls, [(4096, True)])
+
+    def test_synthetic_override_reopens_without_the_official_requirement(self):
+        calls = []
+        _runtime, kind = open_runtime(
+            Path("libwaste.so"), Path("stage"), 4096, True,
+            self.runtime_factory("synthetic", calls))
+        self.assertEqual(kind, "synthetic")
+        self.assertEqual(calls, [(4096, True), (4096, False)])
+
+    def test_bogus_attestation_file_cannot_claim_official_weights(self):
         import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(stage_provenance(Path(tmp)), "synthetic")
-
-    def test_an_attested_stage_is_official(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / ATTESTATION).write_text("{}")
-            self.assertEqual(stage_provenance(Path(tmp)), "official")
-
-    def test_serving_a_synthetic_stage_without_the_flag_is_refused(self):
-        import io
-        import tempfile
-        from contextlib import redirect_stderr, redirect_stdout
 
         with tempfile.TemporaryDirectory() as tmp:
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
-                rc = main(["--stage", tmp])
-        self.assertEqual(rc, 2)
-        self.assertIn("synthetic", err.getvalue())
+            (Path(tmp) / "official-weights.json").write_text("{}")
+            with self.assertRaises(InklingError):
+                open_runtime(
+                    Path("libwaste.so"), Path(tmp), 4096, False,
+                    self.runtime_factory("synthetic", []))
+
+    def test_corrupt_stage_never_falls_back_to_synthetic(self):
+        calls = []
+        with self.assertRaisesRegex(InklingError, "corrupt stage"):
+            open_runtime(
+                Path("libwaste.so"), Path("stage"), 4096, True,
+                self.runtime_factory("corrupt", calls))
+        self.assertEqual(calls, [(4096, True)])
 
 
 class CliOptionTest(unittest.TestCase):
-    """--tokenizer and --template name separate artifacts. Conflating them
-    meant a run that had a chat template but no tiktoken assets was refused,
-    which is exactly the state this project is in until G4."""
+    """Tokenizer assets and the chat template remain independent options."""
 
     def test_template_can_be_supplied_without_tokenizer_assets(self):
         import io
         import tempfile
         from contextlib import redirect_stderr, redirect_stdout
+        from unittest.mock import patch
+
+        class MainRuntime:
+            lib = object()
+            vocab = 256
+            context = 4096
+
+            def close(self):
+                pass
+
+        class OneShotServer:
+            def __init__(self, *_args):
+                pass
+
+            def serve_forever(self):
+                pass
+
+            def server_close(self):
+                pass
 
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "inkling_chat_template.json").write_text(
                 json.dumps(DEFAULT_TEMPLATE))
-            # No stage, so this still exits 2 — but on the stage, not on the
-            # template, which is the distinction being asserted.
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+            with (patch("inkling_serve.find_library", return_value=Path("libwaste.so")),
+                  patch("inkling_serve.open_runtime",
+                        return_value=(MainRuntime(), "synthetic")),
+                  patch("inkling_serve.ThreadingHTTPServer", OneShotServer),
+                  redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err):
                 rc = main(["--stage", tmp, "--template", tmp,
                            "--i-know-the-weights-are-synthetic"])
-        self.assertEqual(rc, 2)
+        self.assertEqual(rc, 0)
         self.assertNotIn("tokenizer assets", err.getvalue())
 
 
@@ -239,6 +314,21 @@ class GenerationTest(unittest.TestCase):
         with self.assertRaises(InklingError):
             list(s.generate([{"role": "user", "content": ""}], 2, 0.0, 1.0, 1))
 
+    def test_generator_reports_length_when_the_budget_is_exhausted(self):
+        ids, reason = collect_generation(
+            session().generate([{"role": "user", "content": "x"}],
+                               2, 0.0, 1.0, 1))
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(reason, "length")
+
+    def test_generator_reports_stop_on_eos(self):
+        tok = EosByteTokenizer(256)
+        ids, reason = collect_generation(
+            Session(SequenceRuntime([7]), tok, DEFAULT_TEMPLATE).generate(
+                [{"role": "user", "content": "x"}], 2, 0.0, 1.0, 1))
+        self.assertEqual(ids, [])
+        self.assertEqual(reason, "stop")
+
 
 class HttpTest(unittest.TestCase):
     @classmethod
@@ -286,6 +376,7 @@ class HttpTest(unittest.TestCase):
         self.assertEqual(data["object"], "chat.completion")
         self.assertEqual(data["choices"][0]["message"]["role"], "assistant")
         self.assertIsInstance(data["choices"][0]["message"]["content"], str)
+        self.assertEqual(data["choices"][0]["finish_reason"], "length")
         self.assertEqual(data["usage"]["completion_tokens"], 5)
 
     def test_every_response_carries_the_provenance_header(self):
@@ -302,15 +393,57 @@ class HttpTest(unittest.TestCase):
         self.assertIn("[DONE]", body)
         frames = [l for l in body.splitlines() if l.startswith("data: ")]
         self.assertGreaterEqual(len(frames), 3)
+        payloads = [json.loads(line[6:]) for line in frames
+                    if line != "data: [DONE]"]
+        self.assertEqual(payloads[-1]["choices"][0]["finish_reason"], "length")
+
+    def test_streaming_preserves_utf8_across_token_boundaries(self):
+        s = Session(SequenceRuntime([0xE2, 0x82, 0xAC]),
+                    OneTokenByteTokenizer(256), DEFAULT_TEMPLATE)
+        httpd = ThreadingHTTPServer(
+            ("127.0.0.1", 0), make_handler(s, "weights=synthetic", "utf8-test"))
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{httpd.server_address[1]}/v1/chat/completions",
+                data=json.dumps({
+                    "messages": [{"role": "user", "content": "x"}],
+                    "max_tokens": 3, "temperature": 0, "stream": True,
+                }).encode(),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as response:
+                body = response.read().decode()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        payloads = [json.loads(line[6:]) for line in body.splitlines()
+                    if line.startswith("data: ") and line != "data: [DONE]"]
+        content = "".join(
+            item["choices"][0]["delta"].get("content", "") for item in payloads)
+        self.assertEqual(content, "€")
+        self.assertNotIn("\ufffd", content)
 
     def test_bad_requests_are_refused_with_a_reason(self):
         cases = [
             ({}, "messages"),
             ({"messages": []}, "messages"),
+            ({"messages": ["not-an-object"]}, "message"),
             ({"messages": [{"role": "user", "content": "x"}], "max_tokens": 0}, "max_tokens"),
             ({"messages": [{"role": "user", "content": "x"}], "max_tokens": 99999}, "max_tokens"),
+            ({"messages": [{"role": "user", "content": "x"}], "max_tokens": True}, "max_tokens"),
             ({"messages": [{"role": "user", "content": "x"}], "temperature": 9}, "temperature"),
+            ({"messages": [{"role": "user", "content": "x"}], "temperature": None}, "temperature"),
+            ({"messages": [{"role": "user", "content": "x"}], "temperature": "0.5"}, "temperature"),
+            ({"messages": [{"role": "user", "content": "x"}], "temperature": float("nan")}, "temperature"),
             ({"messages": [{"role": "user", "content": "x"}], "top_p": 0}, "top_p"),
+            ({"messages": [{"role": "user", "content": "x"}], "top_p": {}}, "top_p"),
+            ({"messages": [{"role": "user", "content": "x"}], "top_p": float("inf")}, "top_p"),
+            ({"messages": [{"role": "user", "content": "x"}], "top_p": 10 ** 400}, "top_p"),
+            ({"messages": [{"role": "user", "content": "x"}], "seed": "1"}, "seed"),
+            ({"messages": [{"role": "user", "content": "x"}], "seed": True}, "seed"),
+            ({"messages": [{"role": "user", "content": "x"}], "stream": "false"}, "stream"),
+            ({"messages": [{"role": "user", "content": "x"}], "stream": 0}, "stream"),
             ({"messages": [{"role": "bogus", "content": "x"}]}, "role"),
         ]
         for body, expect in cases:

@@ -1,4 +1,4 @@
-From 866d6d481f51f122884f671bec9b01ff9cfb0588 Mon Sep 17 00:00:00 2001
+From e89522029084b822ab62419763d1957467f21a8b Mon Sep 17 00:00:00 2001
 From: WASTE Inkling integration <inkling@waste.invalid>
 Date: Sun, 2 Aug 2026 00:00:00 +0000
 Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
@@ -57,7 +57,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tests/test_inkling_qtrunk.py          | 114 ++++
  tests/test_inkling_release.py         |  85 +++
  tests/test_inkling_runtime_stage.py   | 153 +++++
- tests/test_inkling_serve.py           | 337 ++++++++++
+ tests/test_inkling_serve.py           | 470 +++++++++++++
  tests/test_inkling_stage.py           | 158 +++++
  tests/test_inkling_throughput.py      | 399 +++++++++++
  tests/test_inkling_trace_tools.py     | 107 +++
@@ -80,7 +80,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/inkling_reference.py            | 163 +++++
  tools/inkling_release.py              | 287 ++++++++
  tools/inkling_runtime_stage.py        | 748 +++++++++++++++++++++
- tools/inkling_serve.py                | 580 ++++++++++++++++
+ tools/inkling_serve.py                | 648 ++++++++++++++++++
  tools/inkling_source.py               |  36 +
  tools/inkling_stage.py                | 381 +++++++++++
  tools/inkling_throughput.py           | 621 +++++++++++++++++
@@ -89,7 +89,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/inkling_vq.py                   | 927 ++++++++++++++++++++++++++
  tools/inkling_weights.py              | 369 ++++++++++
  tools/inspect_inkling.py              | 799 ++++++++++++++++++++++
- 85 files changed, 21110 insertions(+), 7 deletions(-)
+ 85 files changed, 21311 insertions(+), 7 deletions(-)
  create mode 100644 PATCH18-HANDOFF.md
  create mode 100644 TEST-RESULTS-P18.txt
  create mode 100644 docs/INKLING.md
@@ -10474,10 +10474,10 @@ index 0000000..86aaa98
 +    unittest.main()
 diff --git a/tests/test_inkling_serve.py b/tests/test_inkling_serve.py
 new file mode 100644
-index 0000000..cf715f1
+index 0000000..c3db939
 --- /dev/null
 +++ b/tests/test_inkling_serve.py
-@@ -0,0 +1,337 @@
+@@ -0,0 +1,470 @@
 +#!/usr/bin/env python3
 +# SPDX-License-Identifier: Apache-2.0
 +"""Tests for the chat endpoint.
@@ -10506,17 +10506,17 @@ index 0000000..cf715f1
 +sys.path.insert(0, str(REPO / "tools"))
 +
 +from inkling_serve import (
-+    ATTESTATION,
 +    DEFAULT_TEMPLATE,
 +    InklingError,
 +    Session,
 +    Tokenizer,
++    collect_generation,
 +    load_template,
 +    main,
 +    make_handler,
++    open_runtime,
 +    render,
 +    sample,
-+    stage_provenance,
 +)
 +
 +
@@ -10546,6 +10546,31 @@ index 0000000..cf715f1
 +
 +    def close(self):
 +        pass
++
++
++class SequenceRuntime(StubRuntime):
++    """Favour a prescribed token at each decode position."""
++
++    def __init__(self, sequence, vocab=256, context=4096):
++        super().__init__(vocab=vocab, context=context)
++        self.sequence = sequence
++
++    def step(self, token, position):
++        self.steps.append((token, position))
++        buf = (C.c_float * self.vocab)()
++        buf[self.sequence[min(position, len(self.sequence) - 1)]] = 10.0
++        return buf
++
++
++class OneTokenByteTokenizer(Tokenizer):
++    def encode(self, _text):
++        return [0]
++
++
++class EosByteTokenizer(OneTokenByteTokenizer):
++    @property
++    def eos(self):
++        return 7
 +
 +
 +def session(vocab=256):
@@ -10625,50 +10650,100 @@ index 0000000..cf715f1
 +
 +
 +class ProvenanceTest(unittest.TestCase):
-+    """The gate that stops synthetic text being served as the model's."""
++    """Only the C runtime's official-stage gate can label weights official."""
 +
-+    def test_a_stage_without_an_attestation_is_synthetic(self):
++    @staticmethod
++    def runtime_factory(mode, calls):
++        class GateRuntime:
++            def __init__(self, _lib, _stage, *, ctx, require_official):
++                calls.append((ctx, require_official))
++                if mode == "corrupt":
++                    raise InklingError("corrupt stage", status=-3)
++                if mode == "synthetic" and require_official:
++                    raise InklingError("not official", status=-5)
++        return GateRuntime
++
++    def test_verified_runtime_is_official(self):
++        calls = []
++        _runtime, kind = open_runtime(
++            Path("libwaste.so"), Path("stage"), 2048, False,
++            self.runtime_factory("official", calls))
++        self.assertEqual(kind, "official")
++        self.assertEqual(calls, [(2048, True)])
++
++    def test_synthetic_runtime_requires_the_explicit_override(self):
++        calls = []
++        with self.assertRaisesRegex(InklingError, "must be treated as synthetic"):
++            open_runtime(
++                Path("libwaste.so"), Path("stage"), 4096, False,
++                self.runtime_factory("synthetic", calls))
++        self.assertEqual(calls, [(4096, True)])
++
++    def test_synthetic_override_reopens_without_the_official_requirement(self):
++        calls = []
++        _runtime, kind = open_runtime(
++            Path("libwaste.so"), Path("stage"), 4096, True,
++            self.runtime_factory("synthetic", calls))
++        self.assertEqual(kind, "synthetic")
++        self.assertEqual(calls, [(4096, True), (4096, False)])
++
++    def test_bogus_attestation_file_cannot_claim_official_weights(self):
 +        import tempfile
-+        with tempfile.TemporaryDirectory() as tmp:
-+            self.assertEqual(stage_provenance(Path(tmp)), "synthetic")
-+
-+    def test_an_attested_stage_is_official(self):
-+        import tempfile
-+        with tempfile.TemporaryDirectory() as tmp:
-+            (Path(tmp) / ATTESTATION).write_text("{}")
-+            self.assertEqual(stage_provenance(Path(tmp)), "official")
-+
-+    def test_serving_a_synthetic_stage_without_the_flag_is_refused(self):
-+        import io
-+        import tempfile
-+        from contextlib import redirect_stderr, redirect_stdout
 +
 +        with tempfile.TemporaryDirectory() as tmp:
-+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
-+                rc = main(["--stage", tmp])
-+        self.assertEqual(rc, 2)
-+        self.assertIn("synthetic", err.getvalue())
++            (Path(tmp) / "official-weights.json").write_text("{}")
++            with self.assertRaises(InklingError):
++                open_runtime(
++                    Path("libwaste.so"), Path(tmp), 4096, False,
++                    self.runtime_factory("synthetic", []))
++
++    def test_corrupt_stage_never_falls_back_to_synthetic(self):
++        calls = []
++        with self.assertRaisesRegex(InklingError, "corrupt stage"):
++            open_runtime(
++                Path("libwaste.so"), Path("stage"), 4096, True,
++                self.runtime_factory("corrupt", calls))
++        self.assertEqual(calls, [(4096, True)])
 +
 +
 +class CliOptionTest(unittest.TestCase):
-+    """--tokenizer and --template name separate artifacts. Conflating them
-+    meant a run that had a chat template but no tiktoken assets was refused,
-+    which is exactly the state this project is in until G4."""
++    """Tokenizer assets and the chat template remain independent options."""
 +
 +    def test_template_can_be_supplied_without_tokenizer_assets(self):
 +        import io
 +        import tempfile
 +        from contextlib import redirect_stderr, redirect_stdout
++        from unittest.mock import patch
++
++        class MainRuntime:
++            lib = object()
++            vocab = 256
++            context = 4096
++
++            def close(self):
++                pass
++
++        class OneShotServer:
++            def __init__(self, *_args):
++                pass
++
++            def serve_forever(self):
++                pass
++
++            def server_close(self):
++                pass
 +
 +        with tempfile.TemporaryDirectory() as tmp:
 +            (Path(tmp) / "inkling_chat_template.json").write_text(
 +                json.dumps(DEFAULT_TEMPLATE))
-+            # No stage, so this still exits 2 — but on the stage, not on the
-+            # template, which is the distinction being asserted.
-+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
++            with (patch("inkling_serve.find_library", return_value=Path("libwaste.so")),
++                  patch("inkling_serve.open_runtime",
++                        return_value=(MainRuntime(), "synthetic")),
++                  patch("inkling_serve.ThreadingHTTPServer", OneShotServer),
++                  redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err):
 +                rc = main(["--stage", tmp, "--template", tmp,
 +                           "--i-know-the-weights-are-synthetic"])
-+        self.assertEqual(rc, 2)
++        self.assertEqual(rc, 0)
 +        self.assertNotIn("tokenizer assets", err.getvalue())
 +
 +
@@ -10719,6 +10794,21 @@ index 0000000..cf715f1
 +        with self.assertRaises(InklingError):
 +            list(s.generate([{"role": "user", "content": ""}], 2, 0.0, 1.0, 1))
 +
++    def test_generator_reports_length_when_the_budget_is_exhausted(self):
++        ids, reason = collect_generation(
++            session().generate([{"role": "user", "content": "x"}],
++                               2, 0.0, 1.0, 1))
++        self.assertEqual(len(ids), 2)
++        self.assertEqual(reason, "length")
++
++    def test_generator_reports_stop_on_eos(self):
++        tok = EosByteTokenizer(256)
++        ids, reason = collect_generation(
++            Session(SequenceRuntime([7]), tok, DEFAULT_TEMPLATE).generate(
++                [{"role": "user", "content": "x"}], 2, 0.0, 1.0, 1))
++        self.assertEqual(ids, [])
++        self.assertEqual(reason, "stop")
++
 +
 +class HttpTest(unittest.TestCase):
 +    @classmethod
@@ -10766,6 +10856,7 @@ index 0000000..cf715f1
 +        self.assertEqual(data["object"], "chat.completion")
 +        self.assertEqual(data["choices"][0]["message"]["role"], "assistant")
 +        self.assertIsInstance(data["choices"][0]["message"]["content"], str)
++        self.assertEqual(data["choices"][0]["finish_reason"], "length")
 +        self.assertEqual(data["usage"]["completion_tokens"], 5)
 +
 +    def test_every_response_carries_the_provenance_header(self):
@@ -10782,15 +10873,57 @@ index 0000000..cf715f1
 +        self.assertIn("[DONE]", body)
 +        frames = [l for l in body.splitlines() if l.startswith("data: ")]
 +        self.assertGreaterEqual(len(frames), 3)
++        payloads = [json.loads(line[6:]) for line in frames
++                    if line != "data: [DONE]"]
++        self.assertEqual(payloads[-1]["choices"][0]["finish_reason"], "length")
++
++    def test_streaming_preserves_utf8_across_token_boundaries(self):
++        s = Session(SequenceRuntime([0xE2, 0x82, 0xAC]),
++                    OneTokenByteTokenizer(256), DEFAULT_TEMPLATE)
++        httpd = ThreadingHTTPServer(
++            ("127.0.0.1", 0), make_handler(s, "weights=synthetic", "utf8-test"))
++        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
++        thread.start()
++        try:
++            req = urllib.request.Request(
++                f"http://127.0.0.1:{httpd.server_address[1]}/v1/chat/completions",
++                data=json.dumps({
++                    "messages": [{"role": "user", "content": "x"}],
++                    "max_tokens": 3, "temperature": 0, "stream": True,
++                }).encode(),
++                headers={"Content-Type": "application/json"}, method="POST")
++            with urllib.request.urlopen(req, timeout=10) as response:
++                body = response.read().decode()
++        finally:
++            httpd.shutdown()
++            httpd.server_close()
++        payloads = [json.loads(line[6:]) for line in body.splitlines()
++                    if line.startswith("data: ") and line != "data: [DONE]"]
++        content = "".join(
++            item["choices"][0]["delta"].get("content", "") for item in payloads)
++        self.assertEqual(content, "€")
++        self.assertNotIn("\ufffd", content)
 +
 +    def test_bad_requests_are_refused_with_a_reason(self):
 +        cases = [
 +            ({}, "messages"),
 +            ({"messages": []}, "messages"),
++            ({"messages": ["not-an-object"]}, "message"),
 +            ({"messages": [{"role": "user", "content": "x"}], "max_tokens": 0}, "max_tokens"),
 +            ({"messages": [{"role": "user", "content": "x"}], "max_tokens": 99999}, "max_tokens"),
++            ({"messages": [{"role": "user", "content": "x"}], "max_tokens": True}, "max_tokens"),
 +            ({"messages": [{"role": "user", "content": "x"}], "temperature": 9}, "temperature"),
++            ({"messages": [{"role": "user", "content": "x"}], "temperature": None}, "temperature"),
++            ({"messages": [{"role": "user", "content": "x"}], "temperature": "0.5"}, "temperature"),
++            ({"messages": [{"role": "user", "content": "x"}], "temperature": float("nan")}, "temperature"),
 +            ({"messages": [{"role": "user", "content": "x"}], "top_p": 0}, "top_p"),
++            ({"messages": [{"role": "user", "content": "x"}], "top_p": {}}, "top_p"),
++            ({"messages": [{"role": "user", "content": "x"}], "top_p": float("inf")}, "top_p"),
++            ({"messages": [{"role": "user", "content": "x"}], "top_p": 10 ** 400}, "top_p"),
++            ({"messages": [{"role": "user", "content": "x"}], "seed": "1"}, "seed"),
++            ({"messages": [{"role": "user", "content": "x"}], "seed": True}, "seed"),
++            ({"messages": [{"role": "user", "content": "x"}], "stream": "false"}, "stream"),
++            ({"messages": [{"role": "user", "content": "x"}], "stream": 0}, "stream"),
 +            ({"messages": [{"role": "bogus", "content": "x"}]}, "role"),
 +        ]
 +        for body, expect in cases:
@@ -17401,10 +17534,10 @@ index 0000000..92dd6cb
 +    raise SystemExit(main())
 diff --git a/tools/inkling_serve.py b/tools/inkling_serve.py
 new file mode 100644
-index 0000000..2d8a23a
+index 0000000..c000ff4
 --- /dev/null
 +++ b/tools/inkling_serve.py
-@@ -0,0 +1,580 @@
+@@ -0,0 +1,648 @@
 +#!/usr/bin/env python3
 +# SPDX-License-Identifier: Apache-2.0
 +"""
@@ -17432,8 +17565,8 @@ index 0000000..2d8a23a
 +server says so, in the startup banner, in `/v1/models`, and in a
 +`x-waste-provenance` header on every response. It refuses to hide it:
 +`--i-know-the-weights-are-synthetic` is required to start against a stage that
-+does not carry an official-weight attestation, and the flag is deliberately
-+tedious to type.
++does not pass the C runtime's verified official Inkling-Small profile gate,
++and the flag is deliberately tedious to type.
 +
 +TOKENIZER
 +---------
@@ -17454,6 +17587,7 @@ index 0000000..2d8a23a
 +from __future__ import annotations
 +
 +import argparse
++import codecs
 +import ctypes as C
 +import json
 +import math
@@ -17469,6 +17603,7 @@ index 0000000..2d8a23a
 +# ------------------------------------------------------------ C bindings ----
 +
 +PRIVATE_OK = 0
++PRIVATE_E_UNSUPPORTED = -5
 +PRIVATE_STATUS = {
 +    0: "ok", -1: "argument", -2: "io", -3: "format",
 +    -4: "out of memory", -5: "unsupported", -6: "runtime",
@@ -17482,7 +17617,9 @@ index 0000000..2d8a23a
 +
 +
 +class InklingError(RuntimeError):
-+    pass
++    def __init__(self, message: str, *, status: int | None = None):
++        super().__init__(message)
++        self.status = status
 +
 +
 +def _soext() -> str:
@@ -17530,7 +17667,8 @@ index 0000000..2d8a23a
 +        if st != PRIVATE_OK:
 +            raise InklingError(
 +                f"cannot open stage {stage}: {PRIVATE_STATUS.get(st, st)}"
-+                + (f" — {detail.value.decode(errors='replace')}" if detail.value else ""))
++                + (f" — {detail.value.decode(errors='replace')}" if detail.value else ""),
++                status=st)
 +        self.handle = handle
 +        cfg = self.lib.waste_inkling_private_config(handle)
 +        if not cfg:
@@ -17612,8 +17750,11 @@ index 0000000..2d8a23a
 +    def encode(self, text: str) -> list[int]:
 +        return [b % self.vocab for b in text.encode("utf-8")]
 +
++    def decode_bytes(self, ids: list[int]) -> bytes:
++        return bytes(i % 256 for i in ids)
++
 +    def decode(self, ids: list[int]) -> str:
-+        return bytes(i % 256 for i in ids).decode("utf-8", errors="replace")
++        return self.decode_bytes(ids).decode("utf-8", errors="replace")
 +
 +    @property
 +    def eos(self) -> int:
@@ -17648,14 +17789,14 @@ index 0000000..2d8a23a
 +            raise InklingError("tokenizer refused the input")
 +        return list(buf[:n])
 +
-+    def decode(self, ids: list[int]) -> str:
++    def decode_bytes(self, ids: list[int]) -> bytes:
 +        if not ids:
-+            return ""
++            return b""
 +        arr = (C.c_int32 * len(ids))(*ids)
 +        cap = 4 * len(ids) + 64
 +        buf = C.create_string_buffer(cap)
 +        n = self.lib.waste_tok_decode(self.tok, arr, len(ids), buf, cap)
-+        return buf.raw[:max(n, 0)].decode("utf-8", errors="replace")
++        return buf.raw[:max(n, 0)]
 +
 +    @property
 +    def eos(self) -> int:
@@ -17737,6 +17878,31 @@ index 0000000..2d8a23a
 +    return probs[-1][1]
 +
 +
++def collect_generation(gen) -> tuple[list[int], str]:
++    """Consume a generation without losing the generator's finish reason."""
++    ids = []
++    while True:
++        try:
++            ids.append(next(gen))
++        except StopIteration as done:
++            reason = done.value if done.value in ("stop", "length") else "stop"
++            return ids, reason
++
++
++def request_number(req: dict, name: str, default: float) -> float:
++    """Read a finite JSON number. Booleans and numeric strings are not numbers."""
++    value = req.get(name, default)
++    if isinstance(value, bool) or not isinstance(value, (int, float)):
++        raise InklingError(f"{name} must be a number")
++    try:
++        value = float(value)
++    except OverflowError as exc:
++        raise InklingError(f"{name} must be finite") from exc
++    if not math.isfinite(value):
++        raise InklingError(f"{name} must be finite")
++    return value
++
++
 +# ---------------------------------------------------------------- server ----
 +
 +
@@ -17779,8 +17945,9 @@ index 0000000..2d8a23a
 +                pos += 1
 +                nxt = sample(logits, self.runtime.vocab, temperature, top_p, rng)
 +                if nxt == self.tokenizer.eos:
-+                    return
++                    return "stop"
 +                yield nxt
++            return "length"
 +
 +
 +def make_handler(session: Session, provenance: str, model_name: str):
@@ -17834,23 +18001,34 @@ index 0000000..2d8a23a
 +            messages = req.get("messages")
 +            if not isinstance(messages, list) or not messages:
 +                return self._error(400, "messages must be a non-empty array")
++            if not all(isinstance(message, dict) for message in messages):
++                return self._error(400, "each message must be an object")
 +            max_tokens = req.get("max_tokens", 128)
-+            if not isinstance(max_tokens, int) or not 1 <= max_tokens <= 4096:
++            if (isinstance(max_tokens, bool) or not isinstance(max_tokens, int)
++                    or not 1 <= max_tokens <= 4096):
 +                return self._error(400, "max_tokens must be 1..4096")
-+            temperature = float(req.get("temperature", 1.0))
++            try:
++                temperature = request_number(req, "temperature", 1.0)
++                top_p = request_number(req, "top_p", 1.0)
++            except InklingError as exc:
++                return self._error(400, str(exc))
 +            if not 0.0 <= temperature <= 4.0:
 +                return self._error(400, "temperature must be 0..4")
-+            top_p = float(req.get("top_p", 1.0))
 +            if not 0.0 < top_p <= 1.0:
 +                return self._error(400, "top_p must be in (0, 1]")
 +            seed = req.get("seed")
-+            stream = bool(req.get("stream", False))
++            if (seed is not None
++                    and (isinstance(seed, bool) or not isinstance(seed, int))):
++                return self._error(400, "seed must be an integer")
++            stream = req.get("stream", False)
++            if not isinstance(stream, bool):
++                return self._error(400, "stream must be a boolean")
 +
 +            try:
 +                gen = session.generate(messages, max_tokens, temperature, top_p, seed)
 +                if stream:
 +                    return self._stream(gen)
-+                ids = list(gen)
++                ids, finish_reason = collect_generation(gen)
 +            except InklingError as exc:
 +                return self._error(400, str(exc))
 +
@@ -17864,7 +18042,7 @@ index 0000000..2d8a23a
 +                "choices": [{
 +                    "index": 0,
 +                    "message": {"role": "assistant", "content": text},
-+                    "finish_reason": "length" if len(ids) >= max_tokens else "stop",
++                    "finish_reason": finish_reason,
 +                }],
 +                "usage": {"completion_tokens": len(ids)},
 +            })
@@ -17877,6 +18055,7 @@ index 0000000..2d8a23a
 +            self.send_header("Transfer-Encoding", "chunked")
 +            self.end_headers()
 +            ident = f"chatcmpl-{uuid.uuid4().hex[:24]}"
++            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 +
 +            def chunk(delta, finish=None):
 +                payload = json.dumps({
@@ -17891,9 +18070,21 @@ index 0000000..2d8a23a
 +
 +            try:
 +                chunk({"role": "assistant"})
-+                for tok in gen:
-+                    chunk({"content": session.tokenizer.decode([tok])})
-+                chunk({}, finish="stop")
++                while True:
++                    try:
++                        tok = next(gen)
++                    except StopIteration as done:
++                        finish = (done.value
++                                  if done.value in ("stop", "length") else "stop")
++                        break
++                    content = decoder.decode(
++                        session.tokenizer.decode_bytes([tok]), final=False)
++                    if content:
++                        chunk({"content": content})
++                content = decoder.decode(b"", final=True)
++                if content:
++                    chunk({"content": content})
++                chunk({}, finish=finish)
 +                done = b"data: [DONE]\n\n"
 +                self.wfile.write(b"%x\r\n" % len(done) + done + b"\r\n")
 +                self.wfile.write(b"0\r\n\r\n")
@@ -17910,13 +18101,30 @@ index 0000000..2d8a23a
 +    return Handler
 +
 +
-+ATTESTATION = "official-weights.json"
++def open_runtime(lib_path: Path, stage: Path, ctx: int,
++                 allow_synthetic: bool, runtime_cls=Runtime):
++    """Let the C runtime prove official provenance before we claim it.
 +
-+
-+def stage_provenance(stage: Path) -> str:
-+    """An official run has to prove it. Absent proof, the stage is synthetic
-+    and every response says so."""
-+    return "official" if (Path(stage) / ATTESTATION).is_file() else "synthetic"
++    The first open requires the verified official Inkling-Small stage flag and
++    geometry. Only that specific fail-closed refusal may fall back to a
++    synthetic open, and only after the caller supplies the explicit override.
++    Corrupt, incomplete, or unreadable stages never take the fallback path.
++    """
++    try:
++        return (runtime_cls(lib_path, stage, ctx=ctx, require_official=True),
++                "official")
++    except InklingError as exc:
++        if exc.status != PRIVATE_E_UNSUPPORTED:
++            raise
++        if not allow_synthetic:
++            raise InklingError(
++                f"refusing to serve {stage}: the runtime stage did not pass "
++                "the verified official Inkling-Small profile gate, so the "
++                "weights must be treated as synthetic. Pass "
++                "--i-know-the-weights-are-synthetic to serve it anyway.",
++                status=exc.status) from exc
++    return (runtime_cls(lib_path, stage, ctx=ctx, require_official=False),
++            "synthetic")
 +
 +
 +def main(argv=None) -> int:
@@ -17938,18 +18146,10 @@ index 0000000..2d8a23a
 +                    dest="allow_synthetic")
 +    args = ap.parse_args(argv)
 +
-+    provenance = stage_provenance(args.stage)
-+    if provenance == "synthetic" and not args.allow_synthetic:
-+        print(
-+            f"refusing to serve {args.stage}: it carries no {ATTESTATION}, so the\n"
-+            "weights are synthetic and the text will be meaningless. Pass\n"
-+            "--i-know-the-weights-are-synthetic to serve it anyway.",
-+            file=sys.stderr)
-+        return 2
-+
 +    try:
 +        lib_path = find_library(args.lib)
-+        runtime = Runtime(lib_path, args.stage, ctx=args.context)
++        runtime, weights_kind = open_runtime(
++            lib_path, args.stage, args.context, args.allow_synthetic)
 +        if args.tokenizer:
 +            tokenizer = OfficialTokenizer(runtime.lib, args.tokenizer, runtime.vocab)
 +        else:
@@ -17959,7 +18159,8 @@ index 0000000..2d8a23a
 +        print(f"inkling_serve: {exc}", file=sys.stderr)
 +        return 2
 +
-+    provenance = f"weights={provenance} tokenizer={tokenizer.kind} template={template_kind}"
++    provenance = (f"weights={weights_kind} tokenizer={tokenizer.kind} "
++                  f"template={template_kind}")
 +    session = Session(runtime, tokenizer, template)
 +    httpd = ThreadingHTTPServer((args.host, args.port),
 +                                make_handler(session, provenance, args.model_name))

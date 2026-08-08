@@ -263,6 +263,7 @@ resident bytes and canonical F32 resident bytes separately.
 | `inkling_parity.py` | 416 | bounded fixture extraction + CRC-protected activation archives + comparison |
 | `inkling_fixture.py` | 268 | **dependency-free** fixture reader: CRC verification, axis-0 expert slices, BF16/F16/F32 → F32 decode, module-relative state-dict keys, fail-closed coverage checks |
 | `inkling_layer_parity.py` | 470 | binds one layer from a fixture and runs the traced C decoder layer; owns its ctypes ABI declarations, which a compiled probe checks against the headers |
+| `inkling_throughput.py` | 493 | **dependency-free** decode cost model: exact VQ record geometry, bytes per token, expert bank, the budget-resolver ladder, and a throughput projection calibrated against upstream's measured K3 decode |
 | `inkling_trace.py` | 147 | C side of the trace protocol |
 | `inkling_reference.py` | 163 | official Transformers side of the trace protocol |
 | `convert_inkling.py` | 306 | the CLI that drives all of the above |

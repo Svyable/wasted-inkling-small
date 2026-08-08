@@ -81,6 +81,7 @@ jobs:
           python3 tests/test_inkling_release.py
           python3 tests/test_inkling_config_c.py
           python3 tests/test_inkling_fixture.py
+          python3 tests/test_inkling_throughput.py
 
   differential:
     name: Torch differential suite

@@ -1,8 +1,8 @@
 Generated bundle validation
 ===========================
 
-Date: 2026-08-02
-Host: Linux x86_64, 16 GB usable RAM
+Date: 2026-08-08
+Host: Linux x86_64, 15 GB usable RAM, 4 cores, virtio block device
 Compiler: GCC / cc
 Python: 3.11.15, torch 2.13.0, numpy 2.4.6
 Upstream: sqliteai/waste@69315701f634648f7a790915a0a525ed8aabf218
@@ -11,6 +11,12 @@ WASTE: 0.6.3; API 1; format 0
 Every result below was produced in this environment on the date above. None of
 it is quoted from an earlier bundle. The official 532 GB checkpoint was not
 present, so nothing here is official-weight parity.
+
+Correction: the 2026-08-02 revision of this file recorded tree
+bd7c8750100d393c13cd36062489cc4fce27ad69 and was not regenerated when the
+official-transformers layer parity landed, so it named a tree two changes
+behind the bundle it shipped beside. The hashes below were produced by the run
+that produced this file.
 
 GENERATION
 ----------
@@ -32,11 +38,11 @@ PASS  integration/waste/generate.sh is deterministic on a fixed toolchain
 
 PASS  committed bundle applies to the reviewed tree
       git am of dist/waste-inkling-6931570/patches/*.patch onto the pinned
-      upstream yields bd7c8750100d393c13cd36062489cc4fce27ad69.
-      Patch sha256: 5fca00257ecab1df6d1fcfa4679ad491b80ea1156c2e269e2e138562e1c2d48b
+      upstream yields 9a2b768986d4cbedb3cfc5944c6c229d7264f884.
+      Patch sha256: a7a2ff1198daa0ee78709c8bc2fabf13acb85ae39bee1b7bae66f7f95cfabb4f
 
 PASS  integration/waste/verify.sh
-      Generated tree: bd7c8750100d393c13cd36062489cc4fce27ad69
+      Generated tree: 9a2b768986d4cbedb3cfc5944c6c229d7264f884
 
 VALIDATION
 ----------
@@ -64,14 +70,15 @@ PASS  strict compile of src/arch.c and all src/inkling*.c
 
 PASS  complete Inkling Python suite
       python3 -m unittest discover -s tests -p "test_ink*.py" -t .
-      Result: 134 tests, OK, process exit 0
+      Result: 179 tests, OK, process exit 0
       python3 -m unittest tests.test_inspect_inkling tests.test_convert_inkling
       Result: 18 tests, OK
-      Total: 152 tests passing.
+      Total: 197 tests passing.
 
       The v16 bundle recorded 99 tests and nothing re-ran them; that number is
-      confirmed, and the fixture reader plus the layer-parity harness bring the
-      total to 152.
+      confirmed, and the fixture reader, the layer-parity harness, the
+      official-transformers layer comparison, and the decode cost model bring
+      the total to 197.
 
       The process exit code is checked deliberately. An earlier revision of
       inkling_layer_parity.py declared waste_inkling_attention_state with six
@@ -113,6 +120,45 @@ PASS  Windows cross-build and execution
       NOT claimed: native Windows. This is a cross-build executed under Wine.
       Offsets above 4 GiB, NTFS atomic replacement, Unicode paths, and
       cancellation during a multi-hundred-GB conversion remain untested.
+
+I/O MEASUREMENT, AND A BUG IT FOUND
+-----------------------------------
+PASS  tools/diskbench.c now bypasses the page cache on Linux
+      Until this bundle, nocache() was #ifdef __APPLE__ with no Linux arm and
+      no open() used O_DIRECT, so every Linux run measured the page cache
+      whenever the file fit in RAM — and printed it under the label
+      "cache bypassed". That is the fiction upstream's GATES.md Gate 5 exists
+      to prevent, defeated on one platform by a missing #else.
+
+      Same host, same 8 GiB file, same 9,457,664 B Inkling record:
+
+                        unpatched   with O_DIRECT   inflation
+        seq read        5.66 GiB/s     2.39 GiB/s        2.4x
+        rand 1 thread   5.67 GiB/s     2.08 GiB/s        2.7x
+        rand 2 threads  8.41 GiB/s     2.41 GiB/s        3.5x
+        rand 4 threads 14.49 GiB/s     3.00 GiB/s        4.8x
+
+      The unpatched figure is higher than the 12.89 GiB/s upstream measured on
+      an M5 Pro internal SSD, on a cloud VM that really does 3.00.
+
+      A refused O_DIRECT is now reported rather than silently downgraded, and
+      the trailing tok/s column takes the model's GB/token instead of
+      hardcoding K3's 12.5.
+
+      NOT claimed: that these are laptop numbers. This host is a cloud VM on
+      virtio. 2.08 GiB/s at queue depth 1 is a slow modern NVMe.
+
+PASS  decode cost model
+      tools/inkling_throughput.py, 45 tests. Geometry is exact and checked
+      against a record inkling_vq.write_expert_record actually writes:
+      9,457,664 B per routed expert, 240 records and 2.11 GiB per decoded
+      token, a 90.20 GiB expert bank.
+
+      Throughput is a PROJECTION, labelled as one in every line it prints. It
+      is calibrated against upstream's measured K3 decomposition and reproduces
+      K3's own measured decode (0.61 tok/s against a measured 0.56-0.63) before
+      being applied to Inkling. See docs/THROUGHPUT.md §5 for the four things
+      that would falsify it.
 
 PUBLIC SURFACE PROMOTED
 -----------------------

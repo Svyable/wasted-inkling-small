@@ -114,11 +114,43 @@ windowed layer full-context. Both are fixed and both are regression-tested.
 Gates, commands, budgets, and the running record:
 **[docs/ROADMAP-V19.md](docs/ROADMAP-V19.md)**.
 
+## What a token costs — and why this model, on this engine
+
+Every gate above asks whether the port computes the right thing. None asked
+how fast. **[docs/THROUGHPUT.md](docs/THROUGHPUT.md)** answers the part that is
+knowable without the checkpoint, and the answer is the reason to care:
+
+| | K3 | Inkling-Small |
+| --- | ---: | ---: |
+| bytes read per decoded token | 17.01 GiB | **2.11 GiB** |
+| RAM to reach the cache resolver's first rung | 50.6 GiB | **7.1 GiB** |
+| RAM to reach its maximum | 89.5 GiB | **11.9 GiB** |
+
+That geometry is exact — arithmetic over the released config and the WEXP
+record layout, checked against a record `inkling_vq.py` actually writes.
+WASTE's streaming-MoE design needed a 64 GB workstation to demonstrate at
+~0.5 tok/s. On Inkling-Small the same engine, unchanged, puts a 276B frontier
+model inside a **16 GiB laptop with the cache in its best regime rather than
+its worst** — projected at 2.9-3.6 tok/s on a typical NVMe.
+
+Projected, not measured, and labelled that way in every line of output: the
+cost model is calibrated against upstream's measured K3 decode and reproduces
+it (0.61 tok/s against a measured 0.56-0.63), but no official weight has been
+executed by this code. THROUGHPUT.md §5 names the four things that would
+falsify it — the largest being that **VQ3R quality on Inkling's experts is
+untested**, which is why G2 has been promoted.
+
+Building it also found a real bug in upstream's I/O benchmark: on Linux
+`tools/diskbench.c` never bypassed the page cache, so it reported **4.8x** the
+true random-read rate under the label "cache bypassed". Fixed, with the
+before/after measured.
+
 ## Where the code is
 
 | Doc | Purpose |
 | --- | --- |
 | **[docs/CODEBASE-MAP.md](docs/CODEBASE-MAP.md)** | Every translation unit, tool, and test — and the refactor from patch bundles to a reviewable C tree |
+| [docs/THROUGHPUT.md](docs/THROUGHPUT.md) | What a decoded token costs, what that means for tok/s, and what would falsify it |
 | [docs/WASTE-CONSTRAINTS.md](docs/WASTE-CONSTRAINTS.md) | What upstream WASTE blocks, what it gives us free, and the promotion design that follows |
 | [docs/STATE-OF-THE-PORT.md](docs/STATE-OF-THE-PORT.md) | Verified state, measured sizes, named risks |
 | [docs/ROADMAP-V19.md](docs/ROADMAP-V19.md) | G0-G6 path to running the open weights |

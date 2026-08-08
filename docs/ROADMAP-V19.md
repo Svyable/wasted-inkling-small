@@ -220,10 +220,20 @@ replace the whole-model run.
 
 ---
 
-## G2 — Quantized tolerance, measured not asserted
+## G2 — Quantized tolerance, measured not asserted ⟵ **promoted 2026-08-08**
 
 BF16 parity says the arithmetic is right. It says nothing about whether
 VQ3R experts and a Q4 trunk still produce a usable model.
+
+**Why it moved up.** [THROUGHPUT.md](THROUGHPUT.md) worked out what a decoded
+token costs, and every figure in it — the 9,457,664 B record, the 2.11 GiB
+per-token working set, the 90.2 GiB bank, and the budget ladder that puts
+Inkling on an 8 GiB machine — is downstream of VQ3R being an acceptable
+operating point for *this* model. Upstream chose 3 bits for K3 after Gate 3.
+Inkling's routed experts are narrower and its routing sparser, and nobody has
+measured them. If this gate says 4 bits, every published figure moves by
+~1.33x. It is now the gate that decides whether the headline survives, which
+is a better reason to run it than its position in a dependency graph.
 
 **Do.**
 - Convert a *sample*: 4 layers' experts at VQ3R and VQ2R, trunk at Q8 and Q4.
@@ -370,7 +380,8 @@ and is the best parallel track for a second contributor.
 | --- | --- | --- |
 | G0 fixture parity | **in progress** — reader and C side landed; official side remains | `inkling_fixture.py`, `inkling_layer_parity.py`, 53 tests |
 | G1 BF16 parity | not started | — |
-| G2 quantized tolerance | not started | — |
+| G2 quantized tolerance | **promoted** — now the gate the throughput claim rests on | [THROUGHPUT.md](THROUGHPUT.md) §5 |
+| — decode cost model | **done** — geometry exact, throughput projected and labelled | [THROUGHPUT.md](THROUGHPUT.md), `inkling_throughput.py`, 38 tests |
 | G3 conversion measurement | not started | — |
 | G4 tokenizer / chat | not started | — |
 | G5 format extension | not started | — |

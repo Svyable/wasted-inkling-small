@@ -1,4 +1,4 @@
-From 188f483771fd1b61a25cb44d1a702c74a3a24290 Mon Sep 17 00:00:00 2001
+From e3aefd510f6aa08a6654f3abae46643aa8226242 Mon Sep 17 00:00:00 2001
 From: WASTE Inkling integration <inkling@waste.invalid>
 Date: Sun, 2 Aug 2026 00:00:00 +0000
 Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
@@ -55,6 +55,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tests/test_inkling_release.py         |  85 +++
  tests/test_inkling_runtime_stage.py   | 153 +++++
  tests/test_inkling_stage.py           | 158 +++++
+ tests/test_inkling_throughput.py      | 399 +++++++++++
  tests/test_inkling_trace_tools.py     | 107 +++
  tests/test_inkling_trunk.py           | 172 +++++
  tests/test_inkling_vq.py              | 209 ++++++
@@ -63,6 +64,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tests/test_inspect_inkling.py         | 332 +++++++++
  tools/convert.py                      |  13 +-
  tools/convert_inkling.py              | 306 +++++++++
+ tools/diskbench.c                     |  77 ++-
  tools/inkling_fixture.py              | 388 +++++++++++
  tools/inkling_layer_parity.py         | 597 +++++++++++++++++
  tools/inkling_parity.py               | 416 ++++++++++++
@@ -73,12 +75,13 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/inkling_runtime_stage.py        | 748 +++++++++++++++++++++
  tools/inkling_source.py               |  36 +
  tools/inkling_stage.py                | 381 +++++++++++
+ tools/inkling_throughput.py           | 566 ++++++++++++++++
  tools/inkling_trace.py                | 147 ++++
  tools/inkling_trunk.py                | 557 ++++++++++++++++
  tools/inkling_vq.py                   | 927 ++++++++++++++++++++++++++
  tools/inkling_weights.py              | 369 ++++++++++
  tools/inspect_inkling.py              | 799 ++++++++++++++++++++++
- 74 files changed, 17625 insertions(+), 7 deletions(-)
+ 77 files changed, 18658 insertions(+), 16 deletions(-)
  create mode 100644 PATCH18-HANDOFF.md
  create mode 100644 TEST-RESULTS-P18.txt
  create mode 100644 docs/INKLING.md
@@ -126,6 +129,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100755 tests/test_inkling_release.py
  create mode 100644 tests/test_inkling_runtime_stage.py
  create mode 100644 tests/test_inkling_stage.py
+ create mode 100644 tests/test_inkling_throughput.py
  create mode 100644 tests/test_inkling_trace_tools.py
  create mode 100644 tests/test_inkling_trunk.py
  create mode 100644 tests/test_inkling_vq.py
@@ -143,6 +147,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100755 tools/inkling_runtime_stage.py
  create mode 100644 tools/inkling_source.py
  create mode 100644 tools/inkling_stage.py
+ create mode 100644 tools/inkling_throughput.py
  create mode 100644 tools/inkling_trace.py
  create mode 100755 tools/inkling_trunk.py
  create mode 100755 tools/inkling_vq.py
@@ -10009,6 +10014,411 @@ index 0000000..6563386
 +
 +if __name__ == "__main__":
 +    unittest.main()
+diff --git a/tests/test_inkling_throughput.py b/tests/test_inkling_throughput.py
+new file mode 100644
+index 0000000..ce5f502
+--- /dev/null
++++ b/tests/test_inkling_throughput.py
+@@ -0,0 +1,399 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++"""Dependency-light tests for the decode-cost model.
++
++No torch is required. Where torch *is* available, the record-size arithmetic
++is checked against a record `inkling_vq.write_expert_record` actually writes —
++because a size model that drifts from the writer would silently move every
++throughput number in the repository.
++"""
++
++import json
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(REPO / "tools"))
++
++from inkling_throughput import (
++    BUDGET_CAP_FRACTION,
++    CAL,
++    GIB,
++    Calibration,
++    VQSpec,
++    expert_record_bytes,
++    geometry_from_config,
++    k3_self_check,
++    load_config,
++    main,
++    matrix_index_bytes,
++    project,
++)
++
++CONFIG = REPO / "tests" / "data" / "inkling-small-config.json"
++
++# The released Inkling-Small text geometry, restated here so a change to the
++# recorded config cannot quietly move these tests with it.
++RELEASE = {
++    "num_hidden_layers": 42,
++    "hidden_size": 4096,
++    "intermediate_size": 2048,
++    "dense_intermediate_size": 16384,
++    "n_routed_experts": 256,
++    "num_experts_per_tok": 6,
++    "n_shared_experts": 2,
++    "dense_mlp_idx": 2,
++}
++
++
++class RecordSizeTest(unittest.TestCase):
++    def test_matches_the_published_vq3r_record(self):
++        """9,457,664 B is quoted in ROADMAP-V19.md, WASTE-CONSTRAINTS.md and
++        the memory plan promoted to waste_plan_memory()."""
++        self.assertEqual(expert_record_bytes(4096, 2048, VQSpec()), 9_457_664)
++
++    def test_record_is_page_aligned(self):
++        for hidden, inter in ((4096, 2048), (2048, 512), (1024, 256)):
++            self.assertEqual(expert_record_bytes(hidden, inter, VQSpec()) % 4096, 0)
++
++    def test_index_bytes_pad_rows_to_the_index_block(self):
++        spec = VQSpec(stages=3, vec_dim=8, index_block=64)
++        # 100 rows pads to 128; 128 rows does not move.
++        self.assertEqual(matrix_index_bytes(100, 64, spec), 128 * 8 * 3)
++        self.assertEqual(matrix_index_bytes(128, 64, spec), 128 * 8 * 3)
++
++    def test_two_stage_records_are_smaller(self):
++        three = expert_record_bytes(4096, 2048, VQSpec(stages=3))
++        two = expert_record_bytes(4096, 2048, VQSpec(stages=2))
++        self.assertLess(two, three)
++
++    def test_rejects_columns_not_divisible_by_vec_dim(self):
++        with self.assertRaises(ValueError):
++            matrix_index_bytes(64, 60, VQSpec(vec_dim=8))
++
++    def test_rejects_invalid_spec(self):
++        for spec in (VQSpec(stages=1), VQSpec(vec_dim=0), VQSpec(index_block=0)):
++            with self.assertRaises(ValueError):
++                expert_record_bytes(64, 64, spec)
++
++
++class RecordSizeAgainstWriterTest(unittest.TestCase):
++    """The model above duplicates `inkling_vq`'s layout so this tool can run
++    without torch. This is the check that the duplicate stays honest."""
++
++    def setUp(self):
++        try:
++            import torch  # noqa: F401
++            import inkling_vq  # noqa: F401
++        except ImportError as exc:
++            self.skipTest(f"torch/inkling_vq unavailable: {exc}")
++
++    def test_writer_produces_the_modelled_size(self):
++        import torch
++        import inkling_vq
++
++        spec = inkling_vq.VQSpec()
++        # Small, so the test is fast; the layout rule is size-independent and
++        # test_matches_the_published_vq3r_record pins the real geometry.
++        hidden, inter = 128, 64
++        shapes = ((inter, hidden), (inter, hidden), (hidden, inter))
++        matrices = [
++            inkling_vq.QuantizedMatrix(
++                indices=torch.zeros(
++                    (spec.stages, rows * cols // spec.vec_dim), dtype=torch.uint8
++                ),
++                scales=torch.zeros(rows, dtype=torch.float16),
++                shape=(rows, cols),
++            )
++            for rows, cols in shapes
++        ]
++        with tempfile.TemporaryDirectory() as tmp:
++            path = Path(tmp) / "rec.bin"
++            with path.open("wb") as f:
++                written = inkling_vq.write_expert_record(f, 0, 0, 0, matrices, spec)
++        self.assertEqual(
++            written,
++            expert_record_bytes(hidden, inter, VQSpec(
++                stages=spec.stages, vec_dim=spec.vec_dim, index_block=spec.index_block
++            )),
++        )
++
++
++class GeometryTest(unittest.TestCase):
++    def setUp(self):
++        self.geo = geometry_from_config(dict(RELEASE))
++
++    def test_reads_the_recorded_config(self):
++        self.assertEqual(geometry_from_config(load_config(CONFIG)).record_bytes,
++                         self.geo.record_bytes)
++
++    def test_layer_split(self):
++        self.assertEqual(self.geo.dense_layers, 2)
++        self.assertEqual(self.geo.sparse_layers, 40)
++
++    def test_records_per_token_is_sparse_layers_times_top_k(self):
++        self.assertEqual(self.geo.records_per_token, 240)
++
++    def test_bytes_per_token(self):
++        self.assertEqual(self.geo.bytes_per_token, 240 * 9_457_664)
++        self.assertAlmostEqual(self.geo.working_set_gib, 2.114, places=3)
++
++    def test_expert_bank_matches_the_published_total(self):
++        """docs/ROADMAP-V19.md §G3: 96,846,479,360 B across 40 sparse layers."""
++        self.assertEqual(self.geo.expert_bank_bytes, 96_846_479_360)
++        self.assertAlmostEqual(self.geo.expert_bank_bytes / GIB, 90.2, places=1)
++
++    def test_shared_experts_are_not_streamed(self):
++        """They bind as trunk tensors (inkling_bind.c), so they must not
++        appear in the per-token record count."""
++        wider = dict(RELEASE, n_shared_experts=8)
++        self.assertEqual(
++            geometry_from_config(wider).records_per_token,
++            self.geo.records_per_token,
++        )
++
++    def test_prefers_moe_intermediate_size_when_present(self):
++        cfg = dict(RELEASE)
++        del cfg["dense_intermediate_size"]
++        cfg["moe_intermediate_size"] = 3072
++        self.assertEqual(geometry_from_config(cfg).moe_intermediate, 3072)
++
++    def test_rejects_a_config_carrying_both_width_keys(self):
++        """The two schemas disagree about which key holds the routed width.
++        A config with both is ambiguous and must not be guessed at."""
++        cfg = dict(RELEASE, moe_intermediate_size=3072)
++        with self.assertRaises(ValueError):
++            geometry_from_config(cfg)
++
++    def test_accepts_num_experts_as_an_alias(self):
++        cfg = dict(RELEASE)
++        del cfg["n_routed_experts"]
++        cfg["num_experts"] = 256
++        self.assertEqual(geometry_from_config(cfg).n_routed_experts, 256)
++
++
++class FailClosedTest(unittest.TestCase):
++    # Fields the decode cost genuinely does not depend on. `dense_mlp_idx`
++    # decides how many layers stream experts, but the dense *width* only sizes
++    # the trunk, which this tool takes from the published plan rather than
++    # recomputing. `n_routed_experts` has an alias, tested separately.
++    NOT_REQUIRED = {"dense_intermediate_size", "n_routed_experts"}
++
++    def test_every_required_field_is_required(self):
++        for key in RELEASE:
++            if key in self.NOT_REQUIRED:
++                continue
++            cfg = dict(RELEASE)
++            del cfg[key]
++            with self.assertRaises(KeyError, msg=f"{key} was defaulted"):
++                geometry_from_config(cfg)
++
++    def test_dense_width_does_not_change_the_streaming_cost(self):
++        """Stated as a test rather than left implicit: the dense MLP is
++        trunk-resident, so its width cannot move bytes per token."""
++        cfg = dict(RELEASE)
++        del cfg["dense_intermediate_size"]
++        self.assertEqual(
++            geometry_from_config(cfg).bytes_per_token,
++            geometry_from_config(dict(RELEASE)).bytes_per_token,
++        )
++
++    def test_rejects_non_positive_and_non_integer_fields(self):
++        for bad in (0, -1, 2.5, "4096", True, None):
++            with self.assertRaises((ValueError, KeyError)):
++                geometry_from_config(dict(RELEASE, hidden_size=bad))
++
++    def test_rejects_top_k_above_the_expert_count(self):
++        with self.assertRaises(ValueError):
++            geometry_from_config(dict(RELEASE, num_experts_per_tok=999))
++
++    def test_rejects_dense_prefix_longer_than_the_model(self):
++        with self.assertRaises(ValueError):
++            geometry_from_config(dict(RELEASE, dense_mlp_idx=42))
++
++
++class BudgetLadderTest(unittest.TestCase):
++    """docs/GATES.md Gate 7: budget = floor + working_set * k, largest k in
++    3..1 fitting under seven eighths of RAM."""
++
++    def setUp(self):
++        self.geo = geometry_from_config(dict(RELEASE))
++
++    def test_eight_gib_machine_clears_one_working_set(self):
++        budget, k = self.geo.budget(8)
++        self.assertEqual(k, 1)
++        self.assertLessEqual(budget, 8 * BUDGET_CAP_FRACTION)
++
++    def test_sixteen_gib_machine_reaches_the_resolver_maximum(self):
++        _budget, k = self.geo.budget(16)
++        self.assertEqual(k, 3)
++
++    def test_ladder_is_monotonic_in_ram(self):
++        last = -1.0
++        for ram in (4, 6, 8, 12, 16, 32, 64, 128):
++            budget, _k = self.geo.budget(ram)
++            self.assertGreaterEqual(budget, last)
++            last = budget
++
++    def test_below_the_floor_reports_zero_working_sets(self):
++        """Gate 5 measured this regime at exactly zero demand hit rate, so it
++        must be reported as its own case rather than as a small cache."""
++        budget, k = self.geo.budget(4)
++        self.assertEqual(k, 0)
++        self.assertEqual(budget, self.geo.model_state_floor_gib)
++
++    def test_budget_never_exceeds_the_cap(self):
++        for ram in (4, 8, 16, 64, 128):
++            budget, _k = self.geo.budget(ram)
++            if budget > self.geo.model_state_floor_gib:
++                self.assertLessEqual(budget, ram * BUDGET_CAP_FRACTION)
++
++
++class TrunkConstantsTest(unittest.TestCase):
++    """The trunk and floor are constants for the released Small, not
++    derivations. Reusing them silently for another geometry would be exactly
++    the confident-wrong-number this port refuses everywhere else."""
++
++    def test_released_config_is_recognised(self):
++        self.assertTrue(geometry_from_config(dict(RELEASE)).trunk_is_trustworthy)
++
++    def test_a_different_geometry_is_not_vouched_for(self):
++        for field, value in (
++            ("num_hidden_layers", 24),
++            ("hidden_size", 2048),
++            ("intermediate_size", 1024),
++            ("num_experts_per_tok", 8),
++            ("n_shared_experts", 1),
++        ):
++            geo = geometry_from_config(dict(RELEASE, **{field: value}))
++            self.assertFalse(geo.trunk_is_trustworthy, field)
++
++    def test_overrides_make_another_geometry_trustworthy(self):
++        geo = geometry_from_config(
++            dict(RELEASE, num_hidden_layers=24), trunk_gib=2.0, floor_gib=2.5
++        )
++        self.assertTrue(geo.trunk_is_trustworthy)
++        self.assertEqual(geo.trunk_gib, 2.0)
++        self.assertEqual(geo.model_state_floor_gib, 2.5)
++
++    def test_overrides_must_come_as_a_pair(self):
++        for kwargs in ({"trunk_gib": 2.0}, {"floor_gib": 2.0}):
++            with self.assertRaises(ValueError):
++                geometry_from_config(dict(RELEASE), **kwargs)
++
++    def test_overrides_must_be_positive(self):
++        with self.assertRaises(ValueError):
++            geometry_from_config(dict(RELEASE), trunk_gib=0.0, floor_gib=1.0)
++
++    def test_cli_warns_on_an_unvouched_config(self):
++        import io
++        from contextlib import redirect_stdout, redirect_stderr
++
++        with tempfile.TemporaryDirectory() as tmp:
++            path = Path(tmp) / "other.json"
++            path.write_text(json.dumps(dict(RELEASE, num_hidden_layers=24)))
++            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
++                self.assertEqual(main(["--config", str(path), "geometry"]), 0)
++            self.assertIn("WARNING", err.getvalue())
++
++    def test_cli_is_silent_on_the_released_config(self):
++        import io
++        from contextlib import redirect_stdout, redirect_stderr
++
++        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
++            main(["geometry"])
++        self.assertNotIn("WARNING", err.getvalue())
++
++
++class CalibrationTest(unittest.TestCase):
++    def test_calibration_is_internally_consistent(self):
++        CAL.check()
++
++    def test_check_catches_a_transcription_error(self):
++        with self.assertRaises(ValueError):
++            Calibration(k3_io_seconds=5.0).check()
++
++    def test_model_reproduces_k3s_measured_throughput(self):
++        """The whole projection is worthless if the model cannot reproduce
++        the one decode it was fitted against."""
++        tok_s, _step = k3_self_check()
++        low, high = CAL.k3_measured_tok_s
++        self.assertGreaterEqual(tok_s, low - 0.05)
++        self.assertLessEqual(tok_s, high + 0.05)
++
++
++class ProjectionTest(unittest.TestCase):
++    def setUp(self):
++        self.geo = geometry_from_config(dict(RELEASE))
++
++    def test_io_falls_with_hit_rate(self):
++        cold = project(self.geo, 3.0, 0.0)
++        warm = project(self.geo, 3.0, 0.5)
++        self.assertLess(warm.io_seconds, cold.io_seconds)
++        self.assertEqual(warm.expert_matmul_seconds, cold.expert_matmul_seconds)
++
++    def test_io_falls_with_bandwidth(self):
++        slow = project(self.geo, 1.0, 0.0)
++        fast = project(self.geo, 10.0, 0.0)
++        self.assertLess(fast.io_seconds, slow.io_seconds)
++
++    def test_pipelining_never_exceeds_the_serial_step(self):
++        p = project(self.geo, 3.0, 0.0)
++        self.assertLessEqual(p.pipelined(p.other_low), p.serial_low)
++
++    def test_stays_io_bound_on_a_laptop_class_disk(self):
++        """The interesting structural claim: at 7 GiB/s and no cache hits the
++        step is still dominated by reads, so prefetch and cache work continue
++        to pay on Inkling. It is only on a top-tier SSD that the balance
++        tips."""
++        self.assertTrue(project(self.geo, 7.0, 0.0).io_bound)
++        self.assertFalse(project(self.geo, 12.89, 0.42).io_bound)
++
++    def test_tok_s_band_is_ordered(self):
++        p = project(self.geo, 3.0, 0.29)
++        self.assertLess(p.tok_s_low, p.tok_s_high)
++
++    def test_rejects_impossible_inputs(self):
++        for bw, hit in ((0.0, 0.0), (-1.0, 0.0), (3.0, 1.0), (3.0, -0.1)):
++            with self.assertRaises(ValueError):
++                project(self.geo, bw, hit)
++
++
++class CliTest(unittest.TestCase):
++    def test_subcommands_exit_zero(self):
++        import io
++        from contextlib import redirect_stdout
++
++        for argv in (["geometry"], ["project"], ["compare"]):
++            with redirect_stdout(io.StringIO()) as out:
++                self.assertEqual(main(argv), 0, argv)
++            self.assertIn("GiB", out.getvalue())
++
++    def test_projection_output_is_labelled_as_an_estimate(self):
++        """A projection that does not say so is the failure mode this whole
++        repository is organised against."""
++        import io
++        from contextlib import redirect_stdout
++
++        with redirect_stdout(io.StringIO()) as out:
++            main(["project"])
++        text = out.getvalue()
++        self.assertIn("PROJECTION", text)
++        self.assertIn("estimate, not a measurement", text)
++
++    def test_bad_config_exits_nonzero_without_a_traceback(self):
++        import io
++        from contextlib import redirect_stdout, redirect_stderr
++
++        with tempfile.TemporaryDirectory() as tmp:
++            path = Path(tmp) / "bad.json"
++            path.write_text(json.dumps({"hidden_size": 4096}))
++            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
++                self.assertEqual(main(["--config", str(path), "geometry"]), 2)
++            self.assertIn("missing required field", err.getvalue())
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/tests/test_inkling_trace_tools.py b/tests/test_inkling_trace_tools.py
 new file mode 100644
 index 0000000..c47a429
@@ -11575,6 +11985,146 @@ index 0000000..93f3d0b
 +
 +if __name__ == "__main__":
 +    raise SystemExit(main())
+diff --git a/tools/diskbench.c b/tools/diskbench.c
+index 7235a2e..22d2be7 100644
+--- a/tools/diskbench.c
++++ b/tools/diskbench.c
+@@ -10,7 +10,19 @@
+  *   4. the same with N threads (the engine's async pool)
+  *
+  * Build: cc -O2 -o diskbench tools/diskbench.c
+- * Usage: ./diskbench /Volumes/WasteDisk/k3/.bench [file_gb] [rec_mb] [threads]
++ * Usage: ./diskbench PATH [file_gb] [rec_mb] [threads] [gb_per_token]
++ *
++ * `gb_per_token` scales the trailing tok/s column to the model under test:
++ * K3 reads ~12.5 GB per cold token, Inkling-Small ~2.11 GiB (240 records of
++ * 9,457,664 B). It defaults to K3's, which is what this file was written for.
++ *
++ * On Linux the reads are opened O_DIRECT. Until 2026-08-08 `nocache()` was
++ * `#ifdef __APPLE__` with no Linux arm and no open flag, so every Linux run
++ * of this benchmark measured the page cache whenever the file fit in RAM —
++ * which is the exact fiction docs/GATES.md Gate 5 exists to prevent, and it
++ * reported it as the number that sets tok/s. If O_DIRECT is refused (tmpfs,
++ * some overlay and network filesystems) the run says so on stderr and in the
++ * result line rather than quietly reporting cached bandwidth.
+  */
+ #define _GNU_SOURCE
+ #include <errno.h>
+@@ -32,20 +44,49 @@ static void nocache(int fd) {
+ #ifdef __APPLE__
+     fcntl(fd, F_NOCACHE, 1);
+     fcntl(fd, F_RDAHEAD, 0);
++#else
++    (void)fd;   /* O_DIRECT does this on Linux; see open_read() */
++#endif
++}
++
++/* Open for reading with the page cache out of the way. O_DIRECT is the only
++ * thing on Linux that actually removes it; POSIX_FADV_DONTNEED merely asks,
++ * and asks about pages that are already resident. g_direct records whether we
++ * got it, because a benchmark that silently falls back is worse than one that
++ * fails — it produces a plausible number that is off by the size of RAM. */
++static int g_direct = -1;        /* -1 unknown, 1 O_DIRECT, 0 buffered */
++
++static int open_read(const char *path) {
++    int fd = -1;
++#ifdef O_DIRECT
++    fd = open(path, O_RDONLY | O_DIRECT);
++    if (fd >= 0) {
++        if (g_direct != 0) g_direct = 1;
++        nocache(fd);
++        return fd;
++    }
++#endif
++    fd = open(path, O_RDONLY);
++    if (fd < 0) return fd;
++    g_direct = 0;
++    nocache(fd);
++#if defined(POSIX_FADV_DONTNEED)
++    posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+ #endif
++    return fd;
+ }
+ 
+ static const char *g_path;
+ static size_t g_rec, g_file;
+ static int g_reps;
++static double g_gb_per_token = 12.5;   /* K3 cold token; see usage above */
+ 
+ typedef struct { int id, nthreads; double bytes; } targ;
+ 
+ static void *rand_reader(void *p) {
+     targ *a = (targ *)p;
+-    int fd = open(g_path, O_RDONLY);
++    int fd = open_read(g_path);
+     if (fd < 0) { perror("open"); return NULL; }
+-    nocache(fd);
+     void *buf = NULL;
+     if (posix_memalign(&buf, 4096, g_rec)) { close(fd); return NULL; }
+     size_t nrec = g_file / g_rec;
+@@ -64,15 +105,24 @@ static void *rand_reader(void *p) {
+ }
+ 
+ int main(int argc, char **argv) {
+-    if (argc < 2) { fprintf(stderr, "usage: %s PATH [file_gb] [rec_mb] [threads]\n", argv[0]); return 1; }
++    if (argc < 2) {
++        fprintf(stderr,
++                "usage: %s PATH [file_gb] [rec_mb] [threads] [gb_per_token]\n",
++                argv[0]);
++        return 1;
++    }
+     g_path = argv[1];
+     double file_gb = argc > 2 ? atof(argv[2]) : 8.0;
+     double rec_mb  = argc > 3 ? atof(argv[3]) : 12.0;
+     int maxthreads = argc > 4 ? atoi(argv[4]) : 8;
++    if (argc > 5) g_gb_per_token = atof(argv[5]);
++    if (g_gb_per_token <= 0) { fprintf(stderr, "gb_per_token must be > 0\n"); return 1; }
+     g_file = (size_t)(file_gb * (1u << 30));
+     g_rec  = (size_t)(rec_mb * (1u << 20)) & ~4095UL;
++    if (g_rec == 0) { fprintf(stderr, "record rounds to zero\n"); return 1; }
+ 
+-    printf("file %.1f GB, record %.1f MB, path %s\n", file_gb, rec_mb, g_path);
++    printf("file %.1f GB, record %.1f MB (%zu B), %.2f GB/token, path %s\n",
++           file_gb, rec_mb, g_rec, g_gb_per_token, g_path);
+ 
+     /* 1. sequential write */
+     int fd = open(g_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+@@ -92,11 +142,13 @@ int main(int argc, char **argv) {
+     printf("seq write   : %6.2f GB/s\n", written / dt / (1u << 30));
+ 
+     /* 2. sequential read, cache-bypassed */
+-    fd = open(g_path, O_RDONLY); nocache(fd);
++    fd = open_read(g_path);
++    if (fd < 0) { perror("open read"); return 1; }
+     t0 = now(); size_t rd = 0; ssize_t r;
+     while ((r = read(fd, buf, g_rec)) > 0) rd += r;
+     dt = now() - t0; close(fd);
+-    printf("seq read    : %6.2f GB/s  (cache bypassed)\n", rd / dt / (1u << 30));
++    printf("seq read    : %6.2f GB/s  (%s)\n", rd / dt / (1u << 30),
++           g_direct == 1 ? "cache bypassed" : "PAGE CACHE NOT BYPASSED");
+ 
+     /* 3+4. random record reads, 1..maxthreads */
+     g_reps = 40;
+@@ -111,10 +163,17 @@ int main(int argc, char **argv) {
+         for (int i = 0; i < nt; i++) { pthread_join(th[i], NULL); tot += ta[i].bytes; }
+         dt = now() - t0;
+         double gbs = tot / dt / (1u << 30);
+-        printf("rand %2d thr : %6.2f GB/s  -> %.2f tok/s at 12.5 GB/token cold\n",
+-               nt, gbs, gbs / 12.5);
++        printf("rand %2d thr : %6.2f GB/s  -> %.2f tok/s at %.2f GB/token cold\n",
++               nt, gbs, gbs / g_gb_per_token, g_gb_per_token);
+     }
+ 
++    if (g_direct != 1)
++        fprintf(stderr,
++                "diskbench: WARNING O_DIRECT unavailable on this path; the\n"
++                "  random-read figures above include the page cache and are\n"
++                "  not the number that sets tok/s. Re-run on a real block\n"
++                "  device, or with a file several times larger than RAM.\n");
++
+     free(buf);
+     unlink(g_path);
+     return 0;
 diff --git a/tools/inkling_fixture.py b/tools/inkling_fixture.py
 new file mode 100644
 index 0000000..86655ab
@@ -15468,6 +16018,578 @@ index 0000000..2835065
 +    }
 +    write_json_atomic(out / "stage.json", stage)
 +    return stage
+diff --git a/tools/inkling_throughput.py b/tools/inkling_throughput.py
+new file mode 100644
+index 0000000..74d5421
+--- /dev/null
++++ b/tools/inkling_throughput.py
+@@ -0,0 +1,566 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++"""
++inkling_throughput.py — what Inkling-Small costs per token, and what that
++means for tok/s on a machine you own.
++
++Every gate in ROADMAP-V19.md asks whether this port computes the right
++thing. None of them asks how fast, and throughput is what decides whether
++streaming a 276B model off disk is a product or a curiosity. This tool
++answers the part that is knowable from geometry plus upstream's own
++measurements, without the checkpoint.
++
++Three subcommands, stdlib only:
++
++  geometry   Exact VQ record size, records and bytes per decoded token, the
++             expert bank on disk, one token's working set, and the budget
++             ladder WASTE's resolver would pick on a given machine.
++
++  project    Decode throughput over a bandwidth x hit-rate grid, using the
++             cost decomposition upstream measured for K3.
++
++  compare    Inkling-Small against K3 on the numbers that set tok/s.
++
++WHAT IS MEASURED AND WHAT IS NOT
++--------------------------------
++Geometry is exact: it is arithmetic over the released config and the WEXP
++record layout in `inkling_vq.py`, and `tests/test_inkling_throughput.py`
++checks it against a record that file actually writes.
++
++The projection is an ESTIMATE. It is calibrated against real measurements
++of a different model (K3) on one machine, and extrapolated to Inkling by
++cost model rather than measured. Its inputs are named in CALIBRATION below
++so that a wrong answer can be traced to a wrong input. It is labelled in
++every line of output that carries it, because a projection dressed as a
++measurement is how this decision goes wrong — see docs/EFFICIENCY.md, which
++this file deliberately imitates.
++
++Nothing here has been run against the official checkpoint.
++"""
++
++from __future__ import annotations
++
++import argparse
++import json
++import sys
++from dataclasses import dataclass, field
++from pathlib import Path
++
++GIB = 1 << 30
++MIB = 1 << 20
++
++# ---------------------------------------------------------------- layout ----
++#
++# WEXP record layout, from `inkling_vq.py`:
++#   [48-byte header][gate indices][up indices][down indices][scales]
++# padded to a 4 KiB multiple. Index planes are blocked to `index_block` rows;
++# scales are one float16 per row, unpadded.
++
++VQ_HEADER_BYTES = 48
++VQ_ALIGN = 4096
++
++
++@dataclass(frozen=True)
++class VQSpec:
++    """Mirrors inkling_vq.VQSpec without importing it — that module needs
++    torch, and this tool must run anywhere. The test suite checks the two
++    agree by writing a real record."""
++
++    stages: int = 3
++    vec_dim: int = 8
++    index_block: int = 64
++
++    def validate(self) -> None:
++        if self.stages not in (2, 3):
++            raise ValueError("WASTE expert VQ stages must be 2 or 3")
++        if self.vec_dim <= 0 or self.vec_dim > 64:
++            raise ValueError("invalid VQ vector dimension")
++        if self.index_block <= 0 or self.index_block > 4096:
++            raise ValueError("invalid VQ index block")
++
++
++def _align(value: int, alignment: int = VQ_ALIGN) -> int:
++    return (value + alignment - 1) // alignment * alignment
++
++
++def matrix_index_bytes(rows: int, cols: int, spec: VQSpec) -> int:
++    """Bytes one quantized matrix contributes to a record's index planes."""
++    if rows <= 0 or cols <= 0:
++        raise ValueError("matrix dimensions must be positive")
++    if cols % spec.vec_dim:
++        raise ValueError(f"columns {cols} not a multiple of vec_dim {spec.vec_dim}")
++    padded_rows = _align(rows, spec.index_block)
++    vectors_per_row = cols // spec.vec_dim
++    return padded_rows * vectors_per_row * spec.stages
++
++
++def expert_record_bytes(hidden: int, intermediate: int, spec: VQSpec) -> int:
++    """Size on disk of one routed expert, exactly as `write_expert_record`
++    lays it out. gate and up are [intermediate, hidden]; down is
++    [hidden, intermediate]."""
++    spec.validate()
++    shapes = (
++        (intermediate, hidden),   # gate
++        (intermediate, hidden),   # up
++        (hidden, intermediate),   # down
++    )
++    total = VQ_HEADER_BYTES
++    for rows, cols in shapes:
++        total += matrix_index_bytes(rows, cols, spec)
++    for rows, _cols in shapes:
++        total += rows * 2         # float16 scale per row, unpadded
++    return _align(total)
++
++
++# ------------------------------------------------------------ calibration ----
++#
++# Measured, not assumed. Each constant names where it came from so a wrong
++# projection can be traced to a wrong input rather than argued about.
++
++
++@dataclass(frozen=True)
++class Calibration:
++    """Upstream's measured K3 decode, from docs/EFFICIENCY.md (2026-07-31),
++    on a 64 GB M5 Pro with the container on the internal SSD."""
++
++    # docs/EFFICIENCY.md §1: 92 MoE layers x top-16.
++    k3_records_per_token: int = 1472
++    # docs/EFFICIENCY.md §2: "11.83 MB records (K3's real expert size)".
++    k3_record_bytes: int = int(11.83 * MIB)
++
++    # docs/EFFICIENCY.md §4, decomposed at the margin at the default budget
++    # (17.56 GB cache, 13% hit), before read-ahead landed.
++    k3_io_seconds: float = 1.41
++    k3_expert_matmul_seconds: float = 1.03
++    k3_other_seconds: float = 0.50
++    k3_hit_rate: float = 0.13
++
++    # docs/EFFICIENCY.md §2, tools/diskbench.c on the internal SSD.
++    k3_bandwidth_qd1: float = 10.73          # GiB/s
++    k3_bandwidth_qd4: float = 12.89          # GiB/s
++
++    # docs/EFFICIENCY.md, measured after the read-ahead of §4A and the router
++    # lookahead of §4F. The projection is checked against this.
++    k3_measured_tok_s: tuple[float, float] = (0.56, 0.63)
++
++    # K3's resident trunk, docs/EFFICIENCY.md §4B ("the 27.5 GiB trunk is
++    # read in full every token"). Used to scale non-expert compute.
++    k3_trunk_gib: float = 27.28
++
++    def k3_bytes_per_token(self) -> int:
++        return self.k3_records_per_token * self.k3_record_bytes
++
++    def check(self) -> None:
++        """The decomposition must reproduce its own I/O term, or one of the
++        numbers above has been transcribed wrong."""
++        cold = self.k3_bytes_per_token() / GIB
++        predicted = cold * (1.0 - self.k3_hit_rate) / self.k3_bandwidth_qd1
++        if abs(predicted - self.k3_io_seconds) > 0.10:
++            raise ValueError(
++                f"calibration inconsistent: {cold:.2f} GiB/token at "
++                f"{self.k3_hit_rate:.0%} hit and {self.k3_bandwidth_qd1} GiB/s "
++                f"gives {predicted:.2f}s, but EFFICIENCY.md §4 says "
++                f"{self.k3_io_seconds}s"
++            )
++
++
++CAL = Calibration()
++
++# docs/GATES.md Gate 7: the default-budget resolver takes the largest
++# `floor + working_set * k` for k in 3..1 that fits under seven eighths of RAM.
++BUDGET_STEPS = (3, 2, 1)
++BUDGET_CAP_FRACTION = 7 / 8
++
++
++# -------------------------------------------------------------- geometry ----
++
++
++@dataclass(frozen=True)
++class Geometry:
++    layers: int
++    dense_layers: int
++    sparse_layers: int
++    hidden: int
++    moe_intermediate: int
++    n_routed_experts: int
++    top_k: int
++    n_shared_experts: int
++    record_bytes: int
++    spec: VQSpec
++    # Published in docs/ROADMAP-V19.md §G3. Unlike everything else on this
++    # class these two are NOT derived from the config — sizing the trunk means
++    # walking every trunk tensor at its chosen quantization, which is
++    # inkling_plan.py's job. They are correct for the released Inkling-Small at
++    # the Q4 bulk + Q8 vocab/router operating point and for nothing else, which
++    # is why `released_small` below refuses to vouch for another geometry.
++    trunk_gib: float = 3.642
++    model_state_floor_gib: float = 4.1
++    derived_trunk: bool = False
++
++    # The geometry the trunk and floor constants were derived for.
++    RELEASED_SMALL = (42, 4096, 2048, 256, 6, 2)
++
++    @property
++    def released_small(self) -> bool:
++        """True when this is the config those two constants describe."""
++        return (
++            self.layers,
++            self.hidden,
++            self.moe_intermediate,
++            self.n_routed_experts,
++            self.top_k,
++            self.n_shared_experts,
++        ) == self.RELEASED_SMALL
++
++    @property
++    def trunk_is_trustworthy(self) -> bool:
++        return self.derived_trunk or self.released_small
++
++    @property
++    def records_per_token(self) -> int:
++        return self.sparse_layers * self.top_k
++
++    @property
++    def bytes_per_token(self) -> int:
++        return self.records_per_token * self.record_bytes
++
++    @property
++    def working_set_gib(self) -> float:
++        """One token touches this many distinct records. docs/GATES.md
++        Gate 5: a demand-only cache below this keeps nothing alive from one
++        token to the next and its hit rate is not low but zero."""
++        return self.bytes_per_token / GIB
++
++    @property
++    def expert_bank_bytes(self) -> int:
++        return self.sparse_layers * self.n_routed_experts * self.record_bytes
++
++    def budget(self, ram_gib: float) -> tuple[float, int]:
++        """Reproduce upstream's default-budget resolver. Returns
++        (budget_gib, k); k == 0 means not even one working set fits, which
++        is the regime Gate 5 measured at exactly zero hit rate."""
++        cap = ram_gib * BUDGET_CAP_FRACTION
++        for k in BUDGET_STEPS:
++            want = self.model_state_floor_gib + self.working_set_gib * k
++            if want <= cap:
++                return want, k
++        return self.model_state_floor_gib, 0
++
++
++def _require_int(cfg: dict, key: str) -> int:
++    """Fail closed. A missing field is not a zero, and a plausible default
++    here would produce a confident wrong byte count — the exact failure
++    `inkling_public.c` refuses at the C boundary."""
++    if key not in cfg:
++        raise KeyError(f"config is missing required field {key!r}")
++    value = cfg[key]
++    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
++        raise ValueError(f"config field {key!r} must be a positive integer")
++    return value
++
++
++def load_config(path: Path) -> dict:
++    raw = json.loads(Path(path).read_text())
++    return raw.get("text_config", raw)
++
++
++def geometry_from_config(
++    cfg: dict,
++    spec: VQSpec | None = None,
++    trunk_gib: float | None = None,
++    floor_gib: float | None = None,
++) -> Geometry:
++    """Build the decode geometry. `trunk_gib`/`floor_gib` override the
++    released-Small constants; pass them for any other config, because the
++    defaults do not describe it and this tool cannot derive them."""
++    spec = spec or VQSpec()
++    layers = _require_int(cfg, "num_hidden_layers")
++    hidden = _require_int(cfg, "hidden_size")
++    # The routed width. The release schema calls it `intermediate_size` and
++    # the dense width `dense_intermediate_size`; Transformers 5.14.1 folds the
++    # latter into its own `intermediate_size` and calls the routed one
++    # `moe_intermediate_size`. Resolved against the authoritative config.json:
++    # routed is 2048. See ROADMAP-V19.md's schema note.
++    if "moe_intermediate_size" in cfg and "dense_intermediate_size" in cfg:
++        raise ValueError(
++            "config carries both 'moe_intermediate_size' and "
++            "'dense_intermediate_size'; the routed width is ambiguous"
++        )
++    routed_key = "moe_intermediate_size" if "moe_intermediate_size" in cfg else "intermediate_size"
++    moe_intermediate = _require_int(cfg, routed_key)
++
++    if "n_routed_experts" in cfg:
++        n_routed = _require_int(cfg, "n_routed_experts")
++    else:
++        n_routed = _require_int(cfg, "num_experts")
++    top_k = _require_int(cfg, "num_experts_per_tok")
++    n_shared = _require_int(cfg, "n_shared_experts")
++    dense = _require_int(cfg, "dense_mlp_idx")
++
++    if top_k > n_routed:
++        raise ValueError("num_experts_per_tok exceeds the routed expert count")
++    if dense >= layers:
++        raise ValueError("dense_mlp_idx is not inside the layer range")
++
++    if (trunk_gib is not None) != (floor_gib is not None):
++        raise ValueError("pass both --trunk-gib and --floor-gib, or neither")
++    if trunk_gib is not None and (trunk_gib <= 0 or floor_gib <= 0):
++        raise ValueError("trunk and floor sizes must be positive")
++
++    overrides = {}
++    if trunk_gib is not None:
++        overrides = {
++            "trunk_gib": trunk_gib,
++            "model_state_floor_gib": floor_gib,
++            "derived_trunk": True,
++        }
++
++    return Geometry(
++        layers=layers,
++        dense_layers=dense,
++        sparse_layers=layers - dense,
++        hidden=hidden,
++        moe_intermediate=moe_intermediate,
++        n_routed_experts=n_routed,
++        top_k=top_k,
++        n_shared_experts=n_shared,
++        record_bytes=expert_record_bytes(hidden, moe_intermediate, spec),
++        spec=spec,
++        **overrides,
++    )
++
++
++# ------------------------------------------------------------ projection ----
++
++
++@dataclass(frozen=True)
++class Projection:
++    """One point of the estimate. `other_seconds` is a band, so tok/s is too."""
++
++    bandwidth: float
++    hit_rate: float
++    io_seconds: float
++    expert_matmul_seconds: float
++    other_low: float
++    other_high: float
++
++    @property
++    def serial_low(self) -> float:
++        return self.io_seconds + self.expert_matmul_seconds + self.other_low
++
++    def pipelined(self, other: float) -> float:
++        """docs/EFFICIENCY.md §4A: read-ahead turns the sum of I/O and expert
++        compute into a maximum. Everything else stays serial."""
++        return max(self.io_seconds, self.expert_matmul_seconds) + other
++
++    @property
++    def tok_s_high(self) -> float:
++        return 1.0 / self.pipelined(self.other_low)
++
++    @property
++    def tok_s_low(self) -> float:
++        return 1.0 / self.pipelined(self.other_high)
++
++    @property
++    def io_bound(self) -> bool:
++        return self.io_seconds > self.expert_matmul_seconds
++
++
++def project(
++    geo: Geometry,
++    bandwidth: float,
++    hit_rate: float,
++    cal: Calibration = CAL,
++    other_high_multiple: float = 2.0,
++) -> Projection:
++    """Estimate one decode step.
++
++    The two compute terms are scaled from K3's measured decomposition:
++
++    * Expert matmul scales with bytes per token. docs/EFFICIENCY.md §1: the
++      cost is one `vq_apply` pass per (token, expert) pair and `vq_rows` does
++      `stages` gathers per row per vector position — which is the same
++      quantity as the record's index bytes. So the ratio of expert compute is
++      the ratio of per-token expert bytes. This is a cost model, not a
++      measurement, and it is the largest single assumption here.
++
++    * Everything else (trunk matvecs, attention, norms, routing) scales with
++      resident trunk bytes, which is what dominates it on K3. Inkling's
++      attention machinery differs from MLA/KDA — a real K/V cache and four
++      short convolutions per layer — so the upper end of the band multiplies
++      that estimate by `other_high_multiple` rather than pretending the shape
++      is known.
++    """
++    if not 0.0 <= hit_rate < 1.0:
++        raise ValueError("hit_rate must be in [0, 1)")
++    if bandwidth <= 0:
++        raise ValueError("bandwidth must be positive")
++    cal.check()
++
++    cold_gib = geo.bytes_per_token / GIB
++    io_seconds = cold_gib * (1.0 - hit_rate) / bandwidth
++
++    expert_ratio = geo.bytes_per_token / cal.k3_bytes_per_token()
++    expert_matmul = cal.k3_expert_matmul_seconds * expert_ratio
++
++    other_low = cal.k3_other_seconds * (geo.trunk_gib / cal.k3_trunk_gib)
++    return Projection(
++        bandwidth=bandwidth,
++        hit_rate=hit_rate,
++        io_seconds=io_seconds,
++        expert_matmul_seconds=expert_matmul,
++        other_low=other_low,
++        other_high=other_low * other_high_multiple,
++    )
++
++
++def k3_self_check(cal: Calibration = CAL) -> tuple[float, float]:
++    """Run the same model on K3's own numbers. If it does not land near the
++    measured 0.56-0.63 tok/s, the model is wrong and every Inkling figure it
++    produces is decoration."""
++    cal.check()
++    io = cal.k3_bytes_per_token() / GIB * (1 - cal.k3_hit_rate) / cal.k3_bandwidth_qd4
++    step = max(io, cal.k3_expert_matmul_seconds) + cal.k3_other_seconds
++    return 1.0 / step, step
++
++
++# ------------------------------------------------------------------- cli ----
++
++DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "tests" / "data" / "inkling-small-config.json"
++
++
++def _fmt_gib(n: float) -> str:
++    return f"{n:,.2f} GiB"
++
++
++def _geometry(args: argparse.Namespace) -> Geometry:
++    """Shared construction, including the one warning this tool owes the
++    caller: the trunk and floor are constants, not derivations, and silently
++    reusing them for a different model is exactly the confident-wrong-number
++    failure the rest of this port refuses."""
++    geo = geometry_from_config(
++        load_config(args.config),
++        trunk_gib=getattr(args, "trunk_gib", None),
++        floor_gib=getattr(args, "floor_gib", None),
++    )
++    if not geo.trunk_is_trustworthy:
++        print(
++            "WARNING: this config is not the released Inkling-Small, and the\n"
++            "  resident trunk and model-state floor below are constants derived\n"
++            "  for that model. Every budget and 'other s' figure that depends on\n"
++            "  them is wrong here. Pass --trunk-gib and --floor-gib.",
++            file=sys.stderr,
++        )
++    return geo
++
++
++def cmd_geometry(args: argparse.Namespace) -> int:
++    geo = _geometry(args)
++    print("Inkling-Small decode geometry  (exact — arithmetic over the config)")
++    print(f"  layers                     {geo.layers} ({geo.dense_layers} dense, {geo.sparse_layers} sparse)")
++    print(f"  hidden / routed width      {geo.hidden} / {geo.moe_intermediate}")
++    print(f"  routed experts, top-k      {geo.n_routed_experts}, {geo.top_k}")
++    print(f"  shared experts             {geo.n_shared_experts} (trunk-resident, not streamed)")
++    print(f"  VQ{geo.spec.stages}R record             {geo.record_bytes:,} B")
++    print()
++    print(f"  records per decoded token  {geo.records_per_token}")
++    print(f"  bytes per decoded token    {geo.bytes_per_token:,} B  ({_fmt_gib(geo.working_set_gib)})")
++    print(f"  expert bank on disk        {_fmt_gib(geo.expert_bank_bytes / GIB)}")
++    print(f"  trunk, resident            {_fmt_gib(geo.trunk_gib)}")
++    print(f"  model-state floor          {_fmt_gib(geo.model_state_floor_gib)}")
++    print()
++    print("Default budget the resolver would pick  (docs/GATES.md Gate 7)")
++    print("    RAM      budget    cache   working sets")
++    for ram in args.ram:
++        budget, k = geo.budget(ram)
++        cache = budget - geo.model_state_floor_gib
++        note = "  <- below the Gate 5 floor: demand hit rate is zero" if k == 0 else ""
++        print(f"  {ram:5.0f} GiB  {budget:6.2f}  {cache:6.2f}   {k}x{note}")
++    return 0
++
++
++def cmd_project(args: argparse.Namespace) -> int:
++    geo = _geometry(args)
++    tok_s, step = k3_self_check()
++    print("Calibration self-check: the same model on K3's own inputs gives")
++    print(f"  {step:.2f} s/token = {tok_s:.2f} tok/s against a measured "
++          f"{CAL.k3_measured_tok_s[0]}-{CAL.k3_measured_tok_s[1]} tok/s "
++          "(docs/EFFICIENCY.md)")
++    print()
++    print("PROJECTION — an estimate, not a measurement. No official weight has")
++    print("been executed by this code. Inputs are named in Calibration.")
++    print()
++    print("  GiB/s   hit    I/O s   expert s   other s      tok/s      bound by")
++    for bw in args.bandwidth:
++        for hit in args.hit:
++            p = project(geo, bw, hit)
++            print(
++                f"  {bw:5.2f}  {hit:4.0%}  {p.io_seconds:6.3f}   "
++                f"{p.expert_matmul_seconds:7.3f}   "
++                f"{p.other_low:.3f}-{p.other_high:.3f}   "
++                f"{p.tok_s_low:5.2f}-{p.tok_s_high:5.2f}   "
++                f"{'I/O' if p.io_bound else 'compute'}"
++            )
++    return 0
++
++
++def cmd_compare(args: argparse.Namespace) -> int:
++    geo = _geometry(args)
++    k3_bytes = CAL.k3_bytes_per_token()
++    rows = [
++        ("records per token", CAL.k3_records_per_token, geo.records_per_token, "{:,.0f}"),
++        ("record bytes", CAL.k3_record_bytes, geo.record_bytes, "{:,.0f}"),
++        ("bytes per token (GiB)", k3_bytes / GIB, geo.bytes_per_token / GIB, "{:.2f}"),
++        ("resident trunk (GiB)", CAL.k3_trunk_gib, geo.trunk_gib, "{:.2f}"),
++    ]
++    print(f"  {'':24} {'K3':>12} {'Inkling-Small':>14}   K3 / Inkling")
++    for label, a, b, fmt in rows:
++        print(f"  {label:24} {fmt.format(a):>12} {fmt.format(b):>14}   {a / b:>8.1f}x")
++    print()
++    print(f"  Inkling reads {k3_bytes / geo.bytes_per_token:.1f}x less per token than K3.")
++    print("  (K3's model-state floor is its trunk: MLA caches a latent, so its")
++    print("   per-token state is small next to the resident weights.)")
++    print()
++    print("RAM needed for the resolver's k-th working-set step:")
++    print("        k    K3 needs      Inkling needs")
++    for k in BUDGET_STEPS:
++        k3_need = (CAL.k3_trunk_gib + (k3_bytes / GIB) * k) / BUDGET_CAP_FRACTION
++        ink_need = (geo.model_state_floor_gib + geo.working_set_gib * k) / BUDGET_CAP_FRACTION
++        print(f"       {k}x   {k3_need:7.1f} GiB   {ink_need:9.1f} GiB")
++    return 0
++
++
++def main(argv: list[str] | None = None) -> int:
++    ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
++    ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
++    ap.add_argument("--trunk-gib", type=float, default=None,
++                    help="resident trunk size; required for any config that is "
++                         "not the released Inkling-Small")
++    ap.add_argument("--floor-gib", type=float, default=None,
++                    help="model-state floor; pass with --trunk-gib")
++    sub = ap.add_subparsers(dest="cmd", required=True)
++
++    g = sub.add_parser("geometry", help="exact per-token cost and budget ladder")
++    g.add_argument("--ram", type=float, nargs="+", default=[8, 16, 24, 32, 64, 128])
++    g.set_defaults(func=cmd_geometry)
++
++    p = sub.add_parser("project", help="estimated decode throughput")
++    p.add_argument("--bandwidth", type=float, nargs="+",
++                   default=[0.55, 2.08, 3.00, 7.00, 10.73, 12.89],
++                   help="GiB/s of cache-bypassed random record reads")
++    p.add_argument("--hit", type=float, nargs="+", default=[0.0, 0.29, 0.42])
++    p.set_defaults(func=cmd_project)
++
++    c = sub.add_parser("compare", help="Inkling-Small against K3")
++    c.set_defaults(func=cmd_compare)
++
++    args = ap.parse_args(argv)
++    try:
++        return args.func(args)
++    except (KeyError, ValueError) as exc:
++        print(f"inkling_throughput: {exc}", file=sys.stderr)
++        return 2
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
 diff --git a/tools/inkling_trace.py b/tools/inkling_trace.py
 new file mode 100644
 index 0000000..87bcc52

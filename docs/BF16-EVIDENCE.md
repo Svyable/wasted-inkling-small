@@ -77,12 +77,33 @@ AVX512 arm by chance is 2/10 (the one-tailed Fisher result). Nor does 8/8 clear
 AVX2: the rule-of-three 95% upper bound is approximately 3/8, or 37.5%.
 Position-zero exactness is therefore unsettled for every dispatch class.
 
-Execution-profile schema version 2 separates physical host identity from the
-reference runtime. `host_class_sha256` binds only the hosted image and CPU
-class, so native and forced-dispatch processes on one job share it.
-`reference_profile_sha256` additionally binds Torch dispatch and thread
-controls, so the two arms remain distinguishable. Version-1 hashes from #54
-included both categories and remain valid only as version-1 artifact IDs.
+The first same-host measurement on #55 ran at
+`e5eeeb9d7f0570eb290e41be91a54f4cca8ff369`. Attempts 1–7 were neutral
+hardware misses and skipped checkout, installation, and fixture acquisition.
+Attempt 8, workflow run `31267172029`, used one AMD EPYC 9V74 runner in Azure
+`westus3`, one CRC-verified fixture, and fresh native-AVX512 and forced-AVX2
+processes. Both arms were nonexact and their complete core evidence payloads
+were identical. The exact routed and shared weights matched the official
+weights in both layers, while the first mismatch was already
+`post_attention_norm`. Torch dispatch and the `logsumexp` denominator are
+therefore not causes of this particular failure.
+
+The same PR head also produced an exact complete-layer run, `31267172012`, on
+an AMD EPYC 9V74 runner in Azure `eastus` under native AVX2. Both runs used the
+same input SHA-256, immutable model revision, source hashes, image version,
+thread controls, and fixture contract. This is evidence of an unresolved
+hardware-fleet or pre-router arithmetic variable, not evidence that region by
+itself is causal.
+
+Execution-profile schema version 3 separates physical host identity from the
+reference runtime and adds the canonical `/proc/cpuinfo` feature set and its
+SHA-256 to the host identity. `host_class_sha256` binds the hosted image, CPU
+identity, and visible hardware features, so native and forced-dispatch
+processes on one job share it. `reference_profile_sha256` additionally binds
+Torch dispatch and thread controls, so the two arms remain distinguishable.
+Version-1 hashes from #54 included both host and runtime categories. Version-2
+hashes omitted CPU feature flags. Both remain valid artifact identifiers but
+must not be compared as version-3 host classes.
 
 ## What is retained
 
@@ -109,14 +130,14 @@ run that composes the #51 denominator rule with the retained #44–#46 candidate
 Until that passes, this evidence must not be described as full stateful-layer,
 full-decoder, generation, tokenizer, container, or public-runtime parity.
 
-Separately, position-zero exactness must not become a settled G1 premise until
-the 4/5 observation is resolved. The next bounded experiment must run native
-AVX512 and forced AVX2 as fresh processes in one job, after one cheap host gate
-and against one verified fixture. Separate workflow dispatches are not paired
-because they re-randomize the runner. The predeclared interpretation table is
-in `docs/INKLING-REFERENCE-PROFILES.md`; the denominator-defect branch remains
-live only when both arms are nonexact and their official and candidate
-`layer_out` payloads agree bit-for-bit across dispatches.
+Separately, position-zero exactness must not become a settled G1 premise. The
+same-host pair rules out Torch dispatch for its reproduced failure, but the
+first divergence precedes routing. The next bounded experiment should retain
+bitwise official and candidate payloads at `post_attention_norm` and the
+immediately preceding attention/residual boundary across schema-version-3
+hardware classes. The router-denominator branch remains a distinct stateful
+frontier; it is not a cause of the paired position-zero failure because that
+run's official routed/shared weights already match exactly.
 
 ## Safety boundary
 

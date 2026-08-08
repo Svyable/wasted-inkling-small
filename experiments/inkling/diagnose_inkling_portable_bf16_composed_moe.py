@@ -121,6 +121,7 @@ _CPUINFO_FIELDS = {
     "model name": "model_name",
     "stepping": "stepping",
     "microcode": "microcode",
+    "flags": "flags",
 }
 
 
@@ -129,6 +130,7 @@ def _first_cpuinfo(path: Path) -> dict[str, Any]:
     values: dict[str, Any] = {
         "available": False,
         **{field: None for field in _CPUINFO_FIELDS.values()},
+        "flags_sha256": None,
     }
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -140,8 +142,17 @@ def _first_cpuinfo(path: Path) -> dict[str, Any]:
         key, separator, value = line.partition(":")
         if separator and key.strip() in _CPUINFO_FIELDS:
             values[_CPUINFO_FIELDS[key.strip()]] = value.strip()
+    flags = sorted(set((values.get("flags") or "").split()))
+    values["flags"] = flags
+    values["flags_sha256"] = (
+        hashlib.sha256(" ".join(flags).encode()).hexdigest()
+        if flags
+        else None
+    )
     values["available"] = any(
-        values[field] is not None for field in _CPUINFO_FIELDS.values()
+        values[field] is not None
+        for field in _CPUINFO_FIELDS.values()
+        if field != "flags"
     )
     return values
 
@@ -165,7 +176,7 @@ def collect_execution_profile(
         }
     )
     profile = {
-        "schema_version": 2,
+        "schema_version": 3,
         "workflow": {
             "event_name": env.get("GITHUB_EVENT_NAME"),
             "job": env.get("GITHUB_JOB"),
@@ -440,17 +451,29 @@ def classify_dispatch_pair(
     """Apply the predeclared native/forced-AVX2 interpretation table."""
     native_profile = native["execution_profile"]
     forced_profile = forced_avx2["execution_profile"]
+    profile_schema_version = native_profile["schema_version"]
+    if forced_profile["schema_version"] != profile_schema_version:
+        raise ComposedMoeError("dispatch-pair profile schema versions differ")
     host_class = native_profile["host_class_sha256"]
     if forced_profile["host_class_sha256"] != host_class:
         raise ComposedMoeError("dispatch-pair arms ran on different host classes")
+    if (
+        native_profile["reference_profile_sha256"]
+        == forced_profile["reference_profile_sha256"]
+    ):
+        raise ComposedMoeError("dispatch-pair reference profiles are identical")
     layers = sorted(native["layers"], key=int)
     if layers != sorted(forced_avx2["layers"], key=int):
         raise ComposedMoeError("dispatch-pair layer sets differ")
 
     layer_out_bitwise: dict[str, Any] = {}
+    routing_weight_bitwise: dict[str, Any] = {}
+    first_nonexact_stages: dict[str, Any] = {}
     for layer in layers:
-        native_payloads = native["layers"][layer]["layer_out_payloads"]
-        forced_payloads = forced_avx2["layers"][layer]["layer_out_payloads"]
+        native_layer = native["layers"][layer]
+        forced_layer = forced_avx2["layers"][layer]
+        native_payloads = native_layer["layer_out_payloads"]
+        forced_payloads = forced_layer["layer_out_payloads"]
         comparison: dict[str, bool] = {}
         for side in ("official", "candidate"):
             for representation in ("float32", "bfloat16"):
@@ -461,8 +484,44 @@ def classify_dispatch_pair(
         comparison["all_payloads_equal"] = all(comparison.values())
         layer_out_bitwise[layer] = comparison
 
+        routing_comparison = {
+            "native_routed_equal": (
+                native_layer["exact_routed_weight"]
+                == native_layer["official_route"]["routed_weights"][0]
+            ),
+            "native_shared_equal": (
+                native_layer["exact_shared_weight"]
+                == native_layer["official_route"]["shared_gammas"][0]
+            ),
+            "forced_avx2_routed_equal": (
+                forced_layer["exact_routed_weight"]
+                == forced_layer["official_route"]["routed_weights"][0]
+            ),
+            "forced_avx2_shared_equal": (
+                forced_layer["exact_shared_weight"]
+                == forced_layer["official_route"]["shared_gammas"][0]
+            ),
+        }
+        routing_comparison["all_weights_match_official"] = all(
+            routing_comparison.values()
+        )
+        routing_weight_bitwise[layer] = routing_comparison
+        first_nonexact_stages[layer] = {
+            "native": native_layer["decision"]["first_nonexact_stage"],
+            "forced_avx2": forced_layer["decision"]["first_nonexact_stage"],
+        }
+
     arms_equal = all(
         value["all_payloads_equal"] for value in layer_out_bitwise.values()
+    )
+    routing_weights_match_official = all(
+        value["all_weights_match_official"]
+        for value in routing_weight_bitwise.values()
+    )
+    pre_router_mismatch = any(
+        stage == "post_attention_norm"
+        for value in first_nonexact_stages.values()
+        for stage in value.values()
     )
     exact_classification = "complete_sparse_layers_are_bfloat16_exact"
     native_exact = (
@@ -495,11 +554,27 @@ def classify_dispatch_pair(
         reference_profile_bound = True
         denominator_live = False
         next_action = "scope_official_exactness_to_named_reference_profiles"
-    elif arms_equal:
-        classification = "dispatch_invariant_mismatch_keeps_denominator_defect_live"
+    elif arms_equal and not routing_weights_match_official:
+        classification = (
+            "dispatch_invariant_routing_weight_mismatch_keeps_denominator_defect_live"
+        )
         reference_profile_bound = False
         denominator_live = True
         next_action = "investigate_logsumexp_denominator_reduction"
+    elif arms_equal and pre_router_mismatch:
+        classification = (
+            "dispatch_invariant_pre_router_mismatch_excludes_denominator_cause"
+        )
+        reference_profile_bound = False
+        denominator_live = False
+        next_action = "investigate_hardware_capability_class_and_pre_router_math"
+    elif arms_equal:
+        classification = (
+            "dispatch_invariant_nonrouter_mismatch_excludes_denominator_cause"
+        )
+        reference_profile_bound = False
+        denominator_live = False
+        next_action = "localize_the_first_nonexact_nonrouter_stage"
     else:
         classification = "dispatch_variant_mismatch_remains_profile_bound"
         reference_profile_bound = True
@@ -508,7 +583,8 @@ def classify_dispatch_pair(
 
     return {
         "format": "inkling-bfloat16-dispatch-pair-classification",
-        "version": 1,
+        "version": 2,
+        "profile_schema_version": profile_schema_version,
         "host_class_sha256": host_class,
         "native_reference_profile_sha256": native_profile[
             "reference_profile_sha256"
@@ -520,6 +596,9 @@ def classify_dispatch_pair(
         "forced_avx2_exact": forced_exact,
         "arms_bitwise_equal": arms_equal,
         "layer_out_bitwise": layer_out_bitwise,
+        "routing_weights_match_official": routing_weights_match_official,
+        "routing_weight_bitwise": routing_weight_bitwise,
+        "first_nonexact_stages": first_nonexact_stages,
         "classification": classification,
         "reference_profile_bound": reference_profile_bound,
         "denominator_defect_branch_live": denominator_live,

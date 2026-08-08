@@ -40,6 +40,7 @@ jobs:
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/dispatch-pair"
           python3 - <<'PY'
+          import hashlib
           import json
           import os
           from pathlib import Path
@@ -51,11 +52,12 @@ jobs:
               key, separator, value = line.partition(":")
               if separator:
                   fields[key.strip()] = value.strip()
-          flags = set(fields.get("flags", "").split())
+          flags = sorted(set(fields.get("flags", "").split()))
+          flags_sha256 = hashlib.sha256(" ".join(flags).encode()).hexdigest()
           eligible = "avx512f" in flags
           gate = {
               "format": "inkling-bfloat16-dispatch-pair-gate",
-              "version": 1,
+              "version": 2,
               "classification": (
                   "hardware_avx512_supported"
                   if eligible
@@ -74,6 +76,8 @@ jobs:
                   "model_name": fields.get("model name"),
                   "stepping": fields.get("stepping"),
                   "microcode": fields.get("microcode"),
+                  "flags": flags,
+                  "flags_sha256": flags_sha256,
                   "avx512f": eligible,
               },
           }
@@ -325,11 +329,19 @@ jobs:
           root = Path(os.environ["RUNNER_TEMP"]) / "dispatch-pair"
           native = json.loads((root / "native.json").read_text(encoding="utf-8"))
           forced = json.loads((root / "forced-avx2.json").read_text(encoding="utf-8"))
+          for result in (native, forced):
+              profile = result["execution_profile"]
+              assert profile["schema_version"] == 3
+              assert profile["cpu"]["flags"]
+              assert len(profile["cpu"]["flags_sha256"]) == 64
           assert native["execution_profile"]["torch"]["cpu_capability"] == "AVX512"
           assert forced["execution_profile"]["torch"]["cpu_capability"] == "AVX2"
           assert forced["execution_profile"]["thread_environment"][
               "ATEN_CPU_CAPABILITY"
           ] == "avx2"
+          assert native["execution_profile"]["reference_profile_sha256"] != (
+              forced["execution_profile"]["reference_profile_sha256"]
+          )
           pair = classify_dispatch_pair(native, forced)
           (root / "pair.json").write_text(
               json.dumps(pair, indent=2, sort_keys=True) + "\n",
@@ -342,6 +354,7 @@ jobs:
               f"native_exact={pair['native_exact']} "
               f"forced_avx2_exact={pair['forced_avx2_exact']} "
               f"arms_bitwise_equal={pair['arms_bitwise_equal']} "
+              f"routing_weights_match_official={pair['routing_weights_match_official']} "
               f"denominator_live={pair['denominator_defect_branch_live']}"
           )
           summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
@@ -352,6 +365,13 @@ jobs:
               out.write(f"- Native exact: `{pair['native_exact']}`\n")
               out.write(f"- Forced AVX2 exact: `{pair['forced_avx2_exact']}`\n")
               out.write(f"- Arms bitwise equal: `{pair['arms_bitwise_equal']}`\n")
+              out.write(
+                  "- Routing weights match official: "
+                  f"`{pair['routing_weights_match_official']}`\n"
+              )
+              out.write(
+                  f"- First nonexact stages: `{pair['first_nonexact_stages']}`\n"
+              )
               out.write(f"- Next action: `{pair['next_action']}`\n")
           PY
 

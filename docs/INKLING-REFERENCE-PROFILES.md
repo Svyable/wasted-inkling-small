@@ -60,6 +60,7 @@ which an exact official route/output claim was observed. At minimum it binds:
 - Torch version, including the wheel/build identity when relevant;
 - Transformers version when model-side arithmetic is executed;
 - operating system, architecture, and relevant runtime/toolchain identity;
+- canonical visible CPU feature flags as well as the CPU model identity;
 - CPU dispatch policy, including an `ATEN_CPU_CAPABILITY` override when used;
 - thread/BLAS controls that can affect the native reference backend;
 - route-selection artifact identity;
@@ -102,7 +103,8 @@ by separate workflow dispatches. An eligible job must:
 3. acquire and CRC-verify one source-bound fixture;
 4. execute the native arm and then a fresh process with
    `ATEN_CPU_CAPABILITY=avx2` on the same runner;
-5. require one `host_class_sha256` while retaining distinct
+5. require one schema-version-3 `host_class_sha256`, including canonical CPU
+   feature flags, while retaining distinct
    `reference_profile_sha256` values; and
 6. compare the official and candidate layer-2/layer-5 `layer_out` float32 and
    BF16 payloads bit-for-bit across arms.
@@ -110,16 +112,25 @@ by separate workflow dispatches. An eligible job must:
 Ineligible hosts are neutral observations. They must skip the fixture download
 and must not count as exactness passes or failures.
 
-The outcome meanings are fixed before measurement:
+The outcome meanings are fixed before the next measurement. The first #55
+artifact showed that final payload agreement alone is insufficient to name a
+denominator cause, so the corrected table also requires causal-stage evidence:
 
-| Native | Forced AVX2 | Cross-arm payloads | Classification | Consequence |
-| --- | --- | --- | --- | --- |
-| exact | exact | identical | `both_dispatch_profiles_exact_and_bitwise_equal` | No failure reproduced; neither dispatch is cleared globally. |
-| exact | exact | different | `both_dispatch_profiles_exact_but_layer_out_is_dispatch_variant` | Official outputs are reference-profile-bound. |
-| nonexact | exact | any | `forced_avx2_closes_native_mismatch` | The official reference is dispatch-sensitive; scope exactness to named profiles rather than blaming WASTE C. |
-| exact | nonexact | any | `forced_avx2_introduces_mismatch` | The official reference is dispatch-sensitive; scope exactness to named profiles. |
-| nonexact | nonexact | identical | `dispatch_invariant_mismatch_keeps_denominator_defect_live` | Only this result keeps the `logsumexp` denominator-defect branch live. |
-| nonexact | nonexact | different | `dispatch_variant_mismatch_remains_profile_bound` | Dispatch/profile variation remains unresolved; it does not isolate the denominator. |
+| Native | Forced AVX2 | Cross-arm payloads | Routing weights vs official | Earliest mismatch | Classification | Consequence |
+| --- | --- | --- | --- | --- | --- | --- |
+| exact | exact | identical | any | none | `both_dispatch_profiles_exact_and_bitwise_equal` | No failure reproduced; neither dispatch is cleared globally. |
+| exact | exact | different | any | none | `both_dispatch_profiles_exact_but_layer_out_is_dispatch_variant` | Official outputs are reference-profile-bound. |
+| nonexact | exact | any | any | any | `forced_avx2_closes_native_mismatch` | The official reference is dispatch-sensitive; scope exactness to named profiles rather than blaming WASTE C. |
+| exact | nonexact | any | any | any | `forced_avx2_introduces_mismatch` | The official reference is dispatch-sensitive; scope exactness to named profiles. |
+| nonexact | nonexact | identical | mismatch | routing | `dispatch_invariant_routing_weight_mismatch_keeps_denominator_defect_live` | Investigate the `logsumexp` denominator reduction. |
+| nonexact | nonexact | identical | exact | `post_attention_norm` | `dispatch_invariant_pre_router_mismatch_excludes_denominator_cause` | Localize the hardware-class/pre-router arithmetic seam. |
+| nonexact | nonexact | identical | exact | later nonrouter stage | `dispatch_invariant_nonrouter_mismatch_excludes_denominator_cause` | Localize that first stage; do not blame the denominator. |
+| nonexact | nonexact | different | any | any | `dispatch_variant_mismatch_remains_profile_bound` | Dispatch/profile variation remains unresolved; it does not isolate the denominator. |
+
+The #55 attempt-8 artifact follows the pre-router row: both arms are nonexact,
+all official and candidate `layer_out` payloads are bitwise invariant across
+dispatches, the routed/shared weights match the official values, and the first
+nonexact stage in both layers is `post_attention_norm`.
 
 This table classifies evidence; it does not weaken any parity assertion or
 enable public execution.

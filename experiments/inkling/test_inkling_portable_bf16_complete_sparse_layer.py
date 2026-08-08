@@ -25,6 +25,7 @@ model : 143
 model name : Intel(R) Xeon(R) Platinum 8481C
 stepping : 8
 microcode : 0x2b000643
+flags : fpu sse4_2 avx avx2 avx512f avx512bw
 
 processor : 1
 model name : ignored second processor
@@ -83,7 +84,10 @@ model name : ignored second processor
             "Intel(R) Xeon(R) Platinum 8481C",
         )
         self.assertEqual(profile["cpu"]["model"], "143")
+        self.assertIn("avx512f", profile["cpu"]["flags"])
+        self.assertEqual(len(profile["cpu"]["flags_sha256"]), 64)
         self.assertEqual(profile["cpu"]["logical_cpu_count"], 4)
+        self.assertEqual(profile["schema_version"], 3)
         self.assertEqual(profile["torch"]["cpu_capability"], "AVX512")
         self.assertEqual(profile["thread_environment"]["OMP_NUM_THREADS"], "1")
         self.assertEqual(len(profile["host_class_sha256"]), 64)
@@ -113,12 +117,27 @@ model name : ignored second processor
                 torch_module=avx2_torch,
                 logical_cpu_count=4,
             )
+            limited_path = Path(directory) / "cpuinfo-without-avx512"
+            limited_path.write_text(
+                cpuinfo.replace(" avx512f avx512bw", ""),
+                encoding="utf-8",
+            )
+            limited_hardware_profile = implementation.collect_execution_profile(
+                environ={**environment, "ATEN_CPU_CAPABILITY": "avx2"},
+                cpuinfo_path=limited_path,
+                torch_module=avx2_torch,
+                logical_cpu_count=4,
+            )
         self.assertEqual(
             profile["host_class_sha256"], avx2_profile["host_class_sha256"]
         )
         self.assertNotEqual(
             profile["reference_profile_sha256"],
             avx2_profile["reference_profile_sha256"],
+        )
+        self.assertNotEqual(
+            profile["host_class_sha256"],
+            limited_hardware_profile["host_class_sha256"],
         )
 
     def test_tensor_payload_preserves_float32_and_bfloat16_bits(self):
@@ -134,7 +153,14 @@ model name : ignored second processor
         self.assertEqual(len(payload["bfloat16_sha256"]), 64)
 
     @staticmethod
-    def _pair_arm(*, exact: bool, official: list[int], candidate: list[int]):
+    def _pair_arm(
+        *,
+        exact: bool,
+        official: list[int],
+        candidate: list[int],
+        first_nonexact_stage: str = "post_attention_norm",
+        routing_weights_match: bool = True,
+    ):
         classification = (
             "complete_sparse_layers_are_bfloat16_exact"
             if exact
@@ -152,14 +178,34 @@ model name : ignored second processor
         }
         return {
             "execution_profile": {
+                "schema_version": 3,
                 "host_class_sha256": "h" * 64,
                 "reference_profile_sha256": "r" * 64,
             },
             "evidence_outcome": {"classification": classification},
-            "layers": {"2": {"layer_out_payloads": payloads}},
+            "layers": {
+                "2": {
+                    "decision": {
+                        "first_nonexact_stage": (
+                            None if exact else first_nonexact_stage
+                        )
+                    },
+                    "official_route": {
+                        "routed_weights": [[1.0]],
+                        "shared_gammas": [[2.0]],
+                    },
+                    "exact_routed_weight": (
+                        [1.0] if routing_weights_match else [9.0]
+                    ),
+                    "exact_shared_weight": (
+                        [2.0] if routing_weights_match else [8.0]
+                    ),
+                    "layer_out_payloads": payloads,
+                }
+            },
         }
 
-    def test_dispatch_pair_truth_table_is_predeclared(self):
+    def test_dispatch_pair_truth_table_requires_causal_stage(self):
         native = self._pair_arm(exact=False, official=[1], candidate=[2])
         forced = self._pair_arm(exact=True, official=[3], candidate=[3])
         forced["execution_profile"]["reference_profile_sha256"] = "a" * 64
@@ -179,8 +225,27 @@ model name : ignored second processor
         result = implementation.classify_dispatch_pair(native, forced_nonexact)
         self.assertEqual(
             result["classification"],
-            "dispatch_invariant_mismatch_keeps_denominator_defect_live",
+            "dispatch_invariant_pre_router_mismatch_excludes_denominator_cause",
         )
+        self.assertTrue(result["routing_weights_match_official"])
+        self.assertFalse(result["denominator_defect_branch_live"])
+
+        routing_mismatch = self._pair_arm(
+            exact=False,
+            official=[1],
+            candidate=[2],
+            first_nonexact_stage="routed_gate0",
+            routing_weights_match=False,
+        )
+        routing_mismatch["execution_profile"]["reference_profile_sha256"] = (
+            "a" * 64
+        )
+        result = implementation.classify_dispatch_pair(native, routing_mismatch)
+        self.assertEqual(
+            result["classification"],
+            "dispatch_invariant_routing_weight_mismatch_keeps_denominator_defect_live",
+        )
+        self.assertFalse(result["routing_weights_match_official"])
         self.assertTrue(result["denominator_defect_branch_live"])
 
         variant = deepcopy(forced_nonexact)
@@ -193,6 +258,14 @@ model name : ignored second processor
             "dispatch_variant_mismatch_remains_profile_bound",
         )
         self.assertFalse(result["denominator_defect_branch_live"])
+
+        invalid_pair = deepcopy(forced_nonexact)
+        invalid_pair["execution_profile"]["reference_profile_sha256"] = "r" * 64
+        with self.assertRaisesRegex(
+            implementation.ComposedMoeError,
+            "reference profiles are identical",
+        ):
+            implementation.classify_dispatch_pair(native, invalid_pair)
 
     def test_complete_outcome_names_nonexact_layers(self):
         analyses = {

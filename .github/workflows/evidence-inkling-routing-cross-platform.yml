@@ -1,0 +1,313 @@
+name: Evidence Inkling routing across platforms
+
+on:
+  pull_request:
+    paths:
+      - "experiments/inkling/export_inkling_bf16_router_choice_archive.py"
+      - "experiments/inkling/audit_inkling_bf16_router_choice_archive.py"
+      - "experiments/inkling/test_inkling_bf16_router_topk_cross_platform.py"
+      - "experiments/inkling/diagnose_inkling_bf16_router_tie_resolution.py"
+      - "mvp/analyze_inkling_router_mismatch.py"
+      - "mvp/discover_inkling_router_experts.py"
+      - "mvp/inkling_fixture_reference.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "mvp/inkling_release_config.py"
+      - "docs/OFFICIAL-ROUTER-SELECTION.json"
+      - ".github/workflows/evidence-inkling-routing-cross-platform.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  OPENBLAS_NUM_THREADS: "1"
+
+jobs:
+  source-archive:
+    name: Export source-bound BF16 choice bits
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      ATEN_CPU_CAPABILITY: avx2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned source reference stack
+        run: |
+          python -m pip install --quiet 'torch==2.13.0' 'transformers==5.14.1'
+          python - <<'PY'
+          import torch
+          assert torch.__version__.split('+', 1)[0] == "2.13.0"
+          dispatch = torch.backends.cpu.get_cpu_capability()
+          assert dispatch == "AVX2", dispatch
+          print(
+              "TOPK_SOURCE_BACKEND "
+              f"torch={torch.__version__} dispatch={dispatch} "
+              "forced_by=ATEN_CPU_CAPABILITY"
+          )
+          PY
+      - name: Run focused bit-archive contracts
+        run: |
+          python -m compileall -q experiments/inkling
+          PYTHONPATH=mvp:experiments/inkling python -m unittest discover \
+            -s experiments/inkling \
+            -p 'test_inkling_bf16_router_topk_cross_platform.py' -v
+      - name: Extract and bind the one-expert source seed
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          fixture="${RUNNER_TEMP}/topk-source-seed"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            if python mvp/inkling_remote_fixture.py \
+              --revision "$revision" \
+              --layers 2,5 \
+              --experts '2:0;5:0' \
+              --max-total-gib 4 \
+              --out "$fixture" > "${RUNNER_TEMP}/topk-source-manifest.json"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((10 << (attempt - 1)))
+              echo "source seed attempt ${attempt} failed; retrying after ${delay}s" >&2
+              sleep "$delay"
+            fi
+          done
+          if [ "$extracted" != true ]; then
+            echo "top-k source seed acquisition exhausted four attempts" >&2
+            exit 2
+          fi
+          python inkling/tools/inkling_fixture.py --fixture "$fixture" --verify
+
+          PYTHONPATH=mvp python - <<PY
+          import json
+          import time
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import deterministic_hidden_states, input_sha256
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+
+          root = Path("${RUNNER_TEMP}")
+          config = None
+          for attempt in range(4):
+              try:
+                  source = HttpRangeSource(
+                      "https://huggingface.co/thinkingmachines/Inkling-Small",
+                      "$revision",
+                  )
+                  config = source.file("config.json")
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3:
+                      raise
+                  time.sleep(10 * (2**attempt))
+          assert config is not None
+          (root / "config.json").write_bytes(config)
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text())
+          assert input_sha256(inputs, torch.bfloat16) == selection["inputs_sha256"]
+          (root / "inputs.json").write_text(json.dumps(inputs.tolist()) + "\n", encoding="utf-8")
+          PY
+      - name: Export exact BF16 choice-bit archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/inkling-router-choice-bits.json"
+          PYTHONPATH=mvp:experiments/inkling python \
+            experiments/inkling/export_inkling_bf16_router_choice_archive.py \
+            --fixture "${RUNNER_TEMP}/topk-source-seed" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --out "$archive" > /dev/null
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"])
+          archive = json.loads((root / "inkling-router-choice-bits.json").read_text())
+          assert archive["tokens"] == 8
+          assert sorted(archive["layers"]) == ["2", "5"]
+          for layer in ("2", "5"):
+              data = archive["layers"][layer]
+              assert data["top_k"] == 6
+              assert data["n_routed_experts"] == 256
+              assert len(data["choice_bits_int16"]) == 8
+              assert all(len(row) == 256 for row in data["choice_bits_int16"])
+          print(
+              "TOPK_CHOICE_ARCHIVE "
+              f"sha256={archive['archive_sha256']} "
+              f"bytes={(root / 'inkling-router-choice-bits.json').stat().st_size} "
+              f"layers={sorted(archive['layers'])} tokens={archive['tokens']}"
+          )
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: inkling-router-choice-bits
+          path: ${{ runner.temp }}/inkling-router-choice-bits.json
+          if-no-files-found: error
+          retention-days: 3
+
+  platform-topk:
+    name: Top-k on ${{ matrix.label }}
+    needs: source-archive
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            label: linux-libstdc++
+            slug: linux
+          - os: windows-2025
+            label: windows-msvc-stl
+            slug: windows
+          - os: macos-14
+            label: macos-libc++
+            slug: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: inkling-router-choice-bits
+          path: ${{ runner.temp }}/choice-archive
+      - name: Install pinned Torch only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'torch==2.13.0'
+          python - <<'PY'
+          import platform
+          import torch
+          assert torch.__version__.split('+', 1)[0] == "2.13.0"
+          print(
+              "TOPK_PLATFORM_RUNTIME "
+              f"torch={torch.__version__} system={platform.system()} "
+              f"machine={platform.machine()} compiler={platform.python_compiler()}"
+          )
+          PY
+      - name: Audit identical BF16 choice bits
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="${RUNNER_TEMP}/router-topk-${{ matrix.slug }}.json"
+          python experiments/inkling/audit_inkling_bf16_router_choice_archive.py \
+            --archive "${RUNNER_TEMP}/choice-archive/inkling-router-choice-bits.json" \
+            --platform-label '${{ matrix.label }}' \
+            --repeat-topk 64 \
+            --out "$result" > /dev/null
+          RESULT_PATH="$result" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          result = json.loads(Path(os.environ["RESULT_PATH"]).read_text())
+          print(
+              "TOPK_PLATFORM_DECISION "
+              f"label={result['platform_label']} classification={result['classification']} "
+              f"torch={result['platform']['torch_version']} "
+              f"system={result['platform']['system']} machine={result['platform']['machine']} "
+              f"archive={result['archive_sha256']}"
+          )
+          for layer, value in sorted(result["layers"].items(), key=lambda item: int(item[0])):
+              print(
+                  "TOPK_PLATFORM_LAYER "
+                  f"label={result['platform_label']} layer={layer} supported={value['supported']} "
+                  f"exact_sets={value['exact_set_rows']} exact_order={value['exact_order_rows']} "
+                  f"ambiguous={value['ambiguous_rows']} changed_ambiguous={value['ambiguous_changed_rows']} "
+                  f"changed_unambiguous={value['unambiguous_changed_rows']} error={value['error']}"
+              )
+              for row in value["rows"]:
+                  if not row["exact_set"]:
+                      print(
+                          "TOPK_PLATFORM_ROW_DIFF "
+                          f"label={result['platform_label']} layer={layer} position={row['position']} "
+                          f"ambiguous={row['ambiguous_cutoff']} selected={row['selected_ids']} "
+                          f"linux={row['expected_ids']} ties={row['tie_ids']} slots={row['slots_from_tie']}"
+                      )
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: router-topk-${{ matrix.slug }}
+          path: ${{ runner.temp }}/router-topk-${{ matrix.slug }}.json
+          if-no-files-found: error
+          retention-days: 3
+
+  classify:
+    name: Classify cross-platform official top-k behavior
+    needs: platform-topk
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: router-topk-*
+          path: ${{ runner.temp }}/results
+          merge-multiple: true
+      - name: Require unambiguous parity and classify tied rows
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "results"
+          paths = sorted(root.glob("router-topk-*.json"))
+          assert len(paths) == 3, paths
+          results = [json.loads(path.read_text()) for path in paths]
+          hashes = {value["archive_sha256"] for value in results}
+          assert len(hashes) == 1, hashes
+          by_label = {value["platform_label"]: value for value in results}
+          linux = by_label["linux-libstdc++"]
+          assert linux["classification"] == "official_route_sets_match_linux_archive"
+          for result in results:
+              for layer, value in result["layers"].items():
+                  assert value["unambiguous_changed_rows"] == 0, (result["platform_label"], layer)
+          supported = [
+              value for value in results
+              if any(layer["supported"] for layer in value["layers"].values())
+          ]
+          changed = [
+              value["platform_label"] for value in supported
+              if any(layer["ambiguous_changed_rows"] for layer in value["layers"].values())
+          ]
+          unsupported = [
+              value["platform_label"] for value in results
+              if all(not layer["supported"] for layer in value["layers"].values())
+          ]
+          if changed:
+              classification = "official_tied_routes_are_cross_platform_variant"
+          elif unsupported:
+              classification = "cross_platform_topk_support_incomplete"
+          else:
+              classification = "observed_cross_platform_route_sets_match"
+          print(
+              "TOPK_CROSS_PLATFORM_DECISION "
+              f"classification={classification} changed={changed} unsupported={unsupported} "
+              f"archive={next(iter(hashes))}"
+          )
+          for result in results:
+              print(
+                  "TOPK_CROSS_PLATFORM_PLATFORM "
+                  f"label={result['platform_label']} classification={result['classification']} "
+                  f"system={result['platform']['system']} machine={result['platform']['machine']} "
+                  f"compiler={result['platform']['python_compiler']}"
+              )
+          PY

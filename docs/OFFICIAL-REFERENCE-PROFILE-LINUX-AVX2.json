@@ -1,0 +1,62 @@
+{
+  "choice_archive": {
+    "format": "inkling-bfloat16-router-choice-bits",
+    "sha256": "686877d38f441df16ba6f89ef0dcbf5a1c84a2f65c3389aac4b3a86c7cafa766"
+  },
+  "evidence": {
+    "complete_layer_arithmetic_pr": 39,
+    "cross_platform_topk_pr": 42,
+    "cross_platform_workflow_run": 31226304158,
+    "reference_contract_pr": 43,
+    "retained_complete_layer_pr": 44,
+    "router_tie_resolution_pr": 40,
+    "tie_output_sensitivity_pr": 41
+  },
+  "format": "inkling-official-reference-profile",
+  "input": {
+    "dtype": "bfloat16",
+    "sha256": "53102b39703fcec1ea4593c4a149e168169d0062769f7bac7944c1afe9831b7f",
+    "tokens": 8
+  },
+  "model": {
+    "config_sha256": "dcb5b1d587bce2f1e6b29833d739a724d05b4bfaa2dc1164fbe679330478ba53",
+    "id": "thinkingmachines/Inkling-Small",
+    "index_sha256": "68b1ab9dade825da1d9d162303f7356167ba2b90fd2c5fdf519e898d45adb0d9",
+    "revision": "21152b5312c653be115f33a8342759064144e281"
+  },
+  "profile_id": "linux-x86_64-torch-2.13.0-transformers-5.14.1-avx2",
+  "public_runtime": {
+    "enabled": false,
+    "parity_gate_relaxed": false
+  },
+  "reference": {
+    "architecture": "x86_64",
+    "cpu_dispatch": "AVX2",
+    "cpu_dispatch_override": "ATEN_CPU_CAPABILITY=avx2",
+    "openblas_threads": 1,
+    "omp_threads": 1,
+    "os": "ubuntu",
+    "os_release": "24.04.4 LTS",
+    "python": "3.12.13",
+    "route_selection_file": "docs/OFFICIAL-ROUTER-SELECTION.json",
+    "runner_image": "ubuntu-24.04",
+    "runner_image_version": "20260720.247.2",
+    "torch": "2.13.0",
+    "torch_observed_build": "2.13.0+cu130",
+    "transformers": "5.14.1"
+  },
+  "routing_contract": {
+    "ambiguous_bfloat16_cutoff_ids_are_profile_specific": true,
+    "cutoff_equivalent_routes_are_output_equivalent": false,
+    "portable_waste_tie_policy": "lower_expert_id",
+    "unambiguous_route_ids_are_strict": true
+  },
+  "scope": {
+    "claim": "source-bound official router-choice reference and position-zero sparse-layer arithmetic evidence",
+    "full_model_parity": false,
+    "multi_position_stateful_parity": false,
+    "public_loader_parity": false,
+    "tokenizer_chat_parity": false
+  },
+  "version": 1
+}

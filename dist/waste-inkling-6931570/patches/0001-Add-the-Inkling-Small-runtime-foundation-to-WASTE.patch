@@ -1,4 +1,4 @@
-From 6b213538031d9e9e89c51b448cced0ae068b0035 Mon Sep 17 00:00:00 2001
+From 866d6d481f51f122884f671bec9b01ff9cfb0588 Mon Sep 17 00:00:00 2001
 From: WASTE Inkling integration <inkling@waste.invalid>
 Date: Sun, 2 Aug 2026 00:00:00 +0000
 Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
@@ -16,8 +16,8 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  src/inkling_attention.h               |  63 ++
  src/inkling_bind.c                    | 135 ++++
  src/inkling_bind.h                    |  56 ++
- src/inkling_config.c                  | 185 +++++
- src/inkling_config.h                  | 125 ++++
+ src/inkling_config.c                  | 190 ++++++
+ src/inkling_config.h                  | 134 ++++
  src/inkling_layer.c                   | 341 ++++++++++
  src/inkling_layer.h                   | 174 +++++
  src/inkling_model.c                   | 282 ++++++++
@@ -57,6 +57,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tests/test_inkling_qtrunk.py          | 114 ++++
  tests/test_inkling_release.py         |  85 +++
  tests/test_inkling_runtime_stage.py   | 153 +++++
+ tests/test_inkling_serve.py           | 337 ++++++++++
  tests/test_inkling_stage.py           | 158 +++++
  tests/test_inkling_throughput.py      | 399 +++++++++++
  tests/test_inkling_trace_tools.py     | 107 +++
@@ -67,7 +68,6 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tests/test_inspect_inkling.py         | 332 +++++++++
  tools/convert.py                      |  13 +-
  tools/convert_inkling.py              | 306 +++++++++
- tools/diskbench.c                     |  77 ++-
  tools/inkling_cache_bench.py          | 251 +++++++
  tools/inkling_cache_sim.c             | 179 +++++
  tools/inkling_cache_trace.py          | 271 ++++++++
@@ -80,6 +80,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/inkling_reference.py            | 163 +++++
  tools/inkling_release.py              | 287 ++++++++
  tools/inkling_runtime_stage.py        | 748 +++++++++++++++++++++
+ tools/inkling_serve.py                | 580 ++++++++++++++++
  tools/inkling_source.py               |  36 +
  tools/inkling_stage.py                | 381 +++++++++++
  tools/inkling_throughput.py           | 621 +++++++++++++++++
@@ -88,7 +89,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/inkling_vq.py                   | 927 ++++++++++++++++++++++++++
  tools/inkling_weights.py              | 369 ++++++++++
  tools/inspect_inkling.py              | 799 ++++++++++++++++++++++
- 84 files changed, 20247 insertions(+), 16 deletions(-)
+ 85 files changed, 21110 insertions(+), 7 deletions(-)
  create mode 100644 PATCH18-HANDOFF.md
  create mode 100644 TEST-RESULTS-P18.txt
  create mode 100644 docs/INKLING.md
@@ -138,6 +139,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100755 tests/test_inkling_qtrunk.py
  create mode 100755 tests/test_inkling_release.py
  create mode 100644 tests/test_inkling_runtime_stage.py
+ create mode 100644 tests/test_inkling_serve.py
  create mode 100644 tests/test_inkling_stage.py
  create mode 100644 tests/test_inkling_throughput.py
  create mode 100644 tests/test_inkling_trace_tools.py
@@ -159,6 +161,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100644 tools/inkling_reference.py
  create mode 100755 tools/inkling_release.py
  create mode 100755 tools/inkling_runtime_stage.py
+ create mode 100644 tools/inkling_serve.py
  create mode 100644 tools/inkling_source.py
  create mode 100644 tools/inkling_stage.py
  create mode 100644 tools/inkling_throughput.py
@@ -169,10 +172,10 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100755 tools/inspect_inkling.py
 
 diff --git a/Makefile b/Makefile
-index a70fe0c..2ba4ecc 100644
+index 34a282c..0a937b4 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -89,9 +89,12 @@ CFLAGS  += -DVQ_SUPER=$(VQ_SUPER)
+@@ -100,9 +100,12 @@ CFLAGS  += -DVQ_SUPER=$(VQ_SUPER)
  # and then corrupts memory at run time.
  CFLAGS  += -MMD -MP
  
@@ -188,15 +191,15 @@ index a70fe0c..2ba4ecc 100644
  # Match what backend.c tests for. Linux/aarch64 reports "aarch64", which
  # does not contain "arm" — the old findstring left kda_neon.c out of the
  # build while backend.c still emitted the call to it, so the link failed
-@@ -216,12 +219,20 @@ waste$(EXE): cli/main.o libwaste.a
+@@ -227,12 +230,20 @@ waste$(EXE): cli/main.o libwaste.a
  # One list, used by both `test` and `clean`. A stale test binary is one of
  # the two failures tests/run.sh was written to catch, so a binary that
  # `test` builds and `clean` forgets defeats the check meant to notice it.
 -TESTNAMES := test_kda test_container test_forward test_tokenizer test_k3parts \
--             test_state test_vision test_image test_memory sweep
+-             test_state test_vision test_image test_memory test_cpus sweep
 +TESTNAMES := test_inkling test_inkling_io test_kda test_container test_forward \
 +             test_tokenizer test_k3parts test_state test_vision test_image \
-+             test_memory sweep
++             test_memory test_cpus sweep
  TESTBINS  := $(addsuffix $(EXE),$(TESTNAMES))
  
  test: $(TESTBINS)
@@ -1548,10 +1551,10 @@ index 0000000..6758bd5
 +#endif
 diff --git a/src/inkling_config.c b/src/inkling_config.c
 new file mode 100644
-index 0000000..4e0f999
+index 0000000..2610773
 --- /dev/null
 +++ b/src/inkling_config.c
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,190 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -1737,12 +1740,17 @@ index 0000000..4e0f999
 +#undef ADD_FIELD
 +    return 0;
 +}
++
++int waste_inkling_config_unpadded_vocab(const waste_inkling_config *cfg)
++{
++    return cfg ? cfg->unpadded_vocab : 0;
++}
 diff --git a/src/inkling_config.h b/src/inkling_config.h
 new file mode 100644
-index 0000000..b7ec7f7
+index 0000000..7af4eca
 --- /dev/null
 +++ b/src/inkling_config.h
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,134 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -1863,6 +1871,15 @@ index 0000000..b7ec7f7
 +int waste_inkling_plan_decode_memory(const waste_inkling_config *cfg,
 +                                     uint32_t ctx_tokens,
 +                                     waste_inkling_memory *out);
++
++/* How many logits a caller must provide room for, and how many the model
++ * writes. Exposed as a function rather than left to the caller reading the
++ * struct, because every out-of-process consumer that wants one integer would
++ * otherwise redeclare waste_inkling_config in its own binding — and a partial
++ * redeclaration of a C struct is exactly what silently overran a buffer in
++ * tools/inkling_layer_parity.py while every test still passed. Returns 0 for
++ * a NULL config. */
++int waste_inkling_config_unpadded_vocab(const waste_inkling_config *cfg);
 +
 +#ifdef __cplusplus
 +}
@@ -5067,7 +5084,7 @@ index 0000000..715830e
 +#endif
 +#endif
 diff --git a/src/model.c b/src/model.c
-index 8d4992a..4cad9cc 100644
+index 51ef35b..05b7e53 100644
 --- a/src/model.c
 +++ b/src/model.c
 @@ -22,6 +22,7 @@
@@ -5078,7 +5095,7 @@ index 8d4992a..4cad9cc 100644
  #include "crc32.h"
  #include "ecache.h"
  #include "json.h"
-@@ -972,6 +973,23 @@ int waste_model_load(waste_model *m, const char *dir, int kv_cap,
+@@ -1013,6 +1014,23 @@ int waste_model_load(waste_model *m, const char *dir, int kv_cap,
          }
      }
  
@@ -5103,7 +5120,7 @@ index 8d4992a..4cad9cc 100644
          int cfg = js_get(&d, 0, "config");
          /* The converter flattens K3's nested text_config into `config` and
 diff --git a/src/waste.c b/src/waste.c
-index b1d9bbd..dfff891 100644
+index b59cbf6..c7e7845 100644
 --- a/src/waste.c
 +++ b/src/waste.c
 @@ -22,6 +22,8 @@
@@ -5142,7 +5159,7 @@ index b1d9bbd..dfff891 100644
      memset(out, 0, sizeof *out);
  
      /* trunk: sum the tensor payloads as they are stored, minus the ones the
-@@ -463,7 +485,8 @@ waste_status waste_open(const char *model_path, const waste_cfg *cfg_in,
+@@ -496,7 +518,8 @@ waste_status waste_open(const char *model_path, const waste_cfg *cfg_in,
               * on K3 that is tens of gigabytes lost to one bad manifest. */
              waste_model_free(&c->m);
              free(c);
@@ -5244,7 +5261,7 @@ index 0000000..062dd86
 +  "source": "official Hugging Face release, verified 2026-08-01"
 +}
 diff --git a/tests/run.sh b/tests/run.sh
-index a644b0a..da3aab6 100755
+index cf35765..1d9b77d 100755
 --- a/tests/run.sh
 +++ b/tests/run.sh
 @@ -53,6 +53,20 @@ else
@@ -5268,7 +5285,7 @@ index a644b0a..da3aab6 100755
  # ---------------------------------------------------------------- unit ----
  head_ "kernels vs the reference implementations"
  
-@@ -770,6 +784,73 @@ PYFV
+@@ -790,6 +804,73 @@ PYFV
          no "format_version not enforced (rc=$rc rc2=$rc2)"
      fi
  
@@ -10455,6 +10472,349 @@ index 0000000..86aaa98
 +
 +if __name__ == "__main__":
 +    unittest.main()
+diff --git a/tests/test_inkling_serve.py b/tests/test_inkling_serve.py
+new file mode 100644
+index 0000000..cf715f1
+--- /dev/null
++++ b/tests/test_inkling_serve.py
+@@ -0,0 +1,337 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++"""Tests for the chat endpoint.
++
++The ctypes binding to the private runtime is already exercised by
++`test_inkling_private_c.py`, so these drive the parts this file actually
++adds: chat-template rendering, sampling, request validation, the wire
++format, and — most importantly — the provenance gating that stops synthetic
++output being served as if it were the model's.
++
++No torch, no libwaste, no socket to the outside: the runtime is a stub and
++the server is bound to loopback on an ephemeral port.
++"""
++
++import ctypes as C
++import json
++import sys
++import threading
++import unittest
++import urllib.error
++import urllib.request
++from http.server import ThreadingHTTPServer
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(REPO / "tools"))
++
++from inkling_serve import (
++    ATTESTATION,
++    DEFAULT_TEMPLATE,
++    InklingError,
++    Session,
++    Tokenizer,
++    load_template,
++    main,
++    make_handler,
++    render,
++    sample,
++    stage_provenance,
++)
++
++
++class StubRuntime:
++    """Deterministic logits: token id `n` is favoured at position `n`, so a
++    greedy decode produces a predictable ramp and the tests can assert on
++    content rather than on 'it did not crash'."""
++
++    def __init__(self, vocab=256, context=4096):
++        self.vocab = vocab
++        self.context = context
++        self.steps = []
++        self.resets = 0
++
++    def reset(self):
++        self.resets += 1
++        self.steps.clear()
++
++    def step(self, token, position):
++        """Returns the same type the real Runtime does — a ctypes float
++        array. An earlier stub returned a plain list, which is why a
++        memoryview bug in sample() reached a live server."""
++        self.steps.append((token, position))
++        buf = (C.c_float * self.vocab)()
++        buf[(position + 1) % self.vocab] = 10.0
++        return buf
++
++    def close(self):
++        pass
++
++
++def session(vocab=256):
++    return Session(StubRuntime(vocab), Tokenizer(vocab), DEFAULT_TEMPLATE)
++
++
++class TemplateTest(unittest.TestCase):
++    def test_renders_roles_in_order_and_ends_with_the_generation_prompt(self):
++        out = render([{"role": "system", "content": "S"},
++                      {"role": "user", "content": "U"}], DEFAULT_TEMPLATE)
++        self.assertLess(out.index("S"), out.index("U"))
++        self.assertTrue(out.endswith(DEFAULT_TEMPLATE["generation_prompt"]))
++
++    def test_rejects_an_unknown_role(self):
++        with self.assertRaises(InklingError):
++            render([{"role": "tool", "content": "x"}], DEFAULT_TEMPLATE)
++
++    def test_rejects_non_string_content(self):
++        for bad in (None, 5, ["a"], {"a": 1}):
++            with self.assertRaises(InklingError):
++                render([{"role": "user", "content": bad}], DEFAULT_TEMPLATE)
++
++    def test_absent_assets_give_the_placeholder_template(self):
++        tmpl, kind = load_template(None)
++        self.assertEqual(kind, "placeholder")
++        self.assertEqual(tmpl, DEFAULT_TEMPLATE)
++
++    def test_a_supplied_template_is_labelled_as_supplied(self):
++        import tempfile
++        with tempfile.TemporaryDirectory() as tmp:
++            p = Path(tmp) / "inkling_chat_template.json"
++            p.write_text(json.dumps(dict(DEFAULT_TEMPLATE, user="U:{content}")))
++            tmpl, kind = load_template(Path(tmp))
++        self.assertEqual(kind, "supplied")
++        self.assertEqual(tmpl["user"], "U:{content}")
++
++    def test_an_incomplete_supplied_template_is_refused(self):
++        import tempfile
++        with tempfile.TemporaryDirectory() as tmp:
++            p = Path(tmp) / "inkling_chat_template.json"
++            p.write_text(json.dumps({"user": "{content}"}))
++            with self.assertRaises(InklingError):
++                load_template(Path(tmp))
++
++
++class SampleTest(unittest.TestCase):
++    def test_sampling_accepts_a_ctypes_buffer(self):
++        """The type the real runtime hands back."""
++        import random
++        buf = (C.c_float * 4)(1.0, 5.0, 2.0, 0.0)
++        self.assertEqual(sample(buf, 4, 0.0, 1.0, random.Random(1)), 1)
++        self.assertIn(sample(buf, 4, 1.0, 1.0, random.Random(1)), range(4))
++
++    def test_zero_temperature_is_argmax(self):
++        import random
++        logits = [1.0, 5.0, 2.0, 0.0]
++        self.assertEqual(sample(logits, 4, 0.0, 1.0, random.Random(1)), 1)
++
++    def test_a_dominant_logit_wins_at_temperature(self):
++        import random
++        logits = [0.0, 0.0, 40.0, 0.0]
++        for seed in range(8):
++            self.assertEqual(sample(logits, 4, 1.0, 1.0, random.Random(seed)), 2)
++
++    def test_top_p_excludes_the_tail(self):
++        import random
++        logits = [10.0, 9.9, -40.0, -40.0]
++        for seed in range(16):
++            self.assertIn(sample(logits, 4, 1.0, 0.9, random.Random(seed)), (0, 1))
++
++    def test_sampling_is_deterministic_for_a_seed(self):
++        import random
++        logits = [1.0, 1.1, 0.9, 1.05]
++        a = [sample(logits, 4, 1.0, 1.0, random.Random(7)) for _ in range(5)]
++        b = [sample(logits, 4, 1.0, 1.0, random.Random(7)) for _ in range(5)]
++        self.assertEqual(a, b)
++
++
++class ProvenanceTest(unittest.TestCase):
++    """The gate that stops synthetic text being served as the model's."""
++
++    def test_a_stage_without_an_attestation_is_synthetic(self):
++        import tempfile
++        with tempfile.TemporaryDirectory() as tmp:
++            self.assertEqual(stage_provenance(Path(tmp)), "synthetic")
++
++    def test_an_attested_stage_is_official(self):
++        import tempfile
++        with tempfile.TemporaryDirectory() as tmp:
++            (Path(tmp) / ATTESTATION).write_text("{}")
++            self.assertEqual(stage_provenance(Path(tmp)), "official")
++
++    def test_serving_a_synthetic_stage_without_the_flag_is_refused(self):
++        import io
++        import tempfile
++        from contextlib import redirect_stderr, redirect_stdout
++
++        with tempfile.TemporaryDirectory() as tmp:
++            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
++                rc = main(["--stage", tmp])
++        self.assertEqual(rc, 2)
++        self.assertIn("synthetic", err.getvalue())
++
++
++class CliOptionTest(unittest.TestCase):
++    """--tokenizer and --template name separate artifacts. Conflating them
++    meant a run that had a chat template but no tiktoken assets was refused,
++    which is exactly the state this project is in until G4."""
++
++    def test_template_can_be_supplied_without_tokenizer_assets(self):
++        import io
++        import tempfile
++        from contextlib import redirect_stderr, redirect_stdout
++
++        with tempfile.TemporaryDirectory() as tmp:
++            (Path(tmp) / "inkling_chat_template.json").write_text(
++                json.dumps(DEFAULT_TEMPLATE))
++            # No stage, so this still exits 2 — but on the stage, not on the
++            # template, which is the distinction being asserted.
++            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
++                rc = main(["--stage", tmp, "--template", tmp,
++                           "--i-know-the-weights-are-synthetic"])
++        self.assertEqual(rc, 2)
++        self.assertNotIn("tokenizer assets", err.getvalue())
++
++
++class ContextLimitTest(unittest.TestCase):
++    """Found by pointing the server at a real stage: overrunning the K/V
++    rings surfaced as an opaque 'step failed at position 16' from deep in the
++    C. It has to be refused at the edge, where the caller can act on it."""
++
++    def test_a_prompt_plus_generation_over_capacity_is_refused(self):
++        s = Session(StubRuntime(context=16), Tokenizer(256), DEFAULT_TEMPLATE)
++        with self.assertRaises(InklingError) as ctx:
++            list(s.generate([{"role": "user", "content": "hello there"}],
++                            max_tokens=8, temperature=0.0, top_p=1.0, seed=1))
++        self.assertIn("context exceeded", str(ctx.exception))
++
++    def test_it_is_refused_before_the_runtime_is_touched(self):
++        rt = StubRuntime(context=8)
++        s = Session(rt, Tokenizer(256), DEFAULT_TEMPLATE)
++        with self.assertRaises(InklingError):
++            list(s.generate([{"role": "user", "content": "a longer prompt here"}],
++                            max_tokens=4, temperature=0.0, top_p=1.0, seed=1))
++        self.assertEqual(rt.steps, [], "stepped before refusing")
++
++    def test_a_request_inside_capacity_runs(self):
++        s = Session(StubRuntime(context=4096), Tokenizer(256), DEFAULT_TEMPLATE)
++        ids = list(s.generate([{"role": "user", "content": "hi"}], 4, 0.0, 1.0, 1))
++        self.assertEqual(len(ids), 4)
++
++
++class GenerationTest(unittest.TestCase):
++    def test_prefill_then_decode_visits_every_position_once(self):
++        s = session()
++        ids = list(s.generate([{"role": "user", "content": "hello"}],
++                              max_tokens=4, temperature=0.0, top_p=1.0, seed=1))
++        self.assertEqual(len(ids), 4)
++        positions = [p for _t, p in s.runtime.steps]
++        self.assertEqual(positions, list(range(len(positions))))
++
++    def test_each_generation_resets_the_runtime(self):
++        s = session()
++        for _ in range(3):
++            list(s.generate([{"role": "user", "content": "x"}], 2, 0.0, 1.0, 1))
++        self.assertEqual(s.runtime.resets, 3)
++
++    def test_an_empty_prompt_is_refused(self):
++        s = Session(StubRuntime(), Tokenizer(256), dict(DEFAULT_TEMPLATE,
++                    user="", system="", assistant="", generation_prompt=""))
++        with self.assertRaises(InklingError):
++            list(s.generate([{"role": "user", "content": ""}], 2, 0.0, 1.0, 1))
++
++
++class HttpTest(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cls.session = session()
++        handler = make_handler(cls.session, "weights=synthetic tokenizer=fallback",
++                               "inkling-test")
++        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
++        cls.port = cls.httpd.server_address[1]
++        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
++        cls.thread.start()
++
++    @classmethod
++    def tearDownClass(cls):
++        cls.httpd.shutdown()
++        cls.httpd.server_close()
++
++    def url(self, path):
++        return f"http://127.0.0.1:{self.port}{path}"
++
++    def post(self, body, path="/v1/chat/completions"):
++        req = urllib.request.Request(
++            self.url(path), data=json.dumps(body).encode(),
++            headers={"Content-Type": "application/json"}, method="POST")
++        return urllib.request.urlopen(req, timeout=30)
++
++    def test_healthz(self):
++        with urllib.request.urlopen(self.url("/healthz"), timeout=10) as r:
++            self.assertEqual(r.status, 200)
++            self.assertEqual(json.load(r)["status"], "ok")
++
++    def test_models_lists_the_model_with_its_provenance(self):
++        with urllib.request.urlopen(self.url("/v1/models"), timeout=10) as r:
++            data = json.load(r)
++        self.assertEqual(data["data"][0]["id"], "inkling-test")
++        self.assertIn("synthetic", data["data"][0]["provenance"])
++        self.assertEqual(data["data"][0]["context_length"], 4096)
++
++    def test_chat_completion_shape(self):
++        with self.post({"messages": [{"role": "user", "content": "hi"}],
++                        "max_tokens": 5, "temperature": 0}) as r:
++            self.assertEqual(r.status, 200)
++            self.assertIn("synthetic", r.headers["x-waste-provenance"])
++            data = json.load(r)
++        self.assertEqual(data["object"], "chat.completion")
++        self.assertEqual(data["choices"][0]["message"]["role"], "assistant")
++        self.assertIsInstance(data["choices"][0]["message"]["content"], str)
++        self.assertEqual(data["usage"]["completion_tokens"], 5)
++
++    def test_every_response_carries_the_provenance_header(self):
++        for path in ("/healthz", "/v1/models"):
++            with urllib.request.urlopen(self.url(path), timeout=10) as r:
++                self.assertIn("synthetic", r.headers["x-waste-provenance"])
++
++    def test_streaming_emits_sse_frames_and_terminates(self):
++        with self.post({"messages": [{"role": "user", "content": "hi"}],
++                        "max_tokens": 3, "temperature": 0,
++                        "stream": True}) as r:
++            body = r.read().decode()
++        self.assertIn("data: ", body)
++        self.assertIn("[DONE]", body)
++        frames = [l for l in body.splitlines() if l.startswith("data: ")]
++        self.assertGreaterEqual(len(frames), 3)
++
++    def test_bad_requests_are_refused_with_a_reason(self):
++        cases = [
++            ({}, "messages"),
++            ({"messages": []}, "messages"),
++            ({"messages": [{"role": "user", "content": "x"}], "max_tokens": 0}, "max_tokens"),
++            ({"messages": [{"role": "user", "content": "x"}], "max_tokens": 99999}, "max_tokens"),
++            ({"messages": [{"role": "user", "content": "x"}], "temperature": 9}, "temperature"),
++            ({"messages": [{"role": "user", "content": "x"}], "top_p": 0}, "top_p"),
++            ({"messages": [{"role": "bogus", "content": "x"}]}, "role"),
++        ]
++        for body, expect in cases:
++            with self.assertRaises(urllib.error.HTTPError) as ctx:
++                self.post(body)
++            self.assertEqual(ctx.exception.code, 400, body)
++            self.assertIn(expect, json.load(ctx.exception)["error"]["message"])
++
++    def test_unknown_route_is_404(self):
++        with self.assertRaises(urllib.error.HTTPError) as ctx:
++            urllib.request.urlopen(self.url("/v1/nope"), timeout=10)
++        self.assertEqual(ctx.exception.code, 404)
++
++    def test_malformed_json_is_400_not_500(self):
++        req = urllib.request.Request(
++            self.url("/v1/chat/completions"), data=b"{not json",
++            headers={"Content-Type": "application/json"}, method="POST")
++        with self.assertRaises(urllib.error.HTTPError) as ctx:
++            urllib.request.urlopen(req, timeout=10)
++        self.assertEqual(ctx.exception.code, 400)
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/tests/test_inkling_stage.py b/tests/test_inkling_stage.py
 new file mode 100644
 index 0000000..6563386
@@ -12247,10 +12607,10 @@ index 0000000..f4fd9ae
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/tools/convert.py b/tools/convert.py
-index e156a81..74ddd16 100644
+index cf9abd4..fae3e06 100644
 --- a/tools/convert.py
 +++ b/tools/convert.py
-@@ -72,6 +72,7 @@ def atomic_text(path, value):
+@@ -87,6 +87,7 @@ def atomic_text(path, value):
  
  sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
  from mxfp4 import ST                                            # noqa: E402
@@ -12258,7 +12618,7 @@ index e156a81..74ddd16 100644
  
  # --- native VQ encoder (optional; ~15x the torch path) --------------------
  _VQ = None
-@@ -472,8 +473,18 @@ def main():
+@@ -807,8 +808,18 @@ def main():
      os.environ.setdefault("OMP_NUM_THREADS", str(per))
      os.environ.setdefault("MKL_NUM_THREADS", str(per))
  
@@ -12590,146 +12950,6 @@ index 0000000..93f3d0b
 +
 +if __name__ == "__main__":
 +    raise SystemExit(main())
-diff --git a/tools/diskbench.c b/tools/diskbench.c
-index 7235a2e..22d2be7 100644
---- a/tools/diskbench.c
-+++ b/tools/diskbench.c
-@@ -10,7 +10,19 @@
-  *   4. the same with N threads (the engine's async pool)
-  *
-  * Build: cc -O2 -o diskbench tools/diskbench.c
-- * Usage: ./diskbench /Volumes/WasteDisk/k3/.bench [file_gb] [rec_mb] [threads]
-+ * Usage: ./diskbench PATH [file_gb] [rec_mb] [threads] [gb_per_token]
-+ *
-+ * `gb_per_token` scales the trailing tok/s column to the model under test:
-+ * K3 reads ~12.5 GB per cold token, Inkling-Small ~2.11 GiB (240 records of
-+ * 9,457,664 B). It defaults to K3's, which is what this file was written for.
-+ *
-+ * On Linux the reads are opened O_DIRECT. Until 2026-08-08 `nocache()` was
-+ * `#ifdef __APPLE__` with no Linux arm and no open flag, so every Linux run
-+ * of this benchmark measured the page cache whenever the file fit in RAM —
-+ * which is the exact fiction docs/GATES.md Gate 5 exists to prevent, and it
-+ * reported it as the number that sets tok/s. If O_DIRECT is refused (tmpfs,
-+ * some overlay and network filesystems) the run says so on stderr and in the
-+ * result line rather than quietly reporting cached bandwidth.
-  */
- #define _GNU_SOURCE
- #include <errno.h>
-@@ -32,20 +44,49 @@ static void nocache(int fd) {
- #ifdef __APPLE__
-     fcntl(fd, F_NOCACHE, 1);
-     fcntl(fd, F_RDAHEAD, 0);
-+#else
-+    (void)fd;   /* O_DIRECT does this on Linux; see open_read() */
-+#endif
-+}
-+
-+/* Open for reading with the page cache out of the way. O_DIRECT is the only
-+ * thing on Linux that actually removes it; POSIX_FADV_DONTNEED merely asks,
-+ * and asks about pages that are already resident. g_direct records whether we
-+ * got it, because a benchmark that silently falls back is worse than one that
-+ * fails — it produces a plausible number that is off by the size of RAM. */
-+static int g_direct = -1;        /* -1 unknown, 1 O_DIRECT, 0 buffered */
-+
-+static int open_read(const char *path) {
-+    int fd = -1;
-+#ifdef O_DIRECT
-+    fd = open(path, O_RDONLY | O_DIRECT);
-+    if (fd >= 0) {
-+        if (g_direct != 0) g_direct = 1;
-+        nocache(fd);
-+        return fd;
-+    }
-+#endif
-+    fd = open(path, O_RDONLY);
-+    if (fd < 0) return fd;
-+    g_direct = 0;
-+    nocache(fd);
-+#if defined(POSIX_FADV_DONTNEED)
-+    posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
- #endif
-+    return fd;
- }
- 
- static const char *g_path;
- static size_t g_rec, g_file;
- static int g_reps;
-+static double g_gb_per_token = 12.5;   /* K3 cold token; see usage above */
- 
- typedef struct { int id, nthreads; double bytes; } targ;
- 
- static void *rand_reader(void *p) {
-     targ *a = (targ *)p;
--    int fd = open(g_path, O_RDONLY);
-+    int fd = open_read(g_path);
-     if (fd < 0) { perror("open"); return NULL; }
--    nocache(fd);
-     void *buf = NULL;
-     if (posix_memalign(&buf, 4096, g_rec)) { close(fd); return NULL; }
-     size_t nrec = g_file / g_rec;
-@@ -64,15 +105,24 @@ static void *rand_reader(void *p) {
- }
- 
- int main(int argc, char **argv) {
--    if (argc < 2) { fprintf(stderr, "usage: %s PATH [file_gb] [rec_mb] [threads]\n", argv[0]); return 1; }
-+    if (argc < 2) {
-+        fprintf(stderr,
-+                "usage: %s PATH [file_gb] [rec_mb] [threads] [gb_per_token]\n",
-+                argv[0]);
-+        return 1;
-+    }
-     g_path = argv[1];
-     double file_gb = argc > 2 ? atof(argv[2]) : 8.0;
-     double rec_mb  = argc > 3 ? atof(argv[3]) : 12.0;
-     int maxthreads = argc > 4 ? atoi(argv[4]) : 8;
-+    if (argc > 5) g_gb_per_token = atof(argv[5]);
-+    if (g_gb_per_token <= 0) { fprintf(stderr, "gb_per_token must be > 0\n"); return 1; }
-     g_file = (size_t)(file_gb * (1u << 30));
-     g_rec  = (size_t)(rec_mb * (1u << 20)) & ~4095UL;
-+    if (g_rec == 0) { fprintf(stderr, "record rounds to zero\n"); return 1; }
- 
--    printf("file %.1f GB, record %.1f MB, path %s\n", file_gb, rec_mb, g_path);
-+    printf("file %.1f GB, record %.1f MB (%zu B), %.2f GB/token, path %s\n",
-+           file_gb, rec_mb, g_rec, g_gb_per_token, g_path);
- 
-     /* 1. sequential write */
-     int fd = open(g_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-@@ -92,11 +142,13 @@ int main(int argc, char **argv) {
-     printf("seq write   : %6.2f GB/s\n", written / dt / (1u << 30));
- 
-     /* 2. sequential read, cache-bypassed */
--    fd = open(g_path, O_RDONLY); nocache(fd);
-+    fd = open_read(g_path);
-+    if (fd < 0) { perror("open read"); return 1; }
-     t0 = now(); size_t rd = 0; ssize_t r;
-     while ((r = read(fd, buf, g_rec)) > 0) rd += r;
-     dt = now() - t0; close(fd);
--    printf("seq read    : %6.2f GB/s  (cache bypassed)\n", rd / dt / (1u << 30));
-+    printf("seq read    : %6.2f GB/s  (%s)\n", rd / dt / (1u << 30),
-+           g_direct == 1 ? "cache bypassed" : "PAGE CACHE NOT BYPASSED");
- 
-     /* 3+4. random record reads, 1..maxthreads */
-     g_reps = 40;
-@@ -111,10 +163,17 @@ int main(int argc, char **argv) {
-         for (int i = 0; i < nt; i++) { pthread_join(th[i], NULL); tot += ta[i].bytes; }
-         dt = now() - t0;
-         double gbs = tot / dt / (1u << 30);
--        printf("rand %2d thr : %6.2f GB/s  -> %.2f tok/s at 12.5 GB/token cold\n",
--               nt, gbs, gbs / 12.5);
-+        printf("rand %2d thr : %6.2f GB/s  -> %.2f tok/s at %.2f GB/token cold\n",
-+               nt, gbs, gbs / g_gb_per_token, g_gb_per_token);
-     }
- 
-+    if (g_direct != 1)
-+        fprintf(stderr,
-+                "diskbench: WARNING O_DIRECT unavailable on this path; the\n"
-+                "  random-read figures above include the page cache and are\n"
-+                "  not the number that sets tok/s. Re-run on a real block\n"
-+                "  device, or with a file several times larger than RAM.\n");
-+
-     free(buf);
-     unlink(g_path);
-     return 0;
 diff --git a/tools/inkling_cache_bench.py b/tools/inkling_cache_bench.py
 new file mode 100644
 index 0000000..c191ab7
@@ -17179,6 +17399,592 @@ index 0000000..92dd6cb
 +
 +if __name__ == "__main__":
 +    raise SystemExit(main())
+diff --git a/tools/inkling_serve.py b/tools/inkling_serve.py
+new file mode 100644
+index 0000000..2d8a23a
+--- /dev/null
++++ b/tools/inkling_serve.py
+@@ -0,0 +1,580 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++"""
++inkling_serve.py — an OpenAI-compatible chat endpoint over the staged Inkling
++runtime.
++
++WHAT THIS IS, EXACTLY
++---------------------
++Public `waste_open` still returns WASTE_E_UNSUPPORTED for an Inkling
++container, and nothing here changes that. This server drives the
++**converter-private** runtime — `waste_inkling_private_open/step` — which is
++the same path the parity harnesses use. It exists so the API surface is real,
++testable and reviewable *before* the loader dispatch of ROADMAP G6 lands,
++rather than after.
++
++Upstream's `serve/` is architecture-agnostic: it reaches the engine only
++through `waste_open`, `waste_tokenize` and the step API. So when G6 lands,
++this file is not the chat server — `serve/` is, unchanged, and this becomes
++redundant. That is the intended outcome, and it is why this deliberately
++implements the same wire format rather than a nicer one.
++
++THE MODEL IS SYNTHETIC UNTIL THE CHECKPOINT SAYS OTHERWISE
++----------------------------------------------------------
++A staged directory built from synthetic weights produces synthetic text. This
++server says so, in the startup banner, in `/v1/models`, and in a
++`x-waste-provenance` header on every response. It refuses to hide it:
++`--i-know-the-weights-are-synthetic` is required to start against a stage that
++does not carry an official-weight attestation, and the flag is deliberately
++tedious to type.
++
++TOKENIZER
++---------
++The release ships tiktoken ranks, a special-token map and a chat template.
++Where those are present (`--tokenizer DIR`), they are used through libwaste's
++own `waste_tok_*`. Where they are not, a byte-level fallback stands in so the
++plumbing is exercisable — and every response is labelled `tokenizer=fallback`,
++because a byte tokenizer against real weights would produce fluent-looking
++nonsense, which is the single most misleading failure this project could ship.
++
++    python3 tools/inkling_serve.py --stage STAGE_DIR [--tokenizer DIR]
++                                   [--host 127.0.0.1] [--port 8000]
++
++Endpoints: GET /v1/models, POST /v1/chat/completions (streaming and not),
++GET /healthz. Stdlib only.
++"""
++
++from __future__ import annotations
++
++import argparse
++import ctypes as C
++import json
++import math
++import os
++import random
++import sys
++import threading
++import time
++import uuid
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from pathlib import Path
++
++# ------------------------------------------------------------ C bindings ----
++
++PRIVATE_OK = 0
++PRIVATE_STATUS = {
++    0: "ok", -1: "argument", -2: "io", -3: "format",
++    -4: "out of memory", -5: "unsupported", -6: "runtime",
++}
++
++
++class PrivateOptions(C.Structure):
++    _fields_ = [("context_capacity", C.c_int),
++                ("verify_crc", C.c_int),
++                ("require_official_small", C.c_int)]
++
++
++class InklingError(RuntimeError):
++    pass
++
++
++def _soext() -> str:
++    return "dll" if os.name == "nt" else ("dylib" if sys.platform == "darwin" else "so")
++
++
++def find_library(explicit: str | None = None) -> Path:
++    """Most specific first, exactly as serve/engine.py does."""
++    candidates = []
++    if explicit:
++        candidates.append(Path(explicit))
++    if os.environ.get("WASTE_LIB"):
++        candidates.append(Path(os.environ["WASTE_LIB"]))
++    here = Path(__file__).resolve().parent
++    for base in (here.parent, here.parent.parent, Path.cwd()):
++        candidates.append(base / f"libwaste.{_soext()}")
++    candidates.append(Path(f"libwaste.{_soext()}"))
++    for path in candidates:
++        if path.name and (path.is_file() or path == candidates[-1]):
++            try:
++                C.CDLL(str(path))
++                return path
++            except OSError:
++                continue
++    raise InklingError(
++        f"libwaste.{_soext()} not found — build it with "
++        f"`make libwaste.{_soext()}` in an applied WASTE tree, or set WASTE_LIB"
++    )
++
++
++class Runtime:
++    """The staged private runtime: open, step, reset, close."""
++
++    def __init__(self, lib_path: Path, stage: Path, ctx: int = 4096,
++                 verify_crc: bool = True, require_official: bool = False):
++        self.lib = C.CDLL(str(lib_path))
++        self._bind()
++        opts = PrivateOptions(ctx, 1 if verify_crc else 0,
++                              1 if require_official else 0)
++        handle = C.c_void_p()
++        detail = C.create_string_buffer(512)
++        st = self.lib.waste_inkling_private_open(
++            str(stage).encode(), C.byref(opts), C.byref(handle),
++            detail, len(detail))
++        if st != PRIVATE_OK:
++            raise InklingError(
++                f"cannot open stage {stage}: {PRIVATE_STATUS.get(st, st)}"
++                + (f" — {detail.value.decode(errors='replace')}" if detail.value else ""))
++        self.handle = handle
++        cfg = self.lib.waste_inkling_private_config(handle)
++        if not cfg:
++            raise InklingError("runtime returned no config")
++        # unpadded_vocab is the only field this server needs; read it through
++        # the accessor rather than declaring the whole config struct, because
++        # a struct declared here would be a second copy of a C layout and this
++        # repository has already been bitten once by exactly that.
++        self.vocab = int(self.lib.waste_inkling_config_unpadded_vocab(cfg))
++        if self.vocab <= 0:
++            raise InklingError(f"implausible vocabulary size {self.vocab}")
++        self.context = ctx
++        self._logits = (C.c_float * self.vocab)()
++        self._lock = threading.Lock()
++
++    def _bind(self):
++        L = self.lib
++        L.waste_inkling_private_open.restype = C.c_int
++        L.waste_inkling_private_open.argtypes = [
++            C.c_char_p, C.POINTER(PrivateOptions), C.POINTER(C.c_void_p),
++            C.c_char_p, C.c_size_t]
++        L.waste_inkling_private_step.restype = C.c_int
++        L.waste_inkling_private_step.argtypes = [
++            C.c_void_p, C.c_int, C.c_int, C.POINTER(C.c_float), C.c_size_t]
++        L.waste_inkling_private_reset.restype = None
++        L.waste_inkling_private_reset.argtypes = [C.c_void_p]
++        L.waste_inkling_private_close.restype = None
++        L.waste_inkling_private_close.argtypes = [C.c_void_p]
++        L.waste_inkling_private_config.restype = C.c_void_p
++        L.waste_inkling_private_config.argtypes = [C.c_void_p]
++        L.waste_inkling_private_error.restype = C.c_char_p
++        L.waste_inkling_private_error.argtypes = [C.c_void_p]
++        L.waste_inkling_config_unpadded_vocab.restype = C.c_int
++        L.waste_inkling_config_unpadded_vocab.argtypes = [C.c_void_p]
++
++    def error(self) -> str:
++        msg = self.lib.waste_inkling_private_error(self.handle)
++        return msg.decode(errors="replace") if msg else ""
++
++    def step(self, token: int, position: int):
++        """Returns the logits buffer itself — a `c_float * vocab`, which
++        indexes and len()s like a sequence. NOT a memoryview: wrapping a
++        ctypes float array in one gives format '<f', which raises
++        NotImplementedError on the first subscript. That shipped once,
++        because the test stub returned a plain list and hid it."""
++        st = self.lib.waste_inkling_private_step(
++            self.handle, token, position, self._logits, self.vocab)
++        if st != PRIVATE_OK:
++            raise InklingError(
++                f"step failed at position {position}: "
++                f"{PRIVATE_STATUS.get(st, st)} — {self.error()}")
++        return self._logits
++
++    def reset(self):
++        self.lib.waste_inkling_private_reset(self.handle)
++
++    def close(self):
++        if getattr(self, "handle", None):
++            self.lib.waste_inkling_private_close(self.handle)
++            self.handle = None
++
++
++# ------------------------------------------------------------- tokenizer ----
++
++
++class Tokenizer:
++    """Either the official assets through libwaste, or a byte fallback.
++
++    The fallback exists so the server is runnable and testable with no
++    checkpoint. It is never silent: `kind` reaches /v1/models and the
++    provenance header, because a byte tokenizer driving real weights would
++    emit fluent-looking nonsense."""
++
++    kind = "fallback"
++
++    def __init__(self, vocab: int):
++        self.vocab = vocab
++
++    def encode(self, text: str) -> list[int]:
++        return [b % self.vocab for b in text.encode("utf-8")]
++
++    def decode(self, ids: list[int]) -> str:
++        return bytes(i % 256 for i in ids).decode("utf-8", errors="replace")
++
++    @property
++    def eos(self) -> int:
++        return -1
++
++
++class OfficialTokenizer(Tokenizer):
++    kind = "official"
++
++    def __init__(self, lib: C.CDLL, directory: Path, vocab: int):
++        super().__init__(vocab)
++        lib.waste_tok_open.restype = C.c_void_p
++        lib.waste_tok_open.argtypes = [C.c_char_p]
++        lib.waste_tok_encode.restype = C.c_int
++        lib.waste_tok_encode.argtypes = [C.c_void_p, C.c_char_p,
++                                         C.POINTER(C.c_int32), C.c_int]
++        lib.waste_tok_decode.restype = C.c_int
++        lib.waste_tok_decode.argtypes = [C.c_void_p, C.POINTER(C.c_int32),
++                                         C.c_int, C.c_char_p, C.c_int]
++        lib.waste_tok_eos.restype = C.c_int
++        lib.waste_tok_eos.argtypes = [C.c_void_p]
++        self.lib = lib
++        self.tok = lib.waste_tok_open(str(directory).encode())
++        if not self.tok:
++            raise InklingError(f"no tokenizer assets in {directory}")
++
++    def encode(self, text: str) -> list[int]:
++        cap = len(text.encode()) + 8
++        buf = (C.c_int32 * cap)()
++        n = self.lib.waste_tok_encode(self.tok, text.encode(), buf, cap)
++        if n < 0:
++            raise InklingError("tokenizer refused the input")
++        return list(buf[:n])
++
++    def decode(self, ids: list[int]) -> str:
++        if not ids:
++            return ""
++        arr = (C.c_int32 * len(ids))(*ids)
++        cap = 4 * len(ids) + 64
++        buf = C.create_string_buffer(cap)
++        n = self.lib.waste_tok_decode(self.tok, arr, len(ids), buf, cap)
++        return buf.raw[:max(n, 0)].decode("utf-8", errors="replace")
++
++    @property
++    def eos(self) -> int:
++        return int(self.lib.waste_tok_eos(self.tok))
++
++
++# --------------------------------------------------------- chat template ----
++
++DEFAULT_TEMPLATE = {
++    "system": "<|system|>\n{content}\n",
++    "user": "<|user|>\n{content}\n",
++    "assistant": "<|assistant|>\n{content}\n",
++    "generation_prompt": "<|assistant|>\n",
++}
++
++
++def load_template(directory: Path | None) -> tuple[dict, str]:
++    """The release ships a chat template. Until G4 verifies ours renders it
++    byte-exactly, a locally supplied one is used and labelled as such — a
++    plausible-looking template is exactly the kind of unverified detail this
++    project refuses to present as official."""
++    if directory:
++        path = Path(directory) / "inkling_chat_template.json"
++        if path.is_file():
++            data = json.loads(path.read_text())
++            missing = set(DEFAULT_TEMPLATE) - set(data)
++            if missing:
++                raise InklingError(
++                    f"chat template {path} is missing {sorted(missing)}")
++            return data, "supplied"
++    return DEFAULT_TEMPLATE, "placeholder"
++
++
++def render(messages: list[dict], template: dict) -> str:
++    out = []
++    for m in messages:
++        role = m.get("role")
++        if role not in ("system", "user", "assistant"):
++            raise InklingError(f"unsupported role {role!r}")
++        content = m.get("content")
++        if not isinstance(content, str):
++            raise InklingError("message content must be a string")
++        out.append(template[role].format(content=content))
++    out.append(template["generation_prompt"])
++    return "".join(out)
++
++
++# ---------------------------------------------------------------- sample ----
++
++
++def sample(logits, n: int, temperature: float, top_p: float,
++           rng: random.Random) -> int:
++    if temperature <= 0.0:
++        best, best_v = 0, -math.inf
++        for i in range(n):
++            if logits[i] > best_v:
++                best, best_v = i, logits[i]
++        return best
++    scaled = [logits[i] / temperature for i in range(n)]
++    top = max(scaled)
++    exps = [math.exp(v - top) for v in scaled]
++    total = sum(exps)
++    probs = sorted(((e / total, i) for i, e in enumerate(exps)), reverse=True)
++    if 0.0 < top_p < 1.0:
++        acc, cut = 0.0, len(probs)
++        for k, (p, _i) in enumerate(probs):
++            acc += p
++            if acc >= top_p:
++                cut = k + 1
++                break
++        probs = probs[:cut]
++    mass = sum(p for p, _ in probs)
++    r = rng.random() * mass
++    acc = 0.0
++    for p, i in probs:
++        acc += p
++        if acc >= r:
++            return i
++    return probs[-1][1]
++
++
++# ---------------------------------------------------------------- server ----
++
++
++class Session:
++    """One generation. The runtime holds a single K/V state, so generations
++    are serialized — correctness before concurrency, and the private runtime
++    was never built for the latter."""
++
++    def __init__(self, runtime: Runtime, tokenizer: Tokenizer, template: dict):
++        self.runtime = runtime
++        self.tokenizer = tokenizer
++        self.template = template
++        self.lock = threading.Lock()
++
++    def generate(self, messages, max_tokens, temperature, top_p, seed):
++        prompt = render(messages, self.template)
++        ids = self.tokenizer.encode(prompt)
++        if not ids:
++            raise InklingError("prompt encoded to zero tokens")
++        # The runtime's K/V rings are sized at open. Stepping past them is a
++        # runtime error deep in the C, which surfaced here as an opaque
++        # "step failed at position N" the first time this server was pointed
++        # at a real stage. Refuse it at the edge, where the caller can act.
++        want = len(ids) + max_tokens
++        if want > self.runtime.context:
++            raise InklingError(
++                f"context exceeded: prompt is {len(ids)} tokens and max_tokens "
++                f"is {max_tokens}, but this runtime was opened with a context "
++                f"capacity of {self.runtime.context}")
++        rng = random.Random(seed)
++        with self.lock:
++            self.runtime.reset()
++            pos = 0
++            for tok in ids[:-1]:
++                self.runtime.step(tok, pos)
++                pos += 1
++            nxt = ids[-1]
++            for _ in range(max_tokens):
++                logits = self.runtime.step(nxt, pos)
++                pos += 1
++                nxt = sample(logits, self.runtime.vocab, temperature, top_p, rng)
++                if nxt == self.tokenizer.eos:
++                    return
++                yield nxt
++
++
++def make_handler(session: Session, provenance: str, model_name: str):
++    class Handler(BaseHTTPRequestHandler):
++        protocol_version = "HTTP/1.1"
++        server_version = "waste-inkling-preview"
++
++        def log_message(self, fmt, *args):
++            sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
++
++        def _send(self, code, payload, ctype="application/json"):
++            body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
++            self.send_response(code)
++            self.send_header("Content-Type", ctype)
++            self.send_header("Content-Length", str(len(body)))
++            self.send_header("x-waste-provenance", provenance)
++            self.end_headers()
++            self.wfile.write(body)
++
++        def _error(self, code, message, kind="invalid_request_error"):
++            self._send(code, {"error": {"message": message, "type": kind}})
++
++        def do_GET(self):
++            if self.path == "/healthz":
++                return self._send(200, {"status": "ok", "provenance": provenance})
++            if self.path in ("/v1/models", "/models"):
++                return self._send(200, {"object": "list", "data": [{
++                    "id": model_name, "object": "model",
++                    "owned_by": "waste-inkling-preview",
++                    "provenance": provenance,
++                    "context_length": session.runtime.context,
++                }]})
++            return self._error(404, f"no route {self.path}", "not_found")
++
++        def do_POST(self):
++            if self.path not in ("/v1/chat/completions", "/chat/completions"):
++                return self._error(404, f"no route {self.path}", "not_found")
++            try:
++                length = int(self.headers.get("Content-Length") or 0)
++            except ValueError:
++                return self._error(400, "bad Content-Length")
++            if length <= 0 or length > 4 << 20:
++                return self._error(400, "request body must be 1..4 MiB")
++            try:
++                req = json.loads(self.rfile.read(length))
++            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
++                return self._error(400, f"malformed JSON: {exc}")
++            if not isinstance(req, dict):
++                return self._error(400, "body must be a JSON object")
++
++            messages = req.get("messages")
++            if not isinstance(messages, list) or not messages:
++                return self._error(400, "messages must be a non-empty array")
++            max_tokens = req.get("max_tokens", 128)
++            if not isinstance(max_tokens, int) or not 1 <= max_tokens <= 4096:
++                return self._error(400, "max_tokens must be 1..4096")
++            temperature = float(req.get("temperature", 1.0))
++            if not 0.0 <= temperature <= 4.0:
++                return self._error(400, "temperature must be 0..4")
++            top_p = float(req.get("top_p", 1.0))
++            if not 0.0 < top_p <= 1.0:
++                return self._error(400, "top_p must be in (0, 1]")
++            seed = req.get("seed")
++            stream = bool(req.get("stream", False))
++
++            try:
++                gen = session.generate(messages, max_tokens, temperature, top_p, seed)
++                if stream:
++                    return self._stream(gen)
++                ids = list(gen)
++            except InklingError as exc:
++                return self._error(400, str(exc))
++
++            text = session.tokenizer.decode(ids)
++            self._send(200, {
++                "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
++                "object": "chat.completion",
++                "created": int(time.time()),
++                "model": model_name,
++                "provenance": provenance,
++                "choices": [{
++                    "index": 0,
++                    "message": {"role": "assistant", "content": text},
++                    "finish_reason": "length" if len(ids) >= max_tokens else "stop",
++                }],
++                "usage": {"completion_tokens": len(ids)},
++            })
++
++        def _stream(self, gen):
++            self.send_response(200)
++            self.send_header("Content-Type", "text/event-stream")
++            self.send_header("Cache-Control", "no-cache")
++            self.send_header("x-waste-provenance", provenance)
++            self.send_header("Transfer-Encoding", "chunked")
++            self.end_headers()
++            ident = f"chatcmpl-{uuid.uuid4().hex[:24]}"
++
++            def chunk(delta, finish=None):
++                payload = json.dumps({
++                    "id": ident, "object": "chat.completion.chunk",
++                    "created": int(time.time()), "model": model_name,
++                    "choices": [{"index": 0, "delta": delta,
++                                 "finish_reason": finish}],
++                }).encode()
++                frame = b"data: " + payload + b"\n\n"
++                self.wfile.write(b"%x\r\n" % len(frame) + frame + b"\r\n")
++                self.wfile.flush()
++
++            try:
++                chunk({"role": "assistant"})
++                for tok in gen:
++                    chunk({"content": session.tokenizer.decode([tok])})
++                chunk({}, finish="stop")
++                done = b"data: [DONE]\n\n"
++                self.wfile.write(b"%x\r\n" % len(done) + done + b"\r\n")
++                self.wfile.write(b"0\r\n\r\n")
++                self.wfile.flush()
++            except (BrokenPipeError, ConnectionResetError):
++                pass
++            except InklingError as exc:
++                try:
++                    chunk({"content": f"\n[error: {exc}]"}, finish="stop")
++                    self.wfile.write(b"0\r\n\r\n")
++                except OSError:
++                    pass
++
++    return Handler
++
++
++ATTESTATION = "official-weights.json"
++
++
++def stage_provenance(stage: Path) -> str:
++    """An official run has to prove it. Absent proof, the stage is synthetic
++    and every response says so."""
++    return "official" if (Path(stage) / ATTESTATION).is_file() else "synthetic"
++
++
++def main(argv=None) -> int:
++    ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
++    ap.add_argument("--stage", type=Path, required=True,
++                    help="directory holding runtime-stage.bin and its artifacts")
++    ap.add_argument("--tokenizer", type=Path, default=None,
++                    help="directory with the official tiktoken assets")
++    ap.add_argument("--template", type=Path, default=None,
++                    help="directory holding inkling_chat_template.json; "
++                         "separate from --tokenizer because the two are "
++                         "separate artifacts and a run may have either")
++    ap.add_argument("--lib", default=None, help="path to libwaste")
++    ap.add_argument("--host", default="127.0.0.1")
++    ap.add_argument("--port", type=int, default=8000)
++    ap.add_argument("--context", type=int, default=4096)
++    ap.add_argument("--model-name", default="inkling-small-preview")
++    ap.add_argument("--i-know-the-weights-are-synthetic", action="store_true",
++                    dest="allow_synthetic")
++    args = ap.parse_args(argv)
++
++    provenance = stage_provenance(args.stage)
++    if provenance == "synthetic" and not args.allow_synthetic:
++        print(
++            f"refusing to serve {args.stage}: it carries no {ATTESTATION}, so the\n"
++            "weights are synthetic and the text will be meaningless. Pass\n"
++            "--i-know-the-weights-are-synthetic to serve it anyway.",
++            file=sys.stderr)
++        return 2
++
++    try:
++        lib_path = find_library(args.lib)
++        runtime = Runtime(lib_path, args.stage, ctx=args.context)
++        if args.tokenizer:
++            tokenizer = OfficialTokenizer(runtime.lib, args.tokenizer, runtime.vocab)
++        else:
++            tokenizer = Tokenizer(runtime.vocab)
++        template, template_kind = load_template(args.template or args.tokenizer)
++    except InklingError as exc:
++        print(f"inkling_serve: {exc}", file=sys.stderr)
++        return 2
++
++    provenance = f"weights={provenance} tokenizer={tokenizer.kind} template={template_kind}"
++    session = Session(runtime, tokenizer, template)
++    httpd = ThreadingHTTPServer((args.host, args.port),
++                                make_handler(session, provenance, args.model_name))
++
++    print(f"inkling_serve: http://{args.host}:{args.port}/v1/chat/completions")
++    print(f"  library      {lib_path}")
++    print(f"  stage        {args.stage}")
++    print(f"  vocabulary   {runtime.vocab}")
++    print(f"  provenance   {provenance}")
++    if "weights=synthetic" in provenance:
++        print("  NOTE: synthetic weights. The text is not this model's output.")
++    if tokenizer.kind == "fallback":
++        print("  NOTE: byte-level fallback tokenizer, not the official one.")
++    try:
++        httpd.serve_forever()
++    except KeyboardInterrupt:
++        pass
++    finally:
++        httpd.server_close()
++        runtime.close()
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
 diff --git a/tools/inkling_source.py b/tools/inkling_source.py
 new file mode 100644
 index 0000000..f443322
@@ -17610,7 +18416,7 @@ index 0000000..2835065
 +    return stage
 diff --git a/tools/inkling_throughput.py b/tools/inkling_throughput.py
 new file mode 100644
-index 0000000..b606867
+index 0000000..59d1a1c
 --- /dev/null
 +++ b/tools/inkling_throughput.py
 @@ -0,0 +1,621 @@
@@ -18212,7 +19018,7 @@ index 0000000..b606867
 +
 +    p = sub.add_parser("project", help="estimated decode throughput")
 +    p.add_argument("--bandwidth", type=float, nargs="+",
-+                   default=[0.55, 2.08, 3.00, 7.00, 10.73, 12.89],
++                   default=[0.55, 2.11, 2.45, 7.00, 10.73, 12.89],
 +                   help="GiB/s of cache-bypassed random record reads")
 +    p.add_argument("--hit", type=float, nargs="+", default=[0.0, 0.29, 0.42])
 +    p.set_defaults(func=cmd_project)

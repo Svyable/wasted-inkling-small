@@ -323,6 +323,28 @@ the format extension is documented in `docs/FORMAT.md` alongside K3's.
 
 ## G6 — Public dispatch
 
+**The API surface exists already, on the private path.** `tools/inkling_serve.py`
+serves `/v1/chat/completions` — streaming and not — over
+`waste_inkling_private_open/step`, and has been run end to end against a real
+staged runtime: HTTP in, C forward pass, sampled tokens, OpenAI-shaped JSON
+out. It is deliberately *not* a second engine. Upstream's `serve/` reaches the
+model only through `waste_open`, `waste_tokenize` and the step API, so when
+step 2 below lands, `serve/` becomes the chat server unchanged and
+`inkling_serve.py` becomes redundant. It exists so the wire format is
+reviewable now rather than after.
+
+Everything it produces is labelled `weights=synthetic tokenizer=fallback`
+until the checkpoint and G4 say otherwise, and it refuses to start against an
+unattested stage without `--i-know-the-weights-are-synthetic`.
+
+Running it for real found three defects the unit tests had not: an unenforced
+context limit that surfaced as an opaque `step failed at position 16`, a
+`--tokenizer` flag conflating tokenizer assets with the chat template, and a
+`memoryview` over a ctypes float array that raises on first subscript — hidden
+because the test stub returned a plain list. All three are fixed and
+regression-tested, and the stub now returns the type the runtime does.
+
+
 Turn the two guards into a branch, in this order:
 
 1. ✅ `waste_plan_memory()` → `waste_inkling_plan_decode_memory()`, via

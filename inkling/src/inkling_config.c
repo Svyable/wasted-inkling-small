@@ -183,3 +183,8 @@ int waste_inkling_plan_decode_memory(const waste_inkling_config *cfg,
 #undef ADD_FIELD
     return 0;
 }
+
+int waste_inkling_config_unpadded_vocab(const waste_inkling_config *cfg)
+{
+    return cfg ? cfg->unpadded_vocab : 0;
+}

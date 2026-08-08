@@ -56,38 +56,58 @@ runs.** That single ratio is the reason to expect a different product.
 
 ---
 
-## 2. A measurement, and a bug it found
+## 2. A measurement, and a bug someone else had already found
 
 `tools/diskbench.c` is upstream's I/O benchmark — "random record reads,
-cache-bypassed ← the number that sets tok/s".
+cache-bypassed ← the number that sets tok/s". On Linux it was neither:
+`nocache()` had an `#ifdef __APPLE__` body and nothing else, and `O_DIRECT`
+appeared nowhere in the file, so any run with a file smaller than RAM measured
+memory bandwidth and printed it under the label "cache bypassed".
 
-**On Linux it never bypassed the page cache.** `nocache()` was
-`#ifdef __APPLE__` with no Linux arm, and no `open()` used `O_DIRECT`. Any
-Linux run with a file smaller than RAM measured memory bandwidth and printed
-it under the label "cache bypassed". Measured here, same host, same 8 GiB
-file, same 9,457,664 B record:
+**This repository found that independently on 2026-08-08 and it was four days
+late.** Upstream fixed it on 2026-08-04 in `def83ef`, reported and diagnosed by
+fab2s in [sqliteai/waste#22](https://github.com/sqliteai/waste/pull/22), and
+recorded it as LEARNED §49. A standalone patch prepared here was withdrawn
+rather than sent: it would have been a duplicate, and it was worse in two ways
+that are worth keeping on the record because both were my reasoning failing,
+not my code.
 
-| | unpatched | with `O_DIRECT` | inflation |
+1. **Upstream bypasses the write; I deliberately did not.** I left it buffered
+   on the argument that a buffered write plus `fsync` models the conversion
+   landing. Upstream measured that argument wrong: `F_NOCACHE` stops new pages
+   being cached but does not evict resident ones, so a buffered write leaves
+   the file in the cache and *every read row below it reports RAM* — 8.07 GB/s
+   sequential with the write bypassed against 26.04 GB/s with it buffered, on
+   an M5 Pro. The original `nocache()` on the write fd was load-bearing and I
+   removed its equivalent.
+2. **Upstream probes `O_DIRECT` with a real aligned transfer; I trusted the
+   open.** `O_DIRECT` can be accepted at open and refused at transfer — tmpfs
+   does exactly this — so my version would turn a refusing filesystem into
+   short reads and a table of zeroes with no cause given. Theirs falls back to
+   a plain open plus `POSIX_FADV_RANDOM` and labels every row.
+
+### The numbers, from upstream's version
+
+Re-measured with WASTE 0.6.6's `diskbench`, same host, same 8 GiB file, same
+9,457,664 B record:
+
+| | unpatched (0.6.3) | upstream 0.6.6 | inflation |
 | --- | ---: | ---: | ---: |
-| seq read | 5.66 GiB/s | 2.39 GiB/s | 2.4x |
-| rand 1 thread | 5.67 GiB/s | 2.08 GiB/s | 2.7x |
-| rand 2 threads | 8.41 GiB/s | 2.41 GiB/s | 3.5x |
-| rand 4 threads | **14.49 GiB/s** | **3.00 GiB/s** | **4.8x** |
+| seq read | 5.66 GiB/s | 2.19 GiB/s | 2.6x |
+| rand 1 thread | 5.67 GiB/s | 2.11 GiB/s | 2.7x |
+| rand 2 threads | 8.41 GiB/s | 2.36 GiB/s | 3.6x |
+| rand 4 threads | **14.49 GiB/s** | **2.45 GiB/s** | **5.9x** |
 
-The unpatched run reports 14.49 GiB/s — *faster than the M5 Pro internal SSD
-upstream measured at 12.89* — on a cloud VM that really does 3.00. This is
-precisely the fiction [GATES.md](https://github.com/sqliteai/waste/blob/main/docs/GATES.md)
-Gate 5 exists to prevent ("on a 64 GB machine the kernel was quietly holding
-all 17 GB … the measured I/O cost was fiction"), defeated on one platform by
-a missing `#else`.
+The unpatched run reports 14.49 GiB/s — faster than the 12.89 GiB/s upstream
+measured on an M5 Pro internal SSD — on a cloud VM that really does 2.45.
 
-Fixed in `integration/waste/overlay/tools_diskbench.c.diff`: reads open
-`O_DIRECT`, a refused `O_DIRECT` is reported rather than silently downgraded,
-and the trailing tok/s column takes the model's GB/token instead of hardcoding
-K3's 12.5.
+**An earlier revision of this document quoted 3.00 GiB/s at four threads**,
+from the local fix rather than upstream's. That figure was 22% optimistic, in
+exactly the direction the buffered write predicts. Every projection below uses
+upstream's numbers.
 
 **Caveat on the numbers themselves.** This host is a cloud VM on virtio, not a
-laptop. 2.08 GiB/s at queue depth 1 is a *slow* modern NVMe. It is a real
+laptop. 2.11 GiB/s at queue depth 1 is a *slow* modern NVMe. It is a real
 lower-ish anchor, not the target hardware.
 
 ---
@@ -124,13 +144,23 @@ decode, or every Inkling number below is decoration:
 | GiB/s | hit | I/O s | expert s | other s | **tok/s** | bound by |
 | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | 0.55 (SATA SSD) | 0% | 3.844 | 0.128 | 0.067-0.134 | 0.25-0.26 | I/O |
-| 2.08 (this VM, QD1) | 0% | 1.016 | 0.128 | 0.067-0.134 | 0.87-0.92 | I/O |
-| 2.08 | 29% | 0.722 | 0.128 | 0.067-0.134 | 1.17-1.27 | I/O |
-| 3.00 (this VM, QD4) | 29% | 0.500 | 0.128 | 0.067-0.134 | 1.58-1.76 | I/O |
+| 0.55 | 29% | 2.729 | 0.128 | 0.067-0.134 | 0.35-0.36 | I/O |
+| 0.55 | 42% | 2.229 | 0.128 | 0.067-0.134 | 0.42-0.44 | I/O |
+| 2.11 (this VM, QD1) | 0% | 1.002 | 0.128 | 0.067-0.134 | 0.88-0.94 | I/O |
+| 2.11 | 29% | 0.711 | 0.128 | 0.067-0.134 | 1.18-1.29 | I/O |
+| 2.11 | 42% | 0.581 | 0.128 | 0.067-0.134 | 1.40-1.54 | I/O |
+| 2.45 (this VM, QD4) | 0% | 0.863 | 0.128 | 0.067-0.134 | 1.00-1.08 | I/O |
+| 2.45 | 29% | 0.613 | 0.128 | 0.067-0.134 | 1.34-1.47 | I/O |
+| 2.45 | 42% | 0.500 | 0.128 | 0.067-0.134 | 1.58-1.76 | I/O |
 | 7.00 (typical NVMe) | 0% | 0.302 | 0.128 | 0.067-0.134 | 2.30-2.71 | I/O |
-| 7.00 | 29% | 0.214 | 0.128 | 0.067-0.134 | **2.87-3.56** | I/O |
-| 10.73 (M5 Pro, QD1) | 29% | 0.140 | 0.128 | 0.067-0.134 | 3.66-4.84 | I/O |
-| 12.89 (M5 Pro, QD4) | 42% | 0.095 | 0.128 | 0.067-0.134 | **3.82-5.13** | compute |
+| 7.00 | 29% | 0.214 | 0.128 | 0.067-0.134 | 2.87-3.56 | I/O |
+| 7.00 | 42% | 0.175 | 0.128 | 0.067-0.134 | 3.24-4.13 | I/O |
+| 10.73 (M5 Pro, QD1) | 0% | 0.197 | 0.128 | 0.067-0.134 | 3.03-3.79 | I/O |
+| 10.73 | 29% | 0.140 | 0.128 | 0.067-0.134 | 3.66-4.84 | I/O |
+| 10.73 | 42% | 0.114 | 0.128 | 0.067-0.134 | 3.82-5.13 | compute |
+| 12.89 (M5 Pro, QD4) | 0% | 0.164 | 0.128 | 0.067-0.134 | 3.36-4.33 | I/O |
+| 12.89 | 29% | 0.116 | 0.128 | 0.067-0.134 | 3.82-5.13 | compute |
+| 12.89 | 42% | 0.095 | 0.128 | 0.067-0.134 | 3.82-5.13 | compute |
 
 The 29% hit rate is upstream's LEARNED.md §39 measurement at a fifth of a
 working set with the router lookahead on; 42% is the Gate 2 figure at a
@@ -392,14 +422,49 @@ gather's load-address-load dependency — `model.c`'s own comments record that
 tiling as the change that finally moved it. The **ratio** is the finding; the
 absolute numbers are this machine's.
 
+### And upstream has already measured how much of a ratio like this survives
+
+This is the part that should temper the section above, and it comes from
+WASTE 0.6.6's `c10b2fb`, which added `WQ_VQ4P` and benchmarked a table-lookup
+kernel against the VQ3R gather:
+
+> The kernel delivers. **In isolation it is 3.88x** … In the engine it is
+> **1.18x on Kimi-Linear and 1.09x on K3** … The gap between 3.88x on a bench
+> and 1.17x in place **is the finding, and it is not explained.**
+
+So a 3.88x isolation win bought 1.1-1.2x in place, and upstream could not
+account for the gap. That is a direct warning about the 4.5-5.9x above, which
+is an isolation number of exactly the kind that did not survive.
+
+**Two reasons to expect this one to survive better, and neither is proof:**
+
+- Their comparison is *kernel against kernel* — VQ4P's byte shuffle against
+  VQ3R's gather, both LUT formulations, both already avoiding expansion. Ours
+  is *structural*: it deletes a 100.7 MB materialization and the 201.3 MB of
+  DRAM traffic that goes with it, per expert, per token. A gather-rate
+  improvement can be swallowed by whatever bounded the step already; 60 GiB of
+  removed memory traffic has to go somewhere.
+- The traffic ratio is arithmetic over the record layout, not a timing.
+
+**And one reason to expect it to be harder than it looks.** The same commit
+records that an int8 runtime table made the engine *discontinuous* — "a logit
+moved 0.68 by a 1e-8 FMA difference … so paths must be bit-identical rather
+than equivalent." This benchmark's agreement check is `rel < 1e-5`, and it
+measures 2.4e-06. **That is equivalence, not bit-identity**, and upstream's
+experience says equivalence is not the bar for swapping a path in this engine.
+Landing the LUT formulation means a bit-identity requirement this benchmark
+does not currently test, which is a real cost and belongs in the estimate.
+
 ### So the first order of magnitude is a port fix, and the next is a backend
 
 In order, largest first:
 
-1. **Stop expanding experts** — a measured 4.5-5.9x on expert compute and
-   18.3x less DRAM traffic, in code this repository owns, against a reference
-   implementation upstream already ships and this port already links. It is
-   the single largest, cheapest, most certain item in this document.
+1. **Stop expanding experts** — a measured 4.5-5.9x *in isolation* on expert
+   compute and 18.3x less DRAM traffic, in code this repository owns, against
+   a reference implementation upstream already ships and this port already
+   links. It is the largest item in this document, and upstream's VQ4P result
+   (3.88x on a bench, 1.09-1.18x in place) is the reason not to call it the
+   most certain one. Expect a range, not the headline.
    `docs/ROADMAP-V19.md` G6 step 3 already says to reuse `ecache` and the
    optimized VQ kernels "rather than the scalar `inkling_wexp.c` path"; this
    measures the price of not having done it.

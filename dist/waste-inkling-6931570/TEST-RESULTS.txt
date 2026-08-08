@@ -5,8 +5,8 @@ Date: 2026-08-08
 Host: Linux x86_64, 15 GB usable RAM, 4 cores, virtio block device
 Compiler: GCC / cc
 Python: 3.11.15, torch 2.13.0, numpy 2.4.6
-Upstream: sqliteai/waste@69315701f634648f7a790915a0a525ed8aabf218
-WASTE: 0.6.3; API 1; format 0
+Upstream: sqliteai/waste@d9b919a791148b571e643d0af666bf19b4d733ab
+WASTE: 0.6.6; API 1; format 0
 
 Every result below was produced in this environment on the date above. None of
 it is quoted from an earlier bundle. The official 532 GB checkpoint was not
@@ -38,16 +38,16 @@ PASS  integration/waste/generate.sh is deterministic on a fixed toolchain
 
 PASS  committed bundle applies to the reviewed tree
       git am of dist/waste-inkling-6931570/patches/*.patch onto the pinned
-      upstream yields ff4c9cdb9dec310921e96e344e00079a75279e8b.
-      Patch sha256: 70afc848bd915b77815f2b82fee59b44f9aada023b8c62a2d0ef885b5ef6b228
+      upstream yields 62a9240fdd169aae8292f88fd225bf51843cd2f6.
+      Patch sha256: c0ad958ddae86896f999d94e69a42b33324af4eb55a1f71f40f1e8e540be3959
 
 PASS  integration/waste/verify.sh
-      Generated tree: ff4c9cdb9dec310921e96e344e00079a75279e8b
+      Generated tree: 62a9240fdd169aae8292f88fd225bf51843cd2f6
 
 VALIDATION
 ----------
 PASS  PATH=/usr/bin:/bin make check
-      Result: 31 passed, 0 failed, 13 skipped
+      Result: 33 passed, 0 failed, 13 skipped
       Includes:
         - cgroup-v2 limits vs the automatic budget ceiling
         - Inkling architecture seam and scalar runtime primitives
@@ -70,16 +70,16 @@ PASS  strict compile of src/arch.c and all src/inkling*.c
 
 PASS  complete Inkling Python suite
       python3 -m unittest discover -s tests -p "test_ink*.py" -t .
-      Result: 228 tests, OK, process exit 0
+      Result: 257 tests, OK, process exit 0
       python3 -m unittest tests.test_inspect_inkling tests.test_convert_inkling
       Result: 18 tests, OK
-      Total: 246 tests passing.
+      Total: 275 tests passing.
 
       The v16 bundle recorded 99 tests and nothing re-ran them; that number is
       confirmed, and the fixture reader, the layer-parity harness, the
       official-transformers layer comparison, the decode cost model and the
-      expert-cache benchmark and the expert-matvec benchmark bring the
-      total to 246.
+      expert-cache benchmark, the expert-matvec benchmark and the chat
+      endpoint bring the total to 275.
 
       The process exit code is checked deliberately. An earlier revision of
       inkling_layer_parity.py declared waste_inkling_attention_state with six
@@ -227,13 +227,55 @@ PASS  expert matvec measured: this port expands what upstream never does
       belongs behind G1. Both implementations are scalar and single-threaded,
       so the ratio is the finding and the absolute times are this machine's.
 
-UPSTREAM CONTRIBUTION PREPARED
-------------------------------
-upstream/0001-diskbench-bypass-the-page-cache-on-Linux.patch applies to
-pristine sqliteai/waste@6931570 and compiles -Werror, verified from a clean
-clone. It carries the fix and its measurement without the Inkling port
-attached, so upstream need not take 15,000 lines to get a benchmark that
-measures the right thing.
+REBASED TO WASTE 0.6.6, AND A CONTRIBUTION WITHDRAWN
+---------------------------------------------------
+Repinned from 6931570 (0.6.3) to d9b919a (0.6.6), 21 commits on. Only one
+overlay fragment needed re-resolving — Makefile.diff, because 0.6.6 added
+test_cpus to TESTNAMES — which is what the fragment-per-file design exists
+for. make check gains two checks (31 -> 33).
+
+The diskbench overlay carried here was DELETED, not rebased: upstream fixed
+the same bug on 2026-08-04 in def83ef, reported by fab2s, four days before
+this repository found it independently. The standalone patch prepared for
+upstream was withdrawn rather than sent. Their fix is better in two ways,
+both of them this repository's reasoning failing rather than its code:
+they bypass the write too (measured: a buffered write leaves the file
+resident and every read row below reports RAM, 8.07 vs 26.04 GB/s), and
+they probe O_DIRECT with a real aligned transfer rather than trusting the
+open, which tmpfs would have turned into a table of zeroes here.
+
+Re-measured with 0.6.6's diskbench on this host: 2.19 seq read, 2.11 rand
+1-thread, 2.45 rand 4-thread. The 3.00 GiB/s this file previously recorded
+at 4 threads came from the local fix and was 22% optimistic.
+
+CHAT ENDPOINT, RUN END TO END
+-----------------------------
+PASS  tools/inkling_serve.py serves /v1/chat/completions over the staged
+      private runtime. Verified against a real synthetic stage, not a mock:
+      HTTP in, waste_inkling_private_step forward pass, sampled tokens,
+      OpenAI-shaped JSON out, plus SSE streaming. 29 tests.
+
+      Public waste_open still returns WASTE_E_UNSUPPORTED. This drives the
+      converter-private path so the wire format is reviewable before G6
+      lands; upstream's serve/ reaches the engine only through waste_open,
+      so when G6 lands serve/ becomes the chat server unchanged and this
+      becomes redundant.
+
+      Every response carries x-waste-provenance and the server refuses to
+      start against an unattested stage without an explicit flag:
+        weights=synthetic tokenizer=fallback template=supplied
+
+      Running it for real found three defects the unit tests had not:
+        - no context-limit enforcement, surfacing as an opaque
+          "step failed at position 16" from inside the C;
+        - --tokenizer conflated tokenizer assets with the chat template,
+          so a run with a template and no tiktoken assets was refused —
+          which is exactly the state this project is in until G4;
+        - memoryview over a ctypes float array raises
+          NotImplementedError on first subscript, hidden because the test
+          stub returned a plain list.
+      All three fixed and regression-tested; the stub now returns the type
+      the runtime does.
 
 PUBLIC SURFACE PROMOTED
 -----------------------

@@ -596,7 +596,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("project", help="estimated decode throughput")
     p.add_argument("--bandwidth", type=float, nargs="+",
-                   default=[0.55, 2.08, 3.00, 7.00, 10.73, 12.89],
+                   default=[0.55, 2.11, 2.45, 7.00, 10.73, 12.89],
                    help="GiB/s of cache-bypassed random record reads")
     p.add_argument("--hit", type=float, nargs="+", default=[0.0, 0.29, 0.42])
     p.set_defaults(func=cmd_project)

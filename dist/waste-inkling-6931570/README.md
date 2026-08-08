@@ -12,7 +12,7 @@ to WASTE, use the patch below.
 ```sh
 git clone https://github.com/sqliteai/waste.git
 cd waste
-git checkout 69315701f634648f7a790915a0a525ed8aabf218
+git checkout d9b919a791148b571e643d0af666bf19b4d733ab
 git am /path/to/dist/waste-inkling-6931570/patches/0001-Add-the-Inkling-Small-runtime-foundation-to-WASTE.patch
 PATH=/usr/bin:/bin make check
 ```
@@ -24,7 +24,7 @@ cd /path/to/dist/waste-inkling-6931570
 sha256sum -c SHA256SUMS
 ```
 
-The applied Git tree must be `ff4c9cdb9dec310921e96e344e00079a75279e8b`.
+The applied Git tree must be `62a9240fdd169aae8292f88fd225bf51843cd2f6`.
 
 ## Regenerate and verify from source
 
@@ -40,7 +40,7 @@ recording when the build ran or which Git emitted it.
 The authoritative check is nonetheless the **applied tree hash**, not the patch
 bytes. `format-patch` output is a function of the local Git as well as the
 content, so CI verifies that the committed patch *applies to*
-`ff4c9cdb9dec310921e96e344e00079a75279e8b` — which is what a consumer actually
+`62a9240fdd169aae8292f88fd225bf51843cd2f6` — which is what a consumer actually
 depends on, and is immune to toolchain drift.
 
 ## What changed against `waste-inkling-patch-v18`

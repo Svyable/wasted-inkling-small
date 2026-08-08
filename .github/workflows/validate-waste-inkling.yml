@@ -85,6 +85,7 @@ jobs:
           python3 tests/test_inkling_cache_trace.py
           python3 tests/test_inkling_cache_bench.py
           python3 tests/test_inkling_expert_bench.py
+          python3 tests/test_inkling_serve.py
 
   differential:
     name: Torch differential suite

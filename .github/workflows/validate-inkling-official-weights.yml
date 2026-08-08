@@ -1,0 +1,324 @@
+name: Produce Inkling official-weight evidence
+
+on:
+  pull_request:
+    paths:
+      - "mvp/**"
+      - "inkling/tools/inkling_fixture.py"
+      - "inkling/tools/inkling_layer_parity.py"
+      - "inkling/tools/inkling_parity.py"
+      - "inkling/tools/inkling_plan.py"
+      - "docs/OFFICIAL-FIXTURE-PLAN.json"
+      - "docs/OFFICIAL-ROUTER-SELECTION.json"
+      - "docs/OFFICIAL-WEIGHT-PARITY-RESULT.json"
+      - ".github/workflows/validate-inkling-official-weights.yml"
+  workflow_dispatch:
+    inputs:
+      require_parity:
+        description: Fail unless every official activation passes tolerance
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-official-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  routing-validity:
+    name: Official cutoff-valid C routing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            torch 'transformers==5.14.1'
+
+      - name: Extract and bind the one-expert routing seed
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          fixture="${RUNNER_TEMP}/router-seed"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" \
+            --layers 2,5 \
+            --experts '2:0;5:0' \
+            --max-total-gib 4 \
+            --out "$fixture" > "${RUNNER_TEMP}/seed-manifest.json"
+          PYTHONPATH=mvp python3 - <<PY
+          import json
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import (
+              deterministic_hidden_states,
+              input_sha256,
+          )
+          from inkling_remote_fixture import HttpRangeSource
+
+          root = Path("${RUNNER_TEMP}")
+          source = HttpRangeSource(
+              "https://huggingface.co/thinkingmachines/Inkling-Small",
+              "$revision",
+          )
+          (root / "config.json").write_bytes(source.file("config.json"))
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          assert input_sha256(inputs, torch.bfloat16) == selection["inputs_sha256"]
+          (root / "inputs.json").write_text(
+              json.dumps(inputs.tolist()) + "\n", encoding="utf-8"
+          )
+          PY
+          PYTHONPATH=mvp python3 mvp/inkling_c_config.py \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --out "${RUNNER_TEMP}/c-config.json"
+
+      - name: Audit BF16 cutoff membership and candidate weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=mvp python3 mvp/audit_inkling_router_cutoff_ties.py \
+            --fixture "${RUNNER_TEMP}/router-seed" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --c-config "${RUNNER_TEMP}/c-config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --weight-atol 1e-3 \
+            --out "${RUNNER_TEMP}/router-cutoff-ties.json" > /dev/null
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          audit = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "router-cutoff-ties.json").read_text()
+          )
+          for layer, value in sorted(
+              audit["layers"].items(), key=lambda item: int(item[0])
+          ):
+              print(
+                  "ROUTER_VALIDITY "
+                  f"layer={layer} passed={value['passed']} "
+                  f"exact_rows={value['exact_rows']}/8 "
+                  f"tie_equivalent_rows={value['tie_equivalent_rows']}/8 "
+                  f"ambiguous_rows={value['ambiguous_cutoff_rows']}/8 "
+                  f"outside_tie={value['mismatch_positions_outside_official_cutoff_tie']} "
+                  f"weight_failures={value['candidate_weight_failure_positions']} "
+                  f"max_abs_weight={value['max_abs_candidate_weight_vs_official_logits']:.9g}"
+              )
+          raise SystemExit(0 if audit["passed"] else 2)
+          PY
+
+  layer-evidence:
+    name: Official BF16 evidence for layers 0, 2, and 5
+    needs: routing-validity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            torch 'transformers==5.14.1'
+
+      - name: Extract and verify the evidence-selected fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          fixture="${RUNNER_TEMP}/official-fixture"
+          manifest="${RUNNER_TEMP}/fixture-manifest.json"
+          extracted=false
+          for attempt in 1 2 3 4 5; do
+            rm -rf "$fixture"
+            rm -f "$manifest"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" \
+              --layers 0,2,5 \
+              --experts '2:13,19,25,26,27,30,33,39,60,67,69,81,90,91,92,95,96,112,116,117,126,131,133,140,146,150,152,166,175,217,238,247,254;5:6,21,32,44,45,56,60,63,66,91,105,110,120,145,152,156,163,166,179,180,219,233,236,238,250,252' \
+              --max-total-gib 8 \
+              --out "$fixture" > "$manifest"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              break
+            fi
+            delay=$((15 << (attempt - 1)))
+            echo "fixture acquisition attempt ${attempt} failed; retrying after ${delay}s" >&2
+            sleep "$delay"
+          done
+          if [ "$extracted" != true ]; then
+            echo "fixture acquisition exhausted five bounded attempts" >&2
+            exit 2
+          fi
+          python3 inkling/tools/inkling_fixture.py \
+            --fixture "$fixture" --verify
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          fixture = Path(os.environ["RUNNER_TEMP"]) / "official-fixture"
+          manifest = json.loads((fixture / "fixture.json").read_text())
+          plan = json.loads(Path("docs/OFFICIAL-FIXTURE-PLAN.json").read_text())
+          assert manifest["total_payload_bytes"] == plan["payload_bytes"]
+          assert len(manifest["entries"]) == plan["entries"]
+          assert manifest["experts"] == plan["experts"]
+          assert manifest["source"]["revision"] == plan["revision"]
+          assert manifest["source"]["config_sha256"] == plan["config_sha256"]
+          assert manifest["source"]["index_sha256"] == plan["index_sha256"]
+          print(json.dumps({
+              "entries": len(manifest["entries"]),
+              "payload_bytes": manifest["total_payload_bytes"],
+              "remote_bytes_read": manifest["remote_bytes_read"],
+              "remote_requests": manifest["remote_requests"],
+          }, indent=2, sort_keys=True))
+          PY
+
+      - name: Bind release config and deterministic inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          PYTHONPATH=mvp python3 - <<PY
+          import json
+          import time
+          from pathlib import Path
+          from discover_inkling_router_experts import (
+              deterministic_hidden_states,
+              input_sha256,
+          )
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+
+          root = Path("${RUNNER_TEMP}")
+          config = None
+          for attempt in range(5):
+              try:
+                  source = HttpRangeSource(
+                      "https://huggingface.co/thinkingmachines/Inkling-Small",
+                      "$revision",
+                  )
+                  config = source.file("config.json")
+                  break
+              except RemoteFixtureError:
+                  if attempt == 4:
+                      raise
+                  delay = 15 * (2**attempt)
+                  print(
+                      f"config acquisition attempt {attempt + 1} failed; "
+                      f"retrying after {delay}s",
+                      flush=True,
+                  )
+                  time.sleep(delay)
+          assert config is not None
+          (root / "config.json").write_bytes(config)
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          assert input_sha256(inputs, __import__("torch").bfloat16) == (
+              selection["inputs_sha256"]
+          )
+          (root / "inputs.json").write_text(
+              json.dumps(inputs.tolist()) + "\n", encoding="utf-8"
+          )
+          PY
+          PYTHONPATH=mvp python3 mvp/inkling_c_config.py \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --out "${RUNNER_TEMP}/c-config.json"
+
+      - name: Run official and canonical-route C layers separately
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="${RUNNER_TEMP}/official-fixture"
+          for layer in 0 2 5; do
+            official="${RUNNER_TEMP}/official-${layer}"
+            candidate="${RUNNER_TEMP}/candidate-${layer}"
+            PYTHONPATH=mvp python3 mvp/run_inkling_fixture_reference.py \
+              --fixture "$fixture" \
+              --model-config "${RUNNER_TEMP}/config.json" \
+              --inputs "${RUNNER_TEMP}/inputs.json" \
+              --layers "$layer" \
+              --dtype bfloat16 \
+              --out "$official"
+            PYTHONPATH=mvp python3 mvp/inkling_canonical_route_layer_parity.py \
+              --fixture "$fixture" \
+              --config "${RUNNER_TEMP}/c-config.json" \
+              --inputs "${RUNNER_TEMP}/inputs.json" \
+              --layers "$layer" \
+              --route-override docs/OFFICIAL-ROUTER-SELECTION.json \
+              --out "$candidate"
+          done
+
+      - name: Compare and validate complete evidence
+        shell: bash
+        env:
+          REQUIRE_PARITY: ${{ github.event_name == 'workflow_dispatch' && inputs.require_parity || false }}
+        run: |
+          set -euo pipefail
+          for layer in 0 2 5; do
+            set +e
+            PYTHONPATH=mvp python3 mvp/compare_inkling_layer_archives.py \
+              --compare-reference "${RUNNER_TEMP}/official-${layer}" \
+              --compare-candidate "${RUNNER_TEMP}/candidate-${layer}" \
+              --allow-candidate-extras \
+              --atol 1e-3 --rtol 1e-3 \
+              --report "${RUNNER_TEMP}/layer-${layer}-report.json"
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+              exit "$rc"
+            fi
+            test -s "${RUNNER_TEMP}/layer-${layer}-report.json"
+          done
+
+          set +e
+          PYTHONPATH=mvp python3 mvp/official_weight_parity_report.py \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layer-report "0:${RUNNER_TEMP}/layer-0-report.json" \
+            --layer-report "2:${RUNNER_TEMP}/layer-2-report.json" \
+            --layer-report "5:${RUNNER_TEMP}/layer-5-report.json" \
+            --candidate-archive "0:${RUNNER_TEMP}/candidate-0" \
+            --candidate-archive "2:${RUNNER_TEMP}/candidate-2" \
+            --candidate-archive "5:${RUNNER_TEMP}/candidate-5" \
+            --route-atol 1e-3 \
+            --out "${RUNNER_TEMP}/official-weight-parity.json"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+            exit "$rc"
+          fi
+          test -s "${RUNNER_TEMP}/official-weight-parity.json"
+
+          validation_args=()
+          if [ "$REQUIRE_PARITY" = "true" ]; then
+            validation_args+=(--require-parity)
+          fi
+          PYTHONPATH=mvp python3 mvp/validate_inkling_official_weight_evidence.py \
+            --report "${RUNNER_TEMP}/official-weight-parity.json" \
+            --evidence docs/OFFICIAL-WEIGHT-PARITY-RESULT.json \
+            --growth-limit 1.25 \
+            --out "${RUNNER_TEMP}/official-weight-validation.json" \
+            "${validation_args[@]}"
+
+          echo "OFFICIAL_WEIGHT_PARITY_REPORT_BEGIN"
+          cat "${RUNNER_TEMP}/official-weight-parity.json"
+          echo "OFFICIAL_WEIGHT_PARITY_REPORT_END"
+          echo "OFFICIAL_WEIGHT_VALIDATION_BEGIN"
+          cat "${RUNNER_TEMP}/official-weight-validation.json"
+          echo "OFFICIAL_WEIGHT_VALIDATION_END"

@@ -1,0 +1,138 @@
+name: Audit Inkling router cutoff ties
+
+on:
+  pull_request:
+    paths:
+      - "mvp/audit_inkling_router_cutoff_ties.py"
+      - "mvp/test_inkling_router_cutoff_ties.py"
+      - "mvp/analyze_inkling_router_mismatch.py"
+      - "mvp/discover_inkling_c_router_experts.py"
+      - "mvp/discover_inkling_router_experts.py"
+      - "mvp/inkling_c_config.py"
+      - "mvp/inkling_compact_layer_parity.py"
+      - "docs/OFFICIAL-ROUTER-SELECTION.json"
+      - ".github/workflows/audit-inkling-router-ties.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-router-ties-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Official cutoff-valid C routing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            torch 'transformers==5.14.1'
+
+      - name: Extract the one-expert audit seed
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          fixture="${RUNNER_TEMP}/router-seed"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" \
+            --layers 2,5 \
+            --experts '2:0;5:0' \
+            --max-total-gib 4 \
+            --out "$fixture" > "${RUNNER_TEMP}/seed-manifest.json"
+          PYTHONPATH=mvp python3 - <<PY
+          import json
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import (
+              deterministic_hidden_states,
+              input_sha256,
+          )
+          from inkling_remote_fixture import HttpRangeSource
+
+          root = Path("${RUNNER_TEMP}")
+          source = HttpRangeSource(
+              "https://huggingface.co/thinkingmachines/Inkling-Small",
+              "$revision",
+          )
+          (root / "config.json").write_bytes(source.file("config.json"))
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          assert input_sha256(inputs, torch.bfloat16) == selection["inputs_sha256"]
+          (root / "inputs.json").write_text(
+              json.dumps(inputs.tolist()) + "\n", encoding="utf-8"
+          )
+          PY
+          PYTHONPATH=mvp python3 mvp/inkling_c_config.py \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --out "${RUNNER_TEMP}/c-config.json"
+
+      - name: Audit IDs and weights against BF16 cutoff equivalence
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=mvp python3 mvp/audit_inkling_router_cutoff_ties.py \
+            --fixture "${RUNNER_TEMP}/router-seed" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --c-config "${RUNNER_TEMP}/c-config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --weight-atol 1e-3 \
+            --out "${RUNNER_TEMP}/router-cutoff-ties.json" > /dev/null
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          audit = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "router-cutoff-ties.json").read_text()
+          )
+          print(
+              "ROUTER_TIE_ENV "
+              f"torch={audit['torch_version']} "
+              f"threads={audit['torch_threads']} "
+              f"cpu_capability={audit['cpu_capability']} "
+              f"weight_atol={audit['weight_atol']}"
+          )
+          for layer, value in sorted(
+              audit["layers"].items(), key=lambda item: int(item[0])
+          ):
+              print(
+                  "ROUTER_TIE_AUDIT "
+                  f"layer={layer} passed={value['passed']} "
+                  f"exact_rows={value['exact_rows']}/8 "
+                  f"tie_equivalent_rows={value['tie_equivalent_rows']}/8 "
+                  f"ambiguous_rows={value['ambiguous_cutoff_rows']}/8 "
+                  f"outside_tie={value['mismatch_positions_outside_official_cutoff_tie']} "
+                  f"weight_failures={value['candidate_weight_failure_positions']} "
+                  f"max_abs_weight={value['max_abs_candidate_weight_vs_official_logits']:.9g} "
+                  f"topk_repeat_stable={value['topk_repeat_stable']}"
+              )
+              for row in value["rows"]:
+                  if row["exact_ids"] and row["candidate_weights_within_atol"]:
+                      continue
+                  print(
+                      "ROUTER_TIE_ROW "
+                      f"layer={layer} position={row['position']} "
+                      f"tie_equivalent={row['candidate_valid_under_official_cutoff']} "
+                      f"weight_ok={row['candidate_weights_within_atol']} "
+                      f"weight_max_abs={row['candidate_weight_max_abs_vs_official_logits']:.9g} "
+                      f"above={row['above_ids']} "
+                      f"tie_ids={row['cutoff_tie_ids']} "
+                      f"slots={row['slots_from_cutoff_tie']} "
+                      f"official={row['official_ids']} "
+                      f"candidate={row['candidate_ids']}"
+                  )
+          raise SystemExit(0 if audit["passed"] else 2)
+          PY

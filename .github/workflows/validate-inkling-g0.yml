@@ -26,6 +26,35 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Classify evidence changes
+    runs-on: ubuntu-24.04
+    outputs:
+      live_release: ${{ steps.classify.outputs.live_release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: classify
+        name: Decide whether live release evidence is required
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "live_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --name-only \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}" > changed-files.txt
+          cat changed-files.txt
+          if grep -Eq '^(mvp/(inkling_remote_fixture|discover_inkling_router_experts|compare_inkling_router_discoveries|inkling_fixture_reference|inkling_release_config|test_inkling_remote_fixture|test_inkling_router_discovery)\.py|docs/(REMOTE-FIXTURES\.md|OFFICIAL-FIXTURE-PLAN\.json|OFFICIAL-ROUTER-SELECTION\.json)|\.github/workflows/validate-inkling-g0\.yml)$' changed-files.txt; then
+            echo "live_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "live_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
   unit:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -45,8 +74,10 @@ jobs:
 
   release-plan:
     name: Plan discovered official fixture
+    needs: changes
+    if: needs.changes.outputs.live_release == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -56,12 +87,28 @@ jobs:
         run: |
           set -euo pipefail
           revision=21152b5312c653be115f33a8342759064144e281
-          python3 mvp/inkling_remote_fixture.py \
-            --revision "$revision" \
-            --layers 0,2,5 \
-            --experts '2:13,19,25,26,27,30,33,39,60,67,69,81,90,91,92,95,96,112,116,117,126,131,133,140,146,150,152,166,175,217,238,247,254;5:6,21,32,44,45,56,60,63,66,91,105,110,120,145,152,156,163,166,179,180,219,233,236,238,250,252' \
-            --max-total-gib 8 \
-            --plan-only > fixture-plan.json
+          planned=false
+          for attempt in 1 2 3 4; do
+            rm -f fixture-plan.json
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" \
+              --layers 0,2,5 \
+              --experts '2:13,19,25,26,27,30,33,39,60,67,69,81,90,91,92,95,96,112,116,117,126,131,133,140,146,150,152,166,175,217,238,247,254;5:6,21,32,44,45,56,60,63,66,91,105,110,120,145,152,156,163,166,179,180,219,233,236,238,250,252' \
+              --max-total-gib 8 \
+              --plan-only > fixture-plan.json; then
+              planned=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((15 << (attempt - 1)))
+              echo "release plan attempt ${attempt} failed; retrying after ${delay}s" >&2
+              sleep "$delay"
+            fi
+          done
+          if [ "$planned" != true ]; then
+            echo "release planning exhausted four bounded attempts" >&2
+            exit 2
+          fi
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -95,8 +142,10 @@ jobs:
 
   router-discovery:
     name: Discover official routed experts
+    needs: changes
+    if: needs.changes.outputs.live_release == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -111,23 +160,57 @@ jobs:
           set -euo pipefail
           revision=21152b5312c653be115f33a8342759064144e281
           fixture="${RUNNER_TEMP}/router-seed"
-          python3 mvp/inkling_remote_fixture.py \
-            --revision "$revision" \
-            --layers 2,5 \
-            --experts '2:0;5:0' \
-            --max-total-gib 4 \
-            --out "$fixture" > seed-fixture.json
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            rm -f seed-fixture.json
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" \
+              --layers 2,5 \
+              --experts '2:0;5:0' \
+              --max-total-gib 4 \
+              --out "$fixture" > seed-fixture.json; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((15 << (attempt - 1)))
+              echo "router seed attempt ${attempt} failed; retrying after ${delay}s" >&2
+              sleep "$delay"
+            fi
+          done
+          if [ "$extracted" != true ]; then
+            echo "router seed acquisition exhausted four bounded attempts" >&2
+            exit 2
+          fi
           PYTHONPATH=mvp python3 - <<PY
+          import time
           from pathlib import Path
-          from inkling_remote_fixture import HttpRangeSource
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
 
-          source = HttpRangeSource(
-              "https://huggingface.co/thinkingmachines/Inkling-Small",
-              "$revision",
-          )
-          Path("${RUNNER_TEMP}/config.json").write_bytes(source.file("config.json"))
+          config = None
+          for attempt in range(4):
+              try:
+                  source = HttpRangeSource(
+                      "https://huggingface.co/thinkingmachines/Inkling-Small",
+                      "$revision",
+                  )
+                  config = source.file("config.json")
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3:
+                      raise
+                  delay = 15 * (2**attempt)
+                  print(
+                      f"router config attempt {attempt + 1} failed; "
+                      f"retrying after {delay}s",
+                      flush=True,
+                  )
+                  time.sleep(delay)
+          assert config is not None
+          Path("${RUNNER_TEMP}/config.json").write_bytes(config)
           PY
-      - name: Reproduce exact official choices
+      - name: Reproduce official expert-weight pairs
         shell: bash
         run: |
           set -euo pipefail
@@ -139,14 +222,6 @@ jobs:
             --seed 19 \
             --dtype bfloat16 \
             --out router-selection.json
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          actual = json.loads(Path("router-selection.json").read_text())
-          expected = json.loads(
-              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
-          )
-          assert actual == expected
-          print(json.dumps(actual, indent=2, sort_keys=True))
-          PY
+          PYTHONPATH=mvp python3 mvp/compare_inkling_router_discoveries.py \
+            --actual router-selection.json \
+            --expected docs/OFFICIAL-ROUTER-SELECTION.json

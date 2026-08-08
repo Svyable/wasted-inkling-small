@@ -19,8 +19,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  admission:
+    name: Confirm hosted runner admission
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    steps:
+      - name: Record runner admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HOSTED_RUNNER_ADMITTED os=${RUNNER_OS} arch=${RUNNER_ARCH}"
+
   contracts:
     name: Compile and run retained BF16 contracts
+    needs: admission
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:

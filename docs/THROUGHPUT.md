@@ -335,29 +335,95 @@ free I/O is 4.4 tok/s.** An order of magnitude on top of §3's 3.4 tok/s means
 routing or dequantization. There is no cache policy, chunk size or prefetch
 depth that produces it.
 
-### So the 10x is a compute backend
+### The order of magnitude was in our own code
 
-That is the conclusion, and it is a redirection of the roadmap rather than a
-tuning note:
+The paragraph above stood for about an hour. Looking for what the expert
+matmul actually executes turned up something better than a GPU, and it is not
+subtle.
 
-- 575 GFLOP/s at batch 1 is out of reach for a CPU doing gather-heavy VQ
-  dequantization, which is what `vq_rows` does — `stages` gathers per row per
-  vector position.
-- It is a **single-digit percentage** of a laptop GPU. That is the only place
-  an order of magnitude is available.
-- WASTE is already shaped for it. `ecache.h` allocates slots at 16 KiB
-  alignment specifically so that "Metal's `newBufferWithBytesNoCopy`" can read
-  a record the CPU already holds — a streamed expert lands in a buffer the GPU
-  can use without a copy. The hard part of GPU MoE offload is feeding it, and
-  the feeding is what this engine already does.
-- And **batching's real value is not the 1.3x**. It is that chunk 32-64 turns
-  the expert matmul from a GEMV into a GEMM, which is the shape a GPU can
-  actually saturate. The two levers are one lever.
+**This port expands every expert to F32 before multiplying it.**
+`decode_matrix` in `inkling_wexp.c` reconstructs the whole quantized matrix —
+3 x 2048 x 4096 floats, **100.7 MB per expert** — into a workspace, and
+`inkling_layer.c` then runs an ordinary dense matvec over it.
 
-**Not claimed:** that a GPU backend exists, that 575 GFLOP/s has been reached,
-or that the dequantization pipeline survives the move. The claim is narrower
-and, I think, more useful — the I/O work that looked like the frontier is
-nearly finished, and everything after it is arithmetic.
+Upstream's `vq_matvec` (`src/model.c`) never expands an expert at all. It
+builds a table from the *activation* once per matrix,
+`lut[v][stage][entry] = sum_d x[v*dim+d] * book[stage][entry][d]`, and each
+output row becomes `nv * stages` table lookups and adds. Upstream's own README
+makes the point in passing — "WASTE is ~100x faster and never expands an
+expert at all" — and `docs/WASTE-CONSTRAINTS.md` §2 already said the scalar
+path "should **not** become the hot path". Nobody had measured what that
+sentence was worth.
+
+`tools/inkling_expert_bench.c` implements both and **checks they agree before
+it will print a timing** — a speed comparison between two implementations of
+different functions measures nothing. They agree to a relative 2.4e-06, so the
+LUT formulation is a correct drop-in.
+
+| | expand-then-dense | LUT gather | ratio |
+| --- | ---: | ---: | ---: |
+| one matrix, `-O2` | 29.4 ms | 6.6 ms | **4.5x** |
+| one matrix, `-O3` | 22.4 ms | 4.9 ms | 4.6x |
+| one matrix, `-O3 -march=native` | 22.9 ms | 3.9 ms | **5.9x** |
+| DRAM traffic per expert | 201.3 MB | 11.0 MB | **18.3x** |
+| **DRAM traffic per token** (320 experts) | **60.0 GiB** | **3.28 GiB** | 18.3x |
+
+Three things make this robust rather than a microbenchmark artifact:
+
+1. **The ratio grows with optimization** (4.5x → 5.9x). The expand path is
+   memory-bound and cannot be vectorized out of it; the LUT build is a dense
+   dot product that vectorizes well. Better compilers widen the gap.
+2. **The traffic ratio is implementation-independent.** Expanding writes
+   100.7 MB and reads it straight back, per expert, per token. No amount of
+   SIMD or threading changes that 60 GiB.
+3. **60 GiB/token of DRAM traffic is 28x what the model reads from disk.**
+   Every §6 measurement above optimises a 2.11 GiB disk read while the same
+   token pushes sixty gigabytes through memory. The I/O analysis was
+   optimising the wrong side of the machine.
+
+The LUT path's 3.28 GiB/token is *mostly the index planes themselves* — bytes
+the engine had to read from disk anyway. It adds a 1.5 MB table per matrix,
+which is L2-resident.
+
+**Caveat, stated plainly:** both implementations here are scalar and
+single-threaded, so the absolute times are not the engine's. Upstream's real
+`vq_apply` is threaded and tiled, with interleaved rows to hide the
+gather's load-address-load dependency — `model.c`'s own comments record that
+tiling as the change that finally moved it. The **ratio** is the finding; the
+absolute numbers are this machine's.
+
+### So the first order of magnitude is a port fix, and the next is a backend
+
+In order, largest first:
+
+1. **Stop expanding experts** — a measured 4.5-5.9x on expert compute and
+   18.3x less DRAM traffic, in code this repository owns, against a reference
+   implementation upstream already ships and this port already links. It is
+   the single largest, cheapest, most certain item in this document.
+   `docs/ROADMAP-V19.md` G6 step 3 already says to reuse `ecache` and the
+   optimized VQ kernels "rather than the scalar `inkling_wexp.c` path"; this
+   measures the price of not having done it.
+2. **The remaining I/O levers**, worth about 1.3x combined (§6 above), and
+   worth less once (1) lands because the step gets shorter on the compute side
+   without the reads changing.
+3. **A GPU backend**, for whatever is left. WASTE is already shaped for one:
+   `ecache.h` aligns slots to 16 KiB specifically so that "Metal's
+   `newBufferWithBytesNoCopy`" can read a record the CPU already holds, so a
+   streamed expert lands in a buffer the GPU can use without a copy. The hard
+   part of GPU MoE offload is feeding it, and feeding is what this engine
+   already does. Batching belongs here rather than in (2): chunk 32-64 turns
+   the expert GEMV into a GEMM, which is the shape a GPU can saturate.
+
+**Not claimed:** that (1) has been landed in the runtime — the benchmark is
+standalone, and wiring it means routing the layer through a quantized backend
+rather than a resident-F32 expert, which is real work with real parity risk
+and belongs behind G1. Nor that a GPU backend exists, nor that the
+dequantization pipeline survives the move to one.
+
+The claim is narrower and more useful than the one this section opened with:
+**the I/O work that looked like the frontier is nearly finished, the biggest
+remaining win is a known defect in this port rather than a missing feature,
+and only after that is it a hardware question.**
 
 ## 7. What this changes about the plan
 
@@ -377,9 +443,14 @@ nearly finished, and everything after it is arithmetic.
   that cache work still paid. That was right about the grid and wrong about the
   consequence: with the cache measured rather than assumed, the step is
   compute-bound at the operating point, and it is the arithmetic that binds.)*
-- **A GPU backend for the expert matmul is where the order of magnitude is**,
-  and batching is its enabler rather than a lever in its own right, because
-  chunk 32-64 is what turns the expert GEMV into a GEMM.
+- **The largest single win is a defect in this port, not a missing feature.**
+  `inkling_wexp.c` expands every expert to 100.7 MB of F32 before multiplying
+  it, where upstream's `vq_matvec` never expands one: a measured 4.5-5.9x on
+  expert compute and 18.3x less DRAM traffic, against a reference
+  implementation already linked into the same binary. §6 has the numbers.
+- **A GPU backend is the win after that**, with batching as its enabler rather
+  than a lever in its own right, because chunk 32-64 is what turns the expert
+  GEMV into a GEMM.
 - **The demo is the deliverable.** A parity report is evidence; a terminal
   recording of a 276B model generating text on a 16 GiB laptop, with a command
   anyone can paste, is the thing that travels.

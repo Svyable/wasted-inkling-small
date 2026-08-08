@@ -38,11 +38,11 @@ PASS  integration/waste/generate.sh is deterministic on a fixed toolchain
 
 PASS  committed bundle applies to the reviewed tree
       git am of dist/waste-inkling-6931570/patches/*.patch onto the pinned
-      upstream yields 2972b792beaad0a69721f5e435a515f358868df0.
-      Patch sha256: 2b51cf33c522989cc69f1c67c793f6af9f9e4cd53e2278922adf41eb39fb9d43
+      upstream yields ff4c9cdb9dec310921e96e344e00079a75279e8b.
+      Patch sha256: 70afc848bd915b77815f2b82fee59b44f9aada023b8c62a2d0ef885b5ef6b228
 
 PASS  integration/waste/verify.sh
-      Generated tree: 2972b792beaad0a69721f5e435a515f358868df0
+      Generated tree: ff4c9cdb9dec310921e96e344e00079a75279e8b
 
 VALIDATION
 ----------
@@ -70,15 +70,16 @@ PASS  strict compile of src/arch.c and all src/inkling*.c
 
 PASS  complete Inkling Python suite
       python3 -m unittest discover -s tests -p "test_ink*.py" -t .
-      Result: 218 tests, OK, process exit 0
+      Result: 228 tests, OK, process exit 0
       python3 -m unittest tests.test_inspect_inkling tests.test_convert_inkling
       Result: 18 tests, OK
-      Total: 236 tests passing.
+      Total: 246 tests passing.
 
       The v16 bundle recorded 99 tests and nothing re-ran them; that number is
       confirmed, and the fixture reader, the layer-parity harness, the
       official-transformers layer comparison, the decode cost model and the
-      expert-cache benchmark bring the total to 236.
+      expert-cache benchmark and the expert-matvec benchmark bring the
+      total to 246.
 
       The process exit code is checked deliberately. An earlier revision of
       inkling_layer_parity.py declared waste_inkling_attention_state with six
@@ -193,6 +194,46 @@ PASS  arithmetic ceiling
       demands 575 GFLOP/s sustained before attention, norms, routing or
       dequantization — which no cache policy, chunk size or prefetch depth
       changes. docs/THROUGHPUT.md §6 is the analysis.
+
+PASS  expert matvec measured: this port expands what upstream never does
+      tools/inkling_expert_bench.c times the two ways an expert can be
+      multiplied and CHECKS THEY AGREE BEFORE PRINTING A TIMING, because a
+      speed comparison between two implementations of different functions
+      measures nothing. They agree to a relative 2.4e-06.
+
+      EXPAND  decode_matrix in inkling_wexp.c reconstructs the whole
+              quantized matrix into F32 -- 3 x 2048 x 4096 floats, 100.7 MB
+              per expert -- and inkling_layer.c runs a dense matvec over it.
+              This is what the private runtime does today.
+      LUT     upstream's vq_matvec builds a table from the ACTIVATION once
+              per matrix and gathers per row. It never expands an expert.
+
+                                     expand      LUT     ratio
+        one matrix, -O2             29.4 ms   6.6 ms      4.5x
+        one matrix, -O3             22.4 ms   4.9 ms      4.6x
+        one matrix, -O3 -march=native 22.9 ms 3.9 ms      5.9x
+        DRAM traffic per expert     201.3 MB  11.0 MB    18.3x
+        DRAM traffic per token       60.0 GiB 3.28 GiB   18.3x
+
+      The ratio GROWS with optimization because the expand path is
+      memory-bound, and the traffic ratio holds regardless of implementation
+      quality. 60 GiB/token through DRAM is 28x what the model reads from
+      disk, so the I/O analysis above was optimising the wrong side of the
+      machine.
+
+      NOT claimed: that this is landed in the runtime. The benchmark is
+      standalone; wiring it means routing the layer through a quantized
+      backend instead of a resident-F32 expert, which carries parity risk and
+      belongs behind G1. Both implementations are scalar and single-threaded,
+      so the ratio is the finding and the absolute times are this machine's.
+
+UPSTREAM CONTRIBUTION PREPARED
+------------------------------
+upstream/0001-diskbench-bypass-the-page-cache-on-Linux.patch applies to
+pristine sqliteai/waste@6931570 and compiles -Werror, verified from a clean
+clone. It carries the fix and its measurement without the Inkling port
+attached, so upstream need not take 15,000 lines to get a benchmark that
+measures the right thing.
 
 PUBLIC SURFACE PROMOTED
 -----------------------

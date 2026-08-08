@@ -264,6 +264,7 @@ resident bytes and canonical F32 resident bytes separately.
 | `inkling_fixture.py` | 268 | **dependency-free** fixture reader: CRC verification, axis-0 expert slices, BF16/F16/F32 → F32 decode, module-relative state-dict keys, fail-closed coverage checks |
 | `inkling_layer_parity.py` | 470 | binds one layer from a fixture and runs the traced C decoder layer; owns its ctypes ABI declarations, which a compiled probe checks against the headers |
 | `inkling_throughput.py` | 493 | **dependency-free** decode cost model: exact VQ record geometry, bytes per token, expert bank, the budget-resolver ladder, and a throughput projection calibrated against upstream's measured K3 decode |
+| `inkling_expert_bench.c` | 243 | expand-then-dense against LUT gather at Inkling geometry; refuses to time two paths that disagree |
 | `inkling_cache_trace.py` | 254 | **dependency-free** routing-trace generator: two parameters, each fitted to one upstream measurement, validated against a third it was not fitted to |
 | `inkling_cache_bench.py` | 232 | builds and drives the cache simulator; reproduces Gate 5, sweeps cache size, measures chunk dedup |
 | `inkling_trace.py` | 147 | C side of the trace protocol |

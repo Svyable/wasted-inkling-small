@@ -1,0 +1,192 @@
+From c788ed3a462cf69e9b2631dea7cc5cb764209346 Mon Sep 17 00:00:00 2001
+From: WASTE Inkling integration <inkling@waste.invalid>
+Date: Sat, 8 Aug 2026 00:00:00 +0000
+Subject: [PATCH] diskbench: bypass the page cache on Linux
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+tools/diskbench.c calls its third measurement "random record reads,
+cache-bypassed <- the number that sets tok/s". On Linux it was neither:
+nocache() is #ifdef __APPLE__ with no Linux arm, and no open() passes
+O_DIRECT. Whenever the benchmark file fits in RAM -- the default, since
+file_gb defaults to 8 -- the random-read loop reads back what it just
+wrote, from the page cache, and prints it under the label
+"cache bypassed".
+
+That is the failure docs/GATES.md Gate 5 exists to prevent: "on a 64 GB
+machine the kernel was quietly holding all 17 GB of Kimi-Linear, so the
+measured I/O cost was fiction." The engine itself is fine -- ecache.c
+opens O_DIRECT on Linux -- only the benchmark that calibrates
+expectations against it was affected.
+
+Measured on one host, 8 GiB file, 9,457,664 B record:
+
+                    unpatched   with O_DIRECT   inflation
+  seq read          5.66 GiB/s     2.39 GiB/s        2.4x
+  rand 1 thread     5.67 GiB/s     2.08 GiB/s        2.7x
+  rand 2 threads    8.41 GiB/s     2.41 GiB/s        3.5x
+  rand 4 threads   14.49 GiB/s     3.00 GiB/s        4.8x
+
+The unpatched figure exceeds the 12.89 GiB/s EFFICIENCY.md §2 measured on
+an M5 Pro internal SSD, on a cloud VM that really does 3.00. Note the
+shape too: the unpatched numbers scale with thread count because they
+measure memcpy from page cache, which hides the near-saturation at queue
+depth 1 that §2 draws its read-ahead conclusion from.
+
+Reads now open O_DIRECT, falling back to buffered plus
+POSIX_FADV_DONTNEED where the filesystem refuses it. A refused O_DIRECT
+is reported in the result line and on stderr rather than silently
+downgraded: a benchmark that quietly falls back is worse than one that
+fails, because it produces a plausible number wrong by the size of RAM.
+
+Also parameterizes the trailing tok/s column, which hardcoded K3's
+12.5 GB/token, and adds (void)fd on the non-Apple nocache() path so the
+file compiles clean under -Wall -Wextra -Werror.
+
+macOS is unchanged: F_NOCACHE and F_RDAHEAD still apply, and O_DIRECT
+does not exist there so the #ifdef compiles it out.
+---
+ tools/diskbench.c | 77 +++++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 68 insertions(+), 9 deletions(-)
+
+diff --git a/tools/diskbench.c b/tools/diskbench.c
+index 7235a2e..22d2be7 100644
+--- a/tools/diskbench.c
++++ b/tools/diskbench.c
+@@ -10,7 +10,19 @@
+  *   4. the same with N threads (the engine's async pool)
+  *
+  * Build: cc -O2 -o diskbench tools/diskbench.c
+- * Usage: ./diskbench /Volumes/WasteDisk/k3/.bench [file_gb] [rec_mb] [threads]
++ * Usage: ./diskbench PATH [file_gb] [rec_mb] [threads] [gb_per_token]
++ *
++ * `gb_per_token` scales the trailing tok/s column to the model under test:
++ * K3 reads ~12.5 GB per cold token, Inkling-Small ~2.11 GiB (240 records of
++ * 9,457,664 B). It defaults to K3's, which is what this file was written for.
++ *
++ * On Linux the reads are opened O_DIRECT. Until 2026-08-08 `nocache()` was
++ * `#ifdef __APPLE__` with no Linux arm and no open flag, so every Linux run
++ * of this benchmark measured the page cache whenever the file fit in RAM —
++ * which is the exact fiction docs/GATES.md Gate 5 exists to prevent, and it
++ * reported it as the number that sets tok/s. If O_DIRECT is refused (tmpfs,
++ * some overlay and network filesystems) the run says so on stderr and in the
++ * result line rather than quietly reporting cached bandwidth.
+  */
+ #define _GNU_SOURCE
+ #include <errno.h>
+@@ -32,20 +44,49 @@ static void nocache(int fd) {
+ #ifdef __APPLE__
+     fcntl(fd, F_NOCACHE, 1);
+     fcntl(fd, F_RDAHEAD, 0);
++#else
++    (void)fd;   /* O_DIRECT does this on Linux; see open_read() */
++#endif
++}
++
++/* Open for reading with the page cache out of the way. O_DIRECT is the only
++ * thing on Linux that actually removes it; POSIX_FADV_DONTNEED merely asks,
++ * and asks about pages that are already resident. g_direct records whether we
++ * got it, because a benchmark that silently falls back is worse than one that
++ * fails — it produces a plausible number that is off by the size of RAM. */
++static int g_direct = -1;        /* -1 unknown, 1 O_DIRECT, 0 buffered */
++
++static int open_read(const char *path) {
++    int fd = -1;
++#ifdef O_DIRECT
++    fd = open(path, O_RDONLY | O_DIRECT);
++    if (fd >= 0) {
++        if (g_direct != 0) g_direct = 1;
++        nocache(fd);
++        return fd;
++    }
++#endif
++    fd = open(path, O_RDONLY);
++    if (fd < 0) return fd;
++    g_direct = 0;
++    nocache(fd);
++#if defined(POSIX_FADV_DONTNEED)
++    posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+ #endif
++    return fd;
+ }
+ 
+ static const char *g_path;
+ static size_t g_rec, g_file;
+ static int g_reps;
++static double g_gb_per_token = 12.5;   /* K3 cold token; see usage above */
+ 
+ typedef struct { int id, nthreads; double bytes; } targ;
+ 
+ static void *rand_reader(void *p) {
+     targ *a = (targ *)p;
+-    int fd = open(g_path, O_RDONLY);
++    int fd = open_read(g_path);
+     if (fd < 0) { perror("open"); return NULL; }
+-    nocache(fd);
+     void *buf = NULL;
+     if (posix_memalign(&buf, 4096, g_rec)) { close(fd); return NULL; }
+     size_t nrec = g_file / g_rec;
+@@ -64,15 +105,24 @@ static void *rand_reader(void *p) {
+ }
+ 
+ int main(int argc, char **argv) {
+-    if (argc < 2) { fprintf(stderr, "usage: %s PATH [file_gb] [rec_mb] [threads]\n", argv[0]); return 1; }
++    if (argc < 2) {
++        fprintf(stderr,
++                "usage: %s PATH [file_gb] [rec_mb] [threads] [gb_per_token]\n",
++                argv[0]);
++        return 1;
++    }
+     g_path = argv[1];
+     double file_gb = argc > 2 ? atof(argv[2]) : 8.0;
+     double rec_mb  = argc > 3 ? atof(argv[3]) : 12.0;
+     int maxthreads = argc > 4 ? atoi(argv[4]) : 8;
++    if (argc > 5) g_gb_per_token = atof(argv[5]);
++    if (g_gb_per_token <= 0) { fprintf(stderr, "gb_per_token must be > 0\n"); return 1; }
+     g_file = (size_t)(file_gb * (1u << 30));
+     g_rec  = (size_t)(rec_mb * (1u << 20)) & ~4095UL;
++    if (g_rec == 0) { fprintf(stderr, "record rounds to zero\n"); return 1; }
+ 
+-    printf("file %.1f GB, record %.1f MB, path %s\n", file_gb, rec_mb, g_path);
++    printf("file %.1f GB, record %.1f MB (%zu B), %.2f GB/token, path %s\n",
++           file_gb, rec_mb, g_rec, g_gb_per_token, g_path);
+ 
+     /* 1. sequential write */
+     int fd = open(g_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+@@ -92,11 +142,13 @@ int main(int argc, char **argv) {
+     printf("seq write   : %6.2f GB/s\n", written / dt / (1u << 30));
+ 
+     /* 2. sequential read, cache-bypassed */
+-    fd = open(g_path, O_RDONLY); nocache(fd);
++    fd = open_read(g_path);
++    if (fd < 0) { perror("open read"); return 1; }
+     t0 = now(); size_t rd = 0; ssize_t r;
+     while ((r = read(fd, buf, g_rec)) > 0) rd += r;
+     dt = now() - t0; close(fd);
+-    printf("seq read    : %6.2f GB/s  (cache bypassed)\n", rd / dt / (1u << 30));
++    printf("seq read    : %6.2f GB/s  (%s)\n", rd / dt / (1u << 30),
++           g_direct == 1 ? "cache bypassed" : "PAGE CACHE NOT BYPASSED");
+ 
+     /* 3+4. random record reads, 1..maxthreads */
+     g_reps = 40;
+@@ -111,10 +163,17 @@ int main(int argc, char **argv) {
+         for (int i = 0; i < nt; i++) { pthread_join(th[i], NULL); tot += ta[i].bytes; }
+         dt = now() - t0;
+         double gbs = tot / dt / (1u << 30);
+-        printf("rand %2d thr : %6.2f GB/s  -> %.2f tok/s at 12.5 GB/token cold\n",
+-               nt, gbs, gbs / 12.5);
++        printf("rand %2d thr : %6.2f GB/s  -> %.2f tok/s at %.2f GB/token cold\n",
++               nt, gbs, gbs / g_gb_per_token, g_gb_per_token);
+     }
+ 
++    if (g_direct != 1)
++        fprintf(stderr,
++                "diskbench: WARNING O_DIRECT unavailable on this path; the\n"
++                "  random-read figures above include the page cache and are\n"
++                "  not the number that sets tok/s. Re-run on a real block\n"
++                "  device, or with a file several times larger than RAM.\n");
++
+     free(buf);
+     unlink(g_path);
+     return 0;

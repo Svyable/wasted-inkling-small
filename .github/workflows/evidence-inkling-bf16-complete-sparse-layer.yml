@@ -175,6 +175,17 @@ jobs:
           import json, os
           from pathlib import Path
           result = json.loads((Path(os.environ["RUNNER_TEMP"]) / "complete-sparse.json").read_text())
+          profile = result["execution_profile"]
+          outcome = result["evidence_outcome"]
+          print(
+              "COMPLETE_SPARSE_PROFILE "
+              f"outcome={outcome['classification']} "
+              f"host_class={profile['host_class_sha256']} "
+              f"runner_id={profile['runner']['runner_id']} "
+              f"profile={json.dumps(profile, sort_keys=True)}"
+          )
+          assert outcome["classification"] == "complete_sparse_layers_are_bfloat16_exact"
+          assert outcome["nonexact_layers"] == []
           assert result["source"]["production_source_unchanged"] is True
           for layer, value in sorted(result["layers"].items(), key=lambda item: int(item[0])):
               decision = value["decision"]
@@ -191,3 +202,12 @@ jobs:
                   f"layer_out_bf16_exact={layer_out['bfloat16_exact_fraction']:.9f}"
               )
           PY
+
+      - name: Preserve the profiled result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: complete-sparse-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/complete-sparse.json
+          if-no-files-found: warn
+          retention-days: 30

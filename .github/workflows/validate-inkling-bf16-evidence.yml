@@ -7,6 +7,7 @@ on:
       - "mvp/test_inkling_*bf16*.py"
       - "experiments/inkling/*bf16*.py"
       - "docs/BF16-EVIDENCE.md"
+      - ".github/workflows/evidence-inkling-bf16-dispatch-pair.yml"
       - ".github/workflows/validate-inkling-bf16-evidence.yml"
   workflow_dispatch:
 
@@ -39,6 +40,26 @@ jobs:
 
       - name: Compile every retained evidence module
         run: python3 -m compileall -q mvp experiments/inkling
+
+      - name: Parse the durable BF16 workflows
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          paths = (
+              Path(".github/workflows/evidence-inkling-bf16-complete-sparse-layer.yml"),
+              Path(".github/workflows/evidence-inkling-bf16-dispatch-pair.yml"),
+              Path(".github/workflows/evidence-inkling-bf16-router-denominator.yml"),
+              Path(".github/workflows/evidence-inkling-bf16-stateful-post-reduction.yml"),
+              Path(".github/workflows/validate-inkling-bf16-evidence.yml"),
+          )
+          for path in paths:
+              value = yaml.safe_load(path.read_text(encoding="utf-8"))
+              assert isinstance(value, dict), path
+              assert "jobs" in value, path
+          print(f"parsed {len(paths)} durable BF16 workflows")
+          PY
 
       - name: Run each BF16 unit-contract file in isolation
         shell: bash

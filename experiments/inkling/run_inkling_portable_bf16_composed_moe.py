@@ -9,8 +9,8 @@ entrypoint replaces experiment-only adapters:
   the shared FP32 accumulator, guarded by ``qdim >= hidden``;
 * an exception-safe collector that preserves raw candidate weights and injects
   only exact fixed-ID weights from the committed portable router policy;
-* a mandatory ``post_attention_norm`` anchor ahead of every expert-local stage,
-  so composition regressions cannot be misclassified as sparse-MoE arithmetic.
+* the complete ordered pre-router trace ahead of every expert-local stage, so
+  composition regressions name the first actual compared boundary.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from inkling_layer_parity import TraceCollector
 
 _original_transform_aggregation_source = implementation.transform_aggregation_source
 _original_official_stages = implementation.official_stages
-PROBE_STAGES = ("post_attention_norm",) + implementation.STAGES
+PROBE_STAGES = tuple(implementation.PRE_ROUTER_POINTS) + implementation.STAGES
 
 
 def transform_aggregation_source(source: str) -> str:
@@ -58,7 +58,7 @@ def transform_aggregation_source(source: str) -> str:
 
 
 def official_stages(module, normalized, residual, row):
-    """Prepend the already-proven pre-expert row as a mandatory anchor."""
+    """Retain the pre-expert row while the base probe adds the full trace."""
     anchor = normalized.detach().to(torch.bfloat16).float().reshape(-1)
     stages, route = _original_official_stages(module, normalized, residual, row)
     return {"post_attention_norm": anchor, **stages}, route

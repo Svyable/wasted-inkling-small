@@ -1,0 +1,463 @@
+name: Evidence Inkling BF16 same-host reference matrix
+
+on:
+  pull_request:
+    paths:
+      - "experiments/inkling/run_inkling_portable_bf16_complete_sparse_layer.py"
+      - "experiments/inkling/run_inkling_portable_bf16_composed_moe.py"
+      - "experiments/inkling/diagnose_inkling_portable_bf16_composed_moe.py"
+      - "experiments/inkling/test_inkling_portable_bf16_complete_sparse_layer.py"
+      - "mvp/discover_inkling_router_experts.py"
+      - "mvp/inkling_c_config.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "docs/BF16-EVIDENCE.md"
+      - "docs/INKLING-REFERENCE-PROFILES.md"
+      - "docs/OFFICIAL-ROUTER-SELECTION.json"
+      - ".github/workflows/evidence-inkling-bf16-dispatch-pair.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-bf16-dispatch-pair-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  OPENBLAS_NUM_THREADS: "1"
+
+jobs:
+  dispatch-pair:
+    name: Native, ATen AVX2, oneDNN AVX2, and MKLDNN-off on one host
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Gate on AVX512 hardware before checkout
+        id: hardware
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/dispatch-pair"
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          text = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
+          first = text.split("\n\n", 1)[0]
+          fields = {}
+          for line in first.splitlines():
+              key, separator, value = line.partition(":")
+              if separator:
+                  fields[key.strip()] = value.strip()
+          flags = sorted(set(fields.get("flags", "").split()))
+          flags_sha256 = hashlib.sha256(" ".join(flags).encode()).hexdigest()
+          eligible = "avx512f" in flags
+          gate = {
+              "format": "inkling-bfloat16-reference-matrix-gate",
+              "version": 3,
+              "classification": (
+                  "hardware_avx512_supported"
+                  if eligible
+                  else "ineligible_host_without_avx512f"
+              ),
+              "hardware_eligible": eligible,
+              "runner_id": os.environ.get("RUNNER_NAME"),
+              "runner_os": os.environ.get("RUNNER_OS"),
+              "runner_arch": os.environ.get("RUNNER_ARCH"),
+              "image_os": os.environ.get("ImageOS"),
+              "image_version": os.environ.get("ImageVersion"),
+              "cpu": {
+                  "vendor_id": fields.get("vendor_id"),
+                  "family": fields.get("cpu family"),
+                  "model": fields.get("model"),
+                  "model_name": fields.get("model name"),
+                  "stepping": fields.get("stepping"),
+                  "microcode": fields.get("microcode"),
+                  "flags": flags,
+                  "flags_sha256": flags_sha256,
+                  "avx512f": eligible,
+              },
+          }
+          root = Path(os.environ["RUNNER_TEMP"]) / "dispatch-pair"
+          (root / "gate.json").write_text(
+              json.dumps(gate, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as out:
+              out.write(f"eligible={str(eligible).lower()}\n")
+          print(
+              "DISPATCH_PAIR_HARDWARE_GATE "
+              f"classification={gate['classification']} "
+              f"runner_id={gate['runner_id']} model={gate['cpu']['model_name']}"
+          )
+          PY
+
+      - name: Record neutral hardware miss
+        if: steps.hardware.outputs.eligible != 'true'
+        shell: bash
+        run: |
+          echo "### Reference-matrix result: neutral" >> "$GITHUB_STEP_SUMMARY"
+          echo "Host does not advertise avx512f; no checkout, install, or fixture download was attempted." >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.hardware.outputs.eligible == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned official stack
+        if: steps.hardware.outputs.eligible == 'true'
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            'torch==2.13.0' 'transformers==5.14.1'
+
+      - name: Gate on native Torch AVX512 dispatch
+        id: native
+        if: steps.hardware.outputs.eligible == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import torch
+
+          assert torch.__version__.split("+", 1)[0] == "2.13.0"
+          dispatch = torch.backends.cpu.get_cpu_capability()
+          eligible = dispatch == "AVX512"
+          root = Path(os.environ["RUNNER_TEMP"]) / "dispatch-pair"
+          path = root / "gate.json"
+          gate = json.loads(path.read_text(encoding="utf-8"))
+          gate["native_torch"] = {
+              "version": str(torch.__version__),
+              "cpu_capability": dispatch,
+              "num_threads": int(torch.get_num_threads()),
+              "num_interop_threads": int(torch.get_num_interop_threads()),
+          }
+          gate["native_dispatch_eligible"] = eligible
+          gate["classification"] = (
+              "native_torch_avx512_supported"
+              if eligible
+              else "ineligible_native_torch_dispatch"
+          )
+          path.write_text(
+              json.dumps(gate, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as out:
+              out.write(f"eligible={str(eligible).lower()}\n")
+              out.write(f"dispatch={dispatch}\n")
+          print(
+              "DISPATCH_PAIR_TORCH_GATE "
+              f"classification={gate['classification']} dispatch={dispatch}"
+          )
+          PY
+
+      - name: Record neutral native-dispatch miss
+        if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible != 'true'
+        shell: bash
+        run: |
+          echo "### Reference-matrix result: neutral" >> "$GITHUB_STEP_SUMMARY"
+          echo "Hardware advertises avx512f, but pinned Torch selected ${{ steps.native.outputs.dispatch }}; no fixture download was attempted." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run focused profile and payload contracts
+        if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
+        run: |
+          python3 -m compileall -q experiments/inkling
+          PYTHONPATH=mvp:experiments/inkling python3 -m unittest discover \
+            -s experiments/inkling \
+            -p 'test_inkling_portable_bf16_complete_sparse_layer.py' -v
+
+      - name: Reproduce the exact position-zero fixture plan
+        if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          plan="${RUNNER_TEMP}/dispatch-pair/fixture-plan.json"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" \
+            --layers 2,5 \
+            --experts '2:13,67,69,90,150,238;5:56,63,66,105,180,238' \
+            --max-total-gib 2 \
+            --plan-only > "$plan"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "dispatch-pair"
+          plan = json.loads((root / "fixture-plan.json").read_text())
+          selection = json.loads(Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text())
+          expected = {
+              "2": sorted(selection["layers"]["2"]["topk_indices"][0]),
+              "5": sorted(selection["layers"]["5"]["topk_indices"][0]),
+          }
+          actual = {layer: sorted(values) for layer, values in plan["experts"].items()}
+          assert actual == expected
+          assert plan["entries"] == 64
+          assert plan["payload_bytes"] == 985959432
+          assert plan["revision"] == selection["revision"]
+          assert plan["config_sha256"] == selection["config_sha256"]
+          assert plan["index_sha256"] == selection["index_sha256"]
+          print(
+              "DISPATCH_PAIR_PLAN "
+              f"entries={plan['entries']} payload_bytes={plan['payload_bytes']} "
+              f"requests={plan['requests']} experts={actual}"
+          )
+          PY
+
+      - name: Extract and bind one shared source-bound fixture
+        if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          root="${RUNNER_TEMP}/dispatch-pair"
+          fixture="${root}/fixture"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" \
+              --layers 2,5 \
+              --experts '2:13,67,69,90,150,238;5:56,63,66,105,180,238' \
+              --max-total-gib 2 \
+              --out "$fixture" > "${root}/fixture-manifest.json"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((10 << (attempt - 1)))
+              echo "fixture attempt ${attempt} failed; retrying after ${delay}s" >&2
+              sleep "$delay"
+            fi
+          done
+          if [ "$extracted" != true ]; then
+            echo "dispatch-pair fixture extraction exhausted four attempts" >&2
+            exit 2
+          fi
+          python3 inkling/tools/inkling_fixture.py --fixture "$fixture" --verify
+
+          PYTHONPATH=mvp python3 - <<PY
+          import json
+          import time
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import deterministic_hidden_states, input_sha256
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+
+          root = Path("$root")
+          config = None
+          for attempt in range(4):
+              try:
+                  source = HttpRangeSource(
+                      "https://huggingface.co/thinkingmachines/Inkling-Small",
+                      "$revision",
+                  )
+                  config = source.file("config.json")
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3:
+                      raise
+                  time.sleep(10 * (2**attempt))
+          assert config is not None
+          (root / "config.json").write_bytes(config)
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text())
+          assert input_sha256(inputs, torch.bfloat16) == selection["inputs_sha256"]
+          (root / "inputs.json").write_text(
+              json.dumps(inputs.tolist()) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          PYTHONPATH=mvp python3 mvp/inkling_c_config.py \
+            --model-config "${root}/config.json" \
+            --out "${root}/c-config.json"
+
+      - name: Execute the native AVX512 arm
+        if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
+        shell: bash
+        env:
+          ONEDNN_VERBOSE: dispatch
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/dispatch-pair"
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/run_inkling_portable_bf16_complete_sparse_layer.py \
+            --fixture "${root}/fixture" \
+            --model-config "${root}/config.json" \
+            --c-config "${root}/c-config.json" \
+            --inputs "${root}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --quiet \
+            --out "${root}/native.json" > "${root}/native-onednn.log" 2>&1
+
+      - name: Execute the forced AVX2 arm in a fresh process
+        if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
+        shell: bash
+        env:
+          ATEN_CPU_CAPABILITY: avx2
+          ONEDNN_VERBOSE: dispatch
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/dispatch-pair"
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/run_inkling_portable_bf16_complete_sparse_layer.py \
+            --fixture "${root}/fixture" \
+            --model-config "${root}/config.json" \
+            --c-config "${root}/c-config.json" \
+            --inputs "${root}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --quiet \
+            --out "${root}/forced-avx2.json" > "${root}/forced-avx2-onednn.log" 2>&1
+
+      - name: Execute the oneDNN AVX2 arm in a fresh process
+        if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
+        shell: bash
+        env:
+          ONEDNN_MAX_CPU_ISA: AVX2
+          ONEDNN_VERBOSE: dispatch
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/dispatch-pair"
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/run_inkling_portable_bf16_complete_sparse_layer.py \
+            --fixture "${root}/fixture" \
+            --model-config "${root}/config.json" \
+            --c-config "${root}/c-config.json" \
+            --inputs "${root}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --quiet \
+            --out "${root}/onednn-avx2.json" > "${root}/onednn-avx2.log" 2>&1
+
+      - name: Execute the MKLDNN-off arm in a fresh process
+        if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
+        shell: bash
+        env:
+          ONEDNN_VERBOSE: dispatch
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/dispatch-pair"
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/run_inkling_portable_bf16_complete_sparse_layer.py \
+            --fixture "${root}/fixture" \
+            --model-config "${root}/config.json" \
+            --c-config "${root}/c-config.json" \
+            --inputs "${root}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --disable-mkldnn \
+            --quiet \
+            --out "${root}/mkldnn-off.json" > "${root}/mkldnn-off.log" 2>&1
+
+      - name: Classify the same-host reference matrix
+        if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=mvp:experiments/inkling python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from diagnose_inkling_portable_bf16_composed_moe import (
+              PRE_ROUTER_POINTS,
+              classify_dispatch_pair,
+              classify_reference_matrix,
+          )
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "dispatch-pair"
+          results = {
+              "native": json.loads((root / "native.json").read_text(encoding="utf-8")),
+              "aten_avx2": json.loads((root / "forced-avx2.json").read_text(encoding="utf-8")),
+              "onednn_avx2": json.loads((root / "onednn-avx2.json").read_text(encoding="utf-8")),
+              "mkldnn_off": json.loads((root / "mkldnn-off.json").read_text(encoding="utf-8")),
+          }
+          for result in results.values():
+              profile = result["execution_profile"]
+              assert profile["schema_version"] == 4
+              assert profile["cpu"]["flags"]
+              assert len(profile["cpu"]["flags_sha256"]) == 64
+              assert profile["torch"]["mkldnn_available"] is True
+              assert profile["torch"]["onednn_version"]
+              assert len(profile["torch"]["torch_build_config_sha256"]) == 64
+              for layer in result["layers"].values():
+                  assert set(layer["stage_payloads"]) == set(PRE_ROUTER_POINTS)
+          native = results["native"]
+          forced = results["aten_avx2"]
+          onednn = results["onednn_avx2"]
+          mkldnn_off = results["mkldnn_off"]
+          assert native["execution_profile"]["torch"]["cpu_capability"] == "AVX512"
+          assert forced["execution_profile"]["torch"]["cpu_capability"] == "AVX2"
+          assert forced["execution_profile"]["thread_environment"][
+              "ATEN_CPU_CAPABILITY"
+          ] == "avx2"
+          assert onednn["execution_profile"]["thread_environment"][
+              "ONEDNN_MAX_CPU_ISA"
+          ] == "AVX2"
+          assert mkldnn_off["execution_profile"]["torch"]["mkldnn_enabled"] is False
+          assert all(
+              result["execution_profile"]["torch"]["mkldnn_enabled"] is True
+              for result in (native, forced, onednn)
+          )
+          assert len({
+              result["execution_profile"]["host_class_sha256"]
+              for result in results.values()
+          }) == 1
+          assert len({
+              result["execution_profile"]["reference_profile_sha256"]
+              for result in results.values()
+          }) == 4
+          pair = classify_dispatch_pair(native, forced)
+          matrix = classify_reference_matrix(native, forced, onednn, mkldnn_off)
+          (root / "pair.json").write_text(
+              json.dumps(pair, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          (root / "matrix.json").write_text(
+              json.dumps(matrix, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(
+              "REFERENCE_MATRIX_DECISION "
+              f"classification={matrix['classification']} "
+              f"host_class={matrix['host_class_sha256']} "
+              f"exact={matrix['exact']} "
+              f"first={matrix['first_actual_compared_pre_router_divergence']}"
+          )
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          with summary.open("a", encoding="utf-8") as out:
+              out.write("### Same-host reference-matrix classification\n\n")
+              out.write(f"- Classification: `{matrix['classification']}`\n")
+              out.write(f"- Host class: `{matrix['host_class_sha256']}`\n")
+              out.write(f"- Exact by arm: `{matrix['exact']}`\n")
+              out.write(
+                  "- First actual compared pre-router divergence: "
+                  f"`{matrix['first_actual_compared_pre_router_divergence']}`\n"
+              )
+              out.write(f"- Next action: `{matrix['next_action']}`\n")
+              out.write(f"- Legacy pair classification: `{pair['classification']}`\n")
+          PY
+
+      - name: Preserve gate, profiles, payloads, and oneDNN logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: inkling-bf16-reference-matrix-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/dispatch-pair/*.json
+            ${{ runner.temp }}/dispatch-pair/*.log
+          if-no-files-found: error
+          retention-days: 30

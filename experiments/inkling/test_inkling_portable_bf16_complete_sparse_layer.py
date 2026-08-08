@@ -10,14 +10,13 @@ import diagnose_inkling_portable_bf16_composed_moe as implementation
 from run_inkling_portable_bf16_complete_sparse_layer import (
     _FINAL_RESIDUAL_NEW,
     _FINAL_RESIDUAL_OLD,
-    transform_complete_sparse_layer_source,
+    apply_final_residual_source,
 )
 
 
 class CompleteSparseLayerTest(unittest.TestCase):
     def test_final_residual_transform_is_explicit_and_fail_closed(self):
-        source = _FINAL_RESIDUAL_OLD
-        transformed = transform_complete_sparse_layer_source(source)
+        transformed = apply_final_residual_source(_FINAL_RESIDUAL_OLD)
         self.assertIn("bf16_round_probe(x[i])", transformed)
         self.assertIn("bf16_round_probe(s->ff[i])", transformed)
         self.assertIn("bf16_round_probe(residual + branch)", transformed)
@@ -25,14 +24,14 @@ class CompleteSparseLayerTest(unittest.TestCase):
             implementation.ComposedMoeError,
             "final layer residual",
         ):
-            transform_complete_sparse_layer_source(transformed)
+            apply_final_residual_source(transformed)
 
     def test_final_residual_transform_does_not_touch_attention_residual(self):
         source = (
             "    for (int i = 0; i < hidden; i++) x[i] += s->branch[i];\n"
             + _FINAL_RESIDUAL_OLD
         )
-        transformed = transform_complete_sparse_layer_source(source)
+        transformed = apply_final_residual_source(source)
         self.assertIn("x[i] += s->branch[i]", transformed)
         self.assertIn(_FINAL_RESIDUAL_NEW, transformed)
 

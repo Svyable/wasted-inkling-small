@@ -6,6 +6,9 @@ on:
       - "mvp/**"
       - "docs/MVP-READINESS.md"
       - "docs/CONFIG-SCHEMA-RESOLUTION.md"
+      - "docs/REMOTE-FIXTURES.md"
+      - "docs/OFFICIAL-FIXTURE-PLAN.json"
+      - "docs/OFFICIAL-ROUTER-SELECTION.json"
       - ".github/workflows/validate-inkling-g0.yml"
   push:
     branches: [main]
@@ -13,6 +16,9 @@ on:
       - "mvp/**"
       - "docs/MVP-READINESS.md"
       - "docs/CONFIG-SCHEMA-RESOLUTION.md"
+      - "docs/REMOTE-FIXTURES.md"
+      - "docs/OFFICIAL-FIXTURE-PLAN.json"
+      - "docs/OFFICIAL-ROUTER-SELECTION.json"
       - ".github/workflows/validate-inkling-g0.yml"
   workflow_dispatch:
 
@@ -31,9 +37,116 @@ jobs:
         run: |
           python3 -m pip install --quiet --break-system-packages \
             torch 'transformers==5.14.1'
-      - name: Compile and test the bounded reference adapter
+      - name: Compile and run every G0 evidence test
         run: |
           python3 -m compileall -q mvp
-          PYTHONPATH=mvp python3 -m unittest \
-            mvp/test_inkling_fixture_reference.py \
-            mvp/test_inkling_release_config.py -v
+          PYTHONPATH=mvp python3 -m unittest discover \
+            -s mvp -p 'test_inkling_*.py' -v
+
+  release-plan:
+    name: Plan discovered official fixture
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Reproduce the evidence-selected fixture plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" \
+            --layers 0,2,5 \
+            --experts '2:13,19,25,26,27,30,33,39,60,67,69,81,90,91,92,95,96,112,116,117,126,131,133,140,146,150,152,166,175,217,238,247,254;5:6,21,32,44,45,56,60,63,66,91,105,110,120,145,152,156,163,166,179,180,219,233,236,238,250,252' \
+            --max-total-gib 8 \
+            --plan-only > fixture-plan.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          actual = json.loads(Path("fixture-plan.json").read_text())
+          evidence = json.loads(Path("docs/OFFICIAL-FIXTURE-PLAN.json").read_text())
+          selection = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          keys = (
+              "model_id", "revision", "config_sha256", "index_sha256",
+              "layers", "experts", "entries", "payload_bytes",
+              "metadata_bytes_read", "requests", "shards",
+          )
+          for key in keys:
+              assert actual[key] == evidence[key], (
+                  key, actual[key], evidence[key]
+              )
+          assert evidence["payload_downloaded"] is False
+          assert evidence["selection_evidence"] == (
+              "docs/OFFICIAL-ROUTER-SELECTION.json"
+          )
+          assert actual["experts"] == {
+              layer: value["selected_experts"]
+              for layer, value in selection["layers"].items()
+          }
+          assert 0 < actual["payload_bytes"] <= 8 << 30
+          assert 0 < actual["metadata_bytes_read"] < 64 << 20
+          print(json.dumps(actual, indent=2, sort_keys=True))
+          PY
+
+  router-discovery:
+    name: Discover official routed experts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the tested Inkling stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            torch 'transformers==5.14.1'
+      - name: Extract a one-expert construction seed
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          fixture="${RUNNER_TEMP}/router-seed"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" \
+            --layers 2,5 \
+            --experts '2:0;5:0' \
+            --max-total-gib 4 \
+            --out "$fixture" > seed-fixture.json
+          PYTHONPATH=mvp python3 - <<PY
+          from pathlib import Path
+          from inkling_remote_fixture import HttpRangeSource
+
+          source = HttpRangeSource(
+              "https://huggingface.co/thinkingmachines/Inkling-Small",
+              "$revision",
+          )
+          Path("${RUNNER_TEMP}/config.json").write_bytes(source.file("config.json"))
+          PY
+      - name: Reproduce exact official choices
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=mvp python3 mvp/discover_inkling_router_experts.py \
+            --fixture "${RUNNER_TEMP}/router-seed" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --layers 2,5 \
+            --tokens 8 \
+            --seed 19 \
+            --dtype bfloat16 \
+            --out router-selection.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          actual = json.loads(Path("router-selection.json").read_text())
+          expected = json.loads(
+              Path("docs/OFFICIAL-ROUTER-SELECTION.json").read_text()
+          )
+          assert actual == expected
+          print(json.dumps(actual, indent=2, sort_keys=True))
+          PY

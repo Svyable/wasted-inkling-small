@@ -1,0 +1,67 @@
+{
+  "format": "inkling-remote-fixture-plan-evidence",
+  "version": 2,
+  "generated_at": "2026-08-03",
+  "payload_downloaded": false,
+  "selection_evidence": "docs/OFFICIAL-ROUTER-SELECTION.json",
+  "model_id": "thinkingmachines/Inkling-Small",
+  "revision": "21152b5312c653be115f33a8342759064144e281",
+  "config_sha256": "dcb5b1d587bce2f1e6b29833d739a724d05b4bfaa2dc1164fbe679330478ba53",
+  "index_sha256": "68b1ab9dade825da1d9d162303f7356167ba2b90fd2c5fdf519e898d45adb0d9",
+  "layers": [0, 2, 5],
+  "experts": {
+    "2": [
+      13, 19, 25, 26, 27, 30, 33, 39, 60, 67, 69, 81, 90, 91, 92, 95, 96,
+      112, 116, 117, 126, 131, 133, 140, 146, 150, 152, 166, 175, 217, 238,
+      247, 254
+    ],
+    "5": [
+      6, 21, 32, 44, 45, 56, 60, 63, 66, 91, 105, 110, 120, 145, 152, 156,
+      163, 166, 179, 180, 219, 233, 236, 238, 250, 252
+    ]
+  },
+  "entries": 175,
+  "payload_bytes": 3842395658,
+  "metadata_bytes_read": 179397,
+  "requests": 52,
+  "shards": [
+    "model-00001-of-00032.safetensors",
+    "model-00002-of-00032.safetensors",
+    "model-00003-of-00032.safetensors",
+    "model-00006-of-00032.safetensors",
+    "model-00007-of-00032.safetensors",
+    "model-00008-of-00032.safetensors",
+    "model-00009-of-00032.safetensors",
+    "model-00011-of-00032.safetensors",
+    "model-00012-of-00032.safetensors",
+    "model-00013-of-00032.safetensors",
+    "model-00014-of-00032.safetensors",
+    "model-00016-of-00032.safetensors",
+    "model-00017-of-00032.safetensors",
+    "model-00018-of-00032.safetensors",
+    "model-00019-of-00032.safetensors",
+    "model-00020-of-00032.safetensors",
+    "model-00021-of-00032.safetensors",
+    "model-00022-of-00032.safetensors",
+    "model-00023-of-00032.safetensors",
+    "model-00024-of-00032.safetensors",
+    "model-00025-of-00032.safetensors",
+    "model-00026-of-00032.safetensors",
+    "model-00028-of-00032.safetensors",
+    "model-00030-of-00032.safetensors",
+    "model-00032-of-00032.safetensors"
+  ],
+  "command": [
+    "python3",
+    "mvp/inkling_remote_fixture.py",
+    "--revision",
+    "21152b5312c653be115f33a8342759064144e281",
+    "--layers",
+    "0,2,5",
+    "--experts",
+    "2:13,19,25,26,27,30,33,39,60,67,69,81,90,91,92,95,96,112,116,117,126,131,133,140,146,150,152,166,175,217,238,247,254;5:6,21,32,44,45,56,60,63,66,91,105,110,120,145,152,156,163,166,179,180,219,233,236,238,250,252",
+    "--max-total-gib",
+    "8",
+    "--plan-only"
+  ]
+}

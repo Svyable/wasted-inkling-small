@@ -1,0 +1,80 @@
+name: Validate Inkling BF16 evidence contracts
+
+on:
+  pull_request:
+    paths:
+      - "mvp/diagnose_inkling_*bf16*.py"
+      - "mvp/test_inkling_*bf16*.py"
+      - "experiments/inkling/*bf16*.py"
+      - "docs/BF16-EVIDENCE.md"
+      - ".github/workflows/validate-inkling-bf16-evidence.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-bf16-contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Compile and run retained BF16 contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      OMP_NUM_THREADS: 1
+      MKL_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+      PYTHONPATH: ${{ github.workspace }}/mvp:${{ github.workspace }}/experiments/inkling
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned evidence stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            'torch==2.13.0' 'transformers==5.14.1'
+
+      - name: Compile every retained evidence module
+        run: python3 -m compileall -q mvp experiments/inkling
+
+      - name: Run each BF16 unit-contract file in isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(
+            experiments/inkling/test_inkling_bf16_layer_residual_boundary.py
+            experiments/inkling/test_inkling_bf16_logsumexp_reduction.py
+            experiments/inkling/test_inkling_bf16_moe_aggregation_lattice.py
+            experiments/inkling/test_inkling_bf16_residual_boundary.py
+            experiments/inkling/test_inkling_bf16_router_normalization_stages.py
+            experiments/inkling/test_inkling_bf16_router_post_reduction_denom.py
+            experiments/inkling/test_inkling_bf16_router_prefill_lattice.py
+            experiments/inkling/test_inkling_bf16_router_weight_lattice.py
+            experiments/inkling/test_inkling_bf16_silu_product.py
+            experiments/inkling/test_inkling_bf16_stateful_mlp_boundary.py
+            experiments/inkling/test_inkling_portable_bf16_attention.py
+            experiments/inkling/test_inkling_portable_bf16_complete_sparse_layer.py
+            experiments/inkling/test_inkling_portable_bf16_composed_moe.py
+            experiments/inkling/test_inkling_portable_bf16_preexpert.py
+            experiments/inkling/test_inkling_portable_bf16_single_token_moe.py
+            experiments/inkling/test_inkling_portable_bf16_single_token_moe_activation.py
+            experiments/inkling/test_inkling_portable_bf16_stateful_sparse_layer.py
+            mvp/test_inkling_bf16_attention_head_norm.py
+            mvp/test_inkling_bf16_attention_lattice.py
+            mvp/test_inkling_bf16_attention_reductions.py
+            mvp/test_inkling_bf16_layer_probe.py
+            mvp/test_inkling_bf16_projection_edges.py
+            mvp/test_inkling_bf16_projection_granularity.py
+            mvp/test_inkling_native_bf16_backend.py
+          )
+          test "${#tests[@]}" -eq 24
+          for test_file in "${tests[@]}"; do
+            test -f "$test_file"
+            python3 -m unittest discover \
+              -s "$(dirname "$test_file")" \
+              -p "$(basename "$test_file")" -v
+          done
+          echo "validated ${#tests[@]} isolated BF16 contract files"

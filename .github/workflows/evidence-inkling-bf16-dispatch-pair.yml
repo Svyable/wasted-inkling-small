@@ -342,6 +342,79 @@ jobs:
             --quiet \
             --out "${root}/onednn-avx2.json" > "${root}/onednn-avx2.log" 2>&1
 
+      # The AVX2 cap skips every AVX-512 rung at once, so "oneDNN AVX-512 is
+      # profile sensitive" cannot say which kernel family is responsible.
+      # These two rungs sit between the AVX2 arm and the uncapped native arm
+      # and bisect it: AVX512_CORE is the FP32 AVX-512 path, AVX512_CORE_BF16
+      # adds the BF16 kernels, and native additionally admits AMX where the
+      # host has it. Two extra runs turn a five-rung ladder into a bisection.
+      - name: Execute the oneDNN AVX512_CORE rung in a fresh process
+        if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
+        shell: bash
+        env:
+          ONEDNN_MAX_CPU_ISA: AVX512_CORE
+          ONEDNN_VERBOSE: dispatch
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/dispatch-pair"
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/run_inkling_portable_bf16_complete_sparse_layer.py \
+            --fixture "${root}/fixture" \
+            --model-config "${root}/config.json" \
+            --c-config "${root}/c-config.json" \
+            --inputs "${root}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --quiet \
+            --out "${root}/onednn-avx512-core.json" > "${root}/onednn-avx512-core.log" 2>&1
+
+      - name: Execute the oneDNN AVX512_CORE_BF16 rung in a fresh process
+        if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
+        shell: bash
+        env:
+          ONEDNN_MAX_CPU_ISA: AVX512_CORE_BF16
+          ONEDNN_VERBOSE: dispatch
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/dispatch-pair"
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/run_inkling_portable_bf16_complete_sparse_layer.py \
+            --fixture "${root}/fixture" \
+            --model-config "${root}/config.json" \
+            --c-config "${root}/c-config.json" \
+            --inputs "${root}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --quiet \
+            --out "${root}/onednn-avx512-core-bf16.json" > "${root}/onednn-avx512-core-bf16.log" 2>&1
+
+      # ONEDNN_MAX_CPU_ISA is a cap, not a request. On a host without AMX this
+      # rung executes as the highest supported ISA and duplicates the rung
+      # below it, which is why the classifier reads the host's amx_bf16 flag
+      # before it is willing to name AMX.
+      - name: Execute the oneDNN AVX512_CORE_AMX rung in a fresh process
+        if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
+        shell: bash
+        env:
+          ONEDNN_MAX_CPU_ISA: AVX512_CORE_AMX
+          ONEDNN_VERBOSE: dispatch
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/dispatch-pair"
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/run_inkling_portable_bf16_complete_sparse_layer.py \
+            --fixture "${root}/fixture" \
+            --model-config "${root}/config.json" \
+            --c-config "${root}/c-config.json" \
+            --inputs "${root}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --quiet \
+            --out "${root}/onednn-avx512-core-amx.json" > "${root}/onednn-avx512-core-amx.log" 2>&1
+
       - name: Execute the MKLDNN-off arm in a fresh process
         if: steps.hardware.outputs.eligible == 'true' && steps.native.outputs.eligible == 'true'
         shell: bash
@@ -375,6 +448,7 @@ jobs:
           from diagnose_inkling_portable_bf16_composed_moe import (
               PRE_ROUTER_POINTS,
               classify_dispatch_pair,
+              classify_isa_ladder,
               classify_reference_matrix,
           )
 
@@ -385,7 +459,23 @@ jobs:
               "onednn_avx2": json.loads((root / "onednn-avx2.json").read_text(encoding="utf-8")),
               "mkldnn_off": json.loads((root / "mkldnn-off.json").read_text(encoding="utf-8")),
           }
-          for result in results.values():
+          # The ladder reuses the matrix's AVX2 arm as its bottom rung and the
+          # uncapped native arm as its top rung, so only the middle rungs are
+          # extra runs.
+          ladder = {
+              "AVX2": results["onednn_avx2"],
+              "AVX512_CORE": json.loads(
+                  (root / "onednn-avx512-core.json").read_text(encoding="utf-8")
+              ),
+              "AVX512_CORE_BF16": json.loads(
+                  (root / "onednn-avx512-core-bf16.json").read_text(encoding="utf-8")
+              ),
+              "AVX512_CORE_AMX": json.loads(
+                  (root / "onednn-avx512-core-amx.json").read_text(encoding="utf-8")
+              ),
+              "native": results["native"],
+          }
+          for result in {**results, **ladder}.values():
               profile = result["execution_profile"]
               assert profile["schema_version"] == 4
               assert profile["cpu"]["flags"]
@@ -420,8 +510,19 @@ jobs:
               result["execution_profile"]["reference_profile_sha256"]
               for result in results.values()
           }) == 4
+          for rung in ("AVX512_CORE", "AVX512_CORE_BF16", "AVX512_CORE_AMX"):
+              assert ladder[rung]["execution_profile"]["thread_environment"][
+                  "ONEDNN_MAX_CPU_ISA"
+              ] == rung
+          # Five distinct reference profiles proves five distinct runs were
+          # actually classified, not one JSON read under five names.
+          assert len({
+              result["execution_profile"]["reference_profile_sha256"]
+              for result in ladder.values()
+          }) == 5
           pair = classify_dispatch_pair(native, forced)
           matrix = classify_reference_matrix(native, forced, onednn, mkldnn_off)
+          isa_ladder = classify_isa_ladder(ladder)
           (root / "pair.json").write_text(
               json.dumps(pair, indent=2, sort_keys=True) + "\n",
               encoding="utf-8",
@@ -429,6 +530,19 @@ jobs:
           (root / "matrix.json").write_text(
               json.dumps(matrix, indent=2, sort_keys=True) + "\n",
               encoding="utf-8",
+          )
+          (root / "isa-ladder.json").write_text(
+              json.dumps(isa_ladder, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(
+              "ISA_LADDER_DECISION "
+              f"classification={isa_ladder['classification']} "
+              f"exact={isa_ladder['exact']} "
+              f"first_nonexact_rung={isa_ladder['first_nonexact_rung']} "
+              f"highest_exact_rung={isa_ladder['highest_exact_rung']} "
+              f"amx_available={isa_ladder['amx_available_on_host']} "
+              f"amx_implicated={isa_ladder['amx_implicated']}"
           )
           print(
               "REFERENCE_MATRIX_DECISION "
@@ -449,6 +563,22 @@ jobs:
               )
               out.write(f"- Next action: `{matrix['next_action']}`\n")
               out.write(f"- Legacy pair classification: `{pair['classification']}`\n")
+              out.write("\n### oneDNN ISA ladder\n\n")
+              out.write(f"- Classification: `{isa_ladder['classification']}`\n")
+              out.write(f"- Exact by rung: `{isa_ladder['exact']}`\n")
+              out.write(
+                  f"- First nonexact rung: `{isa_ladder['first_nonexact_rung']}`\n"
+              )
+              out.write(
+                  f"- Highest exact rung: `{isa_ladder['highest_exact_rung']}`\n"
+              )
+              out.write(f"- Monotone: `{isa_ladder['monotone']}`\n")
+              out.write(
+                  f"- Host advertises amx_bf16: "
+                  f"`{isa_ladder['amx_available_on_host']}`\n"
+              )
+              out.write(f"- AMX implicated: `{isa_ladder['amx_implicated']}`\n")
+              out.write(f"- Next action: `{isa_ladder['next_action']}`\n")
           PY
 
       - name: Preserve gate, profiles, payloads, and oneDNN logs

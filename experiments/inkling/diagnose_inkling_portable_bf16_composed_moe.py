@@ -137,6 +137,18 @@ REFERENCE_MATRIX_ARMS = (
     "mkldnn_off",
 )
 
+# ONEDNN_MAX_CPU_ISA rungs in ascending capability order. "native" is the
+# uncapped run and is the top rung by definition. The reference matrix's AVX2
+# arm and native arm are reused as the bottom and top rungs, so the ladder
+# costs two extra runs, not five.
+ISA_LADDER_RUNGS = (
+    "AVX2",
+    "AVX512_CORE",
+    "AVX512_CORE_BF16",
+    "AVX512_CORE_AMX",
+    "native",
+)
+
 
 def _torch_backend_profile(torch_module: Any) -> dict[str, Any]:
     """Fingerprint the oneDNN/MKLDNN backend without assuming full Torch APIs."""
@@ -727,6 +739,106 @@ def _compare_pre_router_payloads(
         "first_changed_stage": first_changed_stage,
         "all_pre_router_payloads_equal": first_changed_stage is None,
         "stages": stages,
+    }
+
+
+def classify_isa_ladder(arms: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """Locate the oneDNN ISA rung at which single-token exactness is lost.
+
+    The four-arm reference matrix establishes *that* the oneDNN AVX-512 path
+    is profile sensitive: capping oneDNN to AVX2 is exact and leaving it
+    native is not. It cannot say which AVX-512 kernel family is responsible,
+    because one cap skips every rung above AVX2 at once. This walks the rungs
+    individually, so "scope exactness to a reference profile" can name the
+    lowest profile that is actually exact instead of retreating to AVX2 by
+    default.
+
+    ``ONEDNN_MAX_CPU_ISA`` is a cap, not a request: on a host without a rung,
+    the rung's arm executes as the highest supported ISA and duplicates a
+    lower arm. That is why the host's ``amx_bf16`` flag is reported alongside
+    the verdict, and why AMX is only ever named as implicated when the host
+    advertises it *and* the AMX rung is the first nonexact one. Every other
+    outcome leaves AMX untested, which is not the same as exonerated.
+    """
+    missing = [rung for rung in ISA_LADDER_RUNGS if rung not in arms]
+    if missing:
+        raise ComposedMoeError(f"ISA ladder is missing rungs: {missing}")
+    profiles = {name: arms[name]["execution_profile"] for name in ISA_LADDER_RUNGS}
+    schemas = {profile["schema_version"] for profile in profiles.values()}
+    if schemas != {EXECUTION_PROFILE_SCHEMA_VERSION}:
+        raise ComposedMoeError(
+            "ISA-ladder arms must all use execution-profile schema "
+            f"{EXECUTION_PROFILE_SCHEMA_VERSION}"
+        )
+    host_classes = {profile["host_class_sha256"] for profile in profiles.values()}
+    if len(host_classes) != 1:
+        raise ComposedMoeError("ISA-ladder arms ran on different host classes")
+
+    exact = {rung: _is_complete_exact(arms[rung]) for rung in ISA_LADDER_RUNGS}
+    order = list(ISA_LADDER_RUNGS)
+    nonexact = [rung for rung in order if not exact[rung]]
+    first_nonexact_rung = nonexact[0] if nonexact else None
+    # Exactness must be a prefix of the ladder: every rung below the first
+    # failure exact, every rung at or above it nonexact. Anything else means
+    # the cap is not the variable being measured, and no rung may be named.
+    if first_nonexact_rung is None:
+        monotone = True
+    else:
+        boundary = order.index(first_nonexact_rung)
+        monotone = all(exact[rung] for rung in order[:boundary]) and all(
+            not exact[rung] for rung in order[boundary:]
+        )
+
+    cpu = profiles["native"].get("cpu") or {}
+    if "flags" not in cpu:
+        raise ComposedMoeError(
+            "ISA-ladder native arm omits cpu flags; AMX can be neither ruled "
+            "in nor ruled out without them"
+        )
+    flags = set(cpu["flags"] or ())
+    amx_available = "amx_bf16" in flags
+    amx_implicated = bool(
+        monotone and amx_available and first_nonexact_rung == "AVX512_CORE_AMX"
+    )
+
+    if first_nonexact_rung is None:
+        classification = "isa_ladder_exact_at_every_rung"
+        next_action = "no_isa_rung_reproduced_the_divergence"
+    elif not monotone:
+        classification = "isa_ladder_nonmonotone"
+        next_action = "do_not_name_a_rung_until_the_ladder_is_monotone"
+    elif amx_implicated:
+        classification = "onednn_amx_rung_is_the_first_nonexact_rung"
+        next_action = "isolate_the_onednn_amx_bf16_matmul"
+    else:
+        classification = "onednn_avx512_rung_is_the_first_nonexact_rung"
+        next_action = "isolate_the_onednn_kernel_family_at_the_first_nonexact_rung"
+
+    return {
+        "format": "inkling-bfloat16-isa-ladder-classification",
+        "version": 1,
+        "profile_schema_version": EXECUTION_PROFILE_SCHEMA_VERSION,
+        "host_class_sha256": next(iter(host_classes)),
+        "rungs": order,
+        "exact": exact,
+        "first_nonexact_rung": first_nonexact_rung,
+        "highest_exact_rung": (
+            order[order.index(first_nonexact_rung) - 1]
+            if first_nonexact_rung is not None and order.index(first_nonexact_rung) > 0
+            else (order[-1] if first_nonexact_rung is None else None)
+        ),
+        "monotone": monotone,
+        "amx_available_on_host": amx_available,
+        "amx_implicated": amx_implicated,
+        "first_actual_compared_pre_router_divergence": {
+            rung: {
+                layer: _first_nonexact_pre_router_stage(arms[rung]["layers"][layer])
+                for layer in sorted(arms[rung]["layers"], key=int)
+            }
+            for rung in order
+        },
+        "classification": classification,
+        "next_action": next_action,
     }
 
 

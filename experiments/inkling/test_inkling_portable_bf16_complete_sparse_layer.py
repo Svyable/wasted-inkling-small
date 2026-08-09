@@ -465,6 +465,97 @@ model name : ignored second processor
         ):
             implementation.classify_reference_matrix(*invalid)
 
+    @staticmethod
+    def _ladder(exact_rungs, *, amx: bool):
+        arms = {}
+        for index, rung in enumerate(implementation.ISA_LADDER_RUNGS):
+            arm = CompleteSparseLayerTest._matrix_arm(
+                exact=rung in exact_rungs,
+                reference=chr(ord("a") + index),
+                first_nonexact_stage="q_proj",
+            )
+            arm["execution_profile"]["cpu"] = {
+                "flags": ["avx512f"] + (["amx_bf16"] if amx else [])
+            }
+            arms[rung] = arm
+        return arms
+
+    def test_isa_ladder_names_the_first_nonexact_rung(self):
+        # Everything below the AMX rung exact, AMX and native not: the only
+        # shape that may name AMX, and only on a host that advertises it.
+        result = implementation.classify_isa_ladder(
+            self._ladder(("AVX2", "AVX512_CORE", "AVX512_CORE_BF16"), amx=True)
+        )
+        self.assertEqual(
+            result["classification"],
+            "onednn_amx_rung_is_the_first_nonexact_rung",
+        )
+        self.assertEqual(result["first_nonexact_rung"], "AVX512_CORE_AMX")
+        self.assertEqual(result["highest_exact_rung"], "AVX512_CORE_BF16")
+        self.assertTrue(result["monotone"])
+        self.assertTrue(result["amx_implicated"])
+
+        # Same exactness pattern on a host without AMX: the cap could not have
+        # selected an AMX kernel, so the rung must not be named for it.
+        result = implementation.classify_isa_ladder(
+            self._ladder(("AVX2", "AVX512_CORE", "AVX512_CORE_BF16"), amx=False)
+        )
+        self.assertEqual(
+            result["classification"],
+            "onednn_avx512_rung_is_the_first_nonexact_rung",
+        )
+        self.assertFalse(result["amx_implicated"])
+        self.assertFalse(result["amx_available_on_host"])
+
+    def test_isa_ladder_refuses_to_name_a_rung_when_not_monotone(self):
+        # Exact at AVX2, nonexact at AVX512_CORE, exact again above: the cap is
+        # not the variable being measured.
+        result = implementation.classify_isa_ladder(
+            self._ladder(
+                ("AVX2", "AVX512_CORE_BF16", "AVX512_CORE_AMX", "native"),
+                amx=True,
+            )
+        )
+        self.assertEqual(result["classification"], "isa_ladder_nonmonotone")
+        self.assertFalse(result["monotone"])
+        self.assertFalse(result["amx_implicated"])
+        self.assertEqual(
+            result["next_action"],
+            "do_not_name_a_rung_until_the_ladder_is_monotone",
+        )
+
+    def test_isa_ladder_reports_an_all_exact_ladder_and_fails_closed(self):
+        result = implementation.classify_isa_ladder(
+            self._ladder(implementation.ISA_LADDER_RUNGS, amx=True)
+        )
+        self.assertEqual(result["classification"], "isa_ladder_exact_at_every_rung")
+        self.assertIsNone(result["first_nonexact_rung"])
+        self.assertEqual(result["highest_exact_rung"], "native")
+
+        arms = self._ladder(("AVX2",), amx=True)
+        del arms["native"]["execution_profile"]["cpu"]
+        with self.assertRaisesRegex(
+            implementation.ComposedMoeError,
+            "omits cpu flags",
+        ):
+            implementation.classify_isa_ladder(arms)
+
+        arms = self._ladder(("AVX2",), amx=True)
+        arms.pop("AVX512_CORE_BF16")
+        with self.assertRaisesRegex(
+            implementation.ComposedMoeError,
+            "missing rungs",
+        ):
+            implementation.classify_isa_ladder(arms)
+
+        arms = self._ladder(("AVX2",), amx=True)
+        arms["native"]["execution_profile"]["host_class_sha256"] = "z" * 64
+        with self.assertRaisesRegex(
+            implementation.ComposedMoeError,
+            "different host classes",
+        ):
+            implementation.classify_isa_ladder(arms)
+
     def test_complete_outcome_names_nonexact_layers(self):
         analyses = {
             "2": {

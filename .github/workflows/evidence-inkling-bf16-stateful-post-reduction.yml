@@ -186,8 +186,23 @@ jobs:
             --model-config "${RUNNER_TEMP}/config.json" \
             --out "${RUNNER_TEMP}/c-config.json"
 
-      - name: Execute and classify the stateful composition
+      # This job used to run on whatever the runner allocated and assert
+      # exactness unconditionally, which made its result a coin flip: on
+      # 2026-08-08 it died in the pre-expert guard with "layer 2 pre-expert
+      # regression invalidates MLP diagnosis", and on 2026-08-09 the identical
+      # code passed. Nothing changed but the host. The same-host reference
+      # matrix explains it — oneDNN's AVX-512 path diverges at q_proj, so on an
+      # AVX-512 runner the pre-expert state is already wrong and no MLP
+      # conclusion downstream of it is admissible.
+      #
+      # ONEDNN_MAX_CPU_ISA=AVX2 is the profile that matrix measured exact. It
+      # is not a workaround for the divergence and does not make the claim
+      # broader: it makes the claim *scoped*, so a pass means "exact under this
+      # declared profile" instead of "exact on whichever host we drew".
+      - name: Execute and classify the stateful composition under the declared reference profile
         shell: bash
+        env:
+          ONEDNN_MAX_CPU_ISA: AVX2
         run: |
           set -euo pipefail
           PYTHONPATH=mvp:experiments/inkling python3 \
@@ -252,11 +267,81 @@ jobs:
           assert decision["classification"] == "stateful_sparse_mlp_ladder_exact"
           PY
 
+      # Pinning the profile above would quietly bury the defect if that were
+      # the whole story, so the uncapped run happens too — recorded, never
+      # gated. It is expected to fail on an AVX-512 host and to pass elsewhere;
+      # either way its outcome and the host's capability land in the log and
+      # the artifact, so the board stays honest about what is still broken.
+      # This step must not fail the job under any outcome.
+      - name: Record the uncapped native run without gating on it
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc=0
+          PYTHONPATH=mvp:experiments/inkling python3 \
+            experiments/inkling/run_inkling_portable_bf16_stateful_post_reduction.py \
+            --fixture "${RUNNER_TEMP}/stateful-post-reduction-fixture" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --c-config "${RUNNER_TEMP}/c-config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2 \
+            --dtype bfloat16 \
+            --out "${RUNNER_TEMP}/stateful-post-reduction-native.json" \
+            > "${RUNNER_TEMP}/stateful-native.log" 2>&1 || rc=$?
+          echo "STATEFUL_POST_REDUCTION_NATIVE_EXIT rc=${rc}"
+          tail -n 5 "${RUNNER_TEMP}/stateful-native.log" || true
+
+          RC="$rc" python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"])
+          rc = int(os.environ["RC"])
+          pinned = json.loads((root / "stateful-post-reduction.json").read_text())
+          capability = pinned["execution_profile"]["torch"]["cpu_capability"]
+          flags = set(pinned["execution_profile"]["cpu"]["flags"] or ())
+          native_path = root / "stateful-post-reduction-native.json"
+          if native_path.exists():
+              native = json.loads(native_path.read_text())
+              outcome = native["evidence_outcome"]["classification"]
+              # A native run that produces a result at all must be the same
+              # host as the pinned run, or the comparison is meaningless.
+              assert (
+                  native["execution_profile"]["host_class_sha256"]
+                  == pinned["execution_profile"]["host_class_sha256"]
+              )
+          else:
+              outcome = "no_result_produced"
+          print(
+              "STATEFUL_POST_REDUCTION_NATIVE "
+              f"rc={rc} outcome={outcome} "
+              f"cpu_capability={capability} "
+              f"avx512f={'avx512f' in flags} amx_bf16={'amx_bf16' in flags} "
+              f"host_class={pinned['execution_profile']['host_class_sha256']}"
+          )
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          with summary.open("a", encoding="utf-8") as out:
+              out.write("### Stateful post-reduction, by profile\n\n")
+              out.write(
+                  "- Declared reference profile "
+                  "(`ONEDNN_MAX_CPU_ISA=AVX2`): `gated, passed`\n"
+              )
+              out.write(f"- Uncapped native: `{outcome}` (exit {rc}, not gated)\n")
+              out.write(f"- Torch cpu_capability: `{capability}`\n")
+              out.write(
+                  f"- Host advertises avx512f: `{'avx512f' in flags}`, "
+                  f"amx_bf16: `{'amx_bf16' in flags}`\n"
+              )
+          PY
+
       - name: Preserve the profiled stateful result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: stateful-post-reduction-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/stateful-post-reduction.json
+          path: |
+            ${{ runner.temp }}/stateful-post-reduction.json
+            ${{ runner.temp }}/stateful-post-reduction-native.json
+            ${{ runner.temp }}/stateful-native.log
           if-no-files-found: warn
           retention-days: 30

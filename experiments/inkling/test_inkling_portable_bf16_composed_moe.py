@@ -52,17 +52,40 @@ class ComposedMoeTest(unittest.TestCase):
     def test_router_policy_is_the_shared_exact_policy(self):
         self.assertEqual(ROUTER_POLICY_FLAGS, 0x7E1)
 
+    # These two tests were written against hardcoded probe indices, which the
+    # extended pre-router point list silently invalidated. Both are now derived
+    # from the ordering itself: they state the property the probe list has to
+    # satisfy, so growing the list cannot make them false and cannot make them
+    # pass by accident either.
     def test_preexpert_anchor_precedes_sparse_moe_stages(self):
-        self.assertEqual(PROBE_STAGES[0], "post_attention_norm")
-        self.assertEqual(PROBE_STAGES[1], "routed_gate0")
+        # Importing the runner rebinds ``implementation.STAGES`` to
+        # PROBE_STAGES, so the probe list is checked structurally rather than
+        # against a value the import has already overwritten.
+        pre_router = tuple(implementation.PRE_ROUTER_POINTS)
+        first_moe = len(pre_router)
+        self.assertEqual(PROBE_STAGES[:first_moe], pre_router)
+        # The last thing observed before the router must be the normalized
+        # hidden state the router actually reads.
+        self.assertEqual(pre_router[-1], "post_attention_norm")
+        # Every pre-router point precedes every MoE stage, no MoE stage leaks
+        # into the pre-router prefix, and no point is probed twice.
+        self.assertEqual(PROBE_STAGES[first_moe], "routed_gate0")
+        for stage in pre_router:
+            self.assertNotIn("routed_", stage)
+            self.assertNotIn("shared_", stage)
+            self.assertNotIn(stage, PROBE_STAGES[first_moe:])
+        self.assertEqual(len(set(PROBE_STAGES)), len(PROBE_STAGES))
 
     def test_stage_classifier_advances_through_the_complete_layer(self):
-        partial = implementation.classify_stages(self.stage_metrics(10))
+        # Isolation case: everything up to and including the router input is
+        # exact, and the first divergence is the first MoE stage.
+        exact = len(implementation.PRE_ROUTER_POINTS)
+        partial = implementation.classify_stages(self.stage_metrics(exact))
         self.assertEqual(
             partial["classification"],
             "composed_moe_mismatch_isolated",
         )
-        self.assertEqual(partial["first_nonexact_stage"], "mlp_branch")
+        self.assertEqual(partial["first_nonexact_stage"], PROBE_STAGES[exact])
         complete = implementation.classify_stages(self.stage_metrics(len(PROBE_STAGES)))
         self.assertEqual(
             complete["classification"],

@@ -24,6 +24,23 @@ class RunnerIsolationTest(unittest.TestCase):
             composed_runner.transform_aggregation_source,
         )
 
+    def test_checked_runner_import_does_not_mutate_composed_helpers(self):
+        before = (
+            implementation.transform_aggregation_source,
+            implementation.ExactWeightCollector,
+            implementation.FixedWeightHelper,
+            implementation.build_helper,
+        )
+        checked_runner = importlib.import_module("run_inkling_checked_bf16_profile")
+        importlib.reload(checked_runner)
+        after = (
+            implementation.transform_aggregation_source,
+            implementation.ExactWeightCollector,
+            implementation.FixedWeightHelper,
+            implementation.build_helper,
+        )
+        self.assertEqual(after, before)
+
     def test_complete_main_override_is_scoped_and_exception_safe(self):
         before_transform = implementation.transform_aggregation_source
         before_collector = implementation.ExactWeightCollector

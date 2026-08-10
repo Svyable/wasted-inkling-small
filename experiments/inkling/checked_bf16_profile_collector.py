@@ -1,24 +1,64 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Exception-safe weight adapter for the checked-in BF16 promotion probe.
+"""Side-effect-free adapters for the checked-in BF16 promotion probe.
 
-The historical base ``ExactWeightCollector`` in the composed-MoE diagnostic
-assumes a private ``_preserve`` helper supplied by its wrapper entrypoint.  The
-checked-in promotion probe intentionally does not import that wrapper because
-it mutates several shared diagnostic globals at import time.  This adapter
-provides the same candidate-weight preservation explicitly and is safe to use
-without those historical side effects.
+The historical composed-MoE diagnostic predates the final router denominator
+result and also assumes wrapper-provided collector helpers.  The checked-in
+promotion probe must use neither hidden import state nor the superseded #35
+weight policy.  These adapters preserve raw candidate weights, inject the
+source-bound canonical route, and evaluate exact downstream weights with the
+retained #51 post-reduction denominator contract.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import diagnose_inkling_portable_bf16_composed_moe as composed
+from diagnose_inkling_bf16_router_post_reduction_denom import (
+    EXPECTED_FLAGS,
+    PostReductionHelper,
+    build_helper as build_post_reduction_helper,
+)
 from inkling_layer_parity import TraceCollector
 
 
+class CheckedPostReductionWeightHelper:
+    """Expose #51 weights through the historical fixed-helper call shape."""
+
+    def __init__(self, library: Path) -> None:
+        self.helper = PostReductionHelper(library)
+
+    def evaluate(
+        self,
+        selected: Any,
+        route_scale: float,
+        global_scale: float,
+        family: int | None = None,
+        flags: int | None = None,
+    ):
+        # ``family``/``flags`` are deliberately ignored: callers inherited the
+        # old lattice signature, but this promotion gate has one reviewed policy.
+        stages = self.helper.evaluate(
+            selected,
+            float(route_scale),
+            float(global_scale),
+            EXPECTED_FLAGS,
+        )
+        final = stages["final"]
+        if final.numel() != selected.numel():
+            raise composed.ComposedMoeError(
+                "post-reduction helper changed the selected-weight width"
+            )
+        return final
+
+
+def build_checked_weight_helper(out: Path) -> Path:
+    return build_post_reduction_helper(out)
+
+
 class CheckedExactWeightCollector(composed.ExactWeightCollector):
-    """Preserve raw weights and inject exact weights without global mutation."""
+    """Preserve raw weights and inject #51 exact weights without global mutation."""
 
     def _store_candidate(
         self,

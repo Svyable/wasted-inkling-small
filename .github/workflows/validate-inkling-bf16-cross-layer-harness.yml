@@ -1,0 +1,83 @@
+name: Validate Inkling BF16 cross-layer harness
+
+on:
+  pull_request:
+    paths:
+      - "docs/OFFICIAL-CROSS-LAYER-ROUTES.json"
+      - "experiments/inkling/run_inkling_checked_bf16_cross_layer.py"
+      - "experiments/inkling/run_inkling_checked_bf16_stateful_layer.py"
+      - "experiments/inkling/measure_inkling_dense_bf16_profile.py"
+      - "experiments/inkling/run_inkling_checked_bf16_sparse_layer.py"
+      - "experiments/inkling/checked_bf16_profile_collector.py"
+      - ".github/workflows/validate-inkling-bf16-cross-layer-harness.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  harness:
+    name: Import and build continuity harness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: 1
+      MKL_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+      ONEDNN_MAX_CPU_ISA: AVX2
+      PYTHONPATH: ${{ github.workspace }}/inkling/tools:${{ github.workspace }}/mvp:${{ github.workspace }}/experiments/inkling
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Python stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            'torch==2.13.0' 'transformers==5.14.1'
+
+      - name: Import runner and validate archive contract
+        run: |
+          python3 experiments/inkling/run_inkling_checked_bf16_cross_layer.py --help >/dev/null
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          archive = json.loads(Path('docs/OFFICIAL-CROSS-LAYER-ROUTES.json').read_text())
+          assert archive['format'] == 'inkling-cross-layer-route-discovery'
+          assert archive['version'] == 2
+          assert archive['layers'] == [0, 1, 2]
+          assert archive['positions'] == 8
+          assert len(archive['layer2_topk_indices']) == 8
+          assert all(len(row) == 6 for row in archive['layer2_topk_indices'])
+          assert len(archive['layer2_topk_weights']) == 8
+          assert all(len(row) == 6 for row in archive['layer2_topk_weights'])
+          assert len(archive['layer2_expert_union']) == archive['layer2_expert_union_size'] == 25
+          assert sorted({expert for row in archive['layer2_topk_indices'] for expert in row}) == archive['layer2_expert_union']
+          print('CROSS_LAYER_ARCHIVE rows=8 topk=6 experts=25')
+          PY
+
+      - name: Build checked-in BF16 runtime and weight helper
+        run: |
+          python3 - <<'PY'
+          import ctypes, tempfile
+          from pathlib import Path
+          from checked_bf16_profile_collector import (
+              CheckedPostReductionWeightHelper,
+              build_checked_weight_helper,
+          )
+          from run_inkling_checked_bf16_sparse_layer import (
+              build_checked_library,
+              configure_profile_library,
+          )
+          with tempfile.TemporaryDirectory() as directory:
+              root = Path(directory)
+              library, source = build_checked_library(root / 'continuity.so')
+              assert source['source_rewriting'] is False
+              lib = ctypes.CDLL(str(library))
+              configure_profile_library(lib)
+              helper = CheckedPostReductionWeightHelper(
+                  build_checked_weight_helper(root / 'weights.so')
+              )
+              assert helper is not None
+          print('CROSS_LAYER_BUILD source_rewriting=false helper=ready')
+          PY

@@ -167,7 +167,8 @@ jobs:
       - name: Execute checked-in sparse BF16 profile
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          error_log="${RUNNER_TEMP}/checked-bf16.err"
           PYTHONPATH=inkling/tools:mvp:experiments/inkling python3 \
             experiments/inkling/run_inkling_checked_bf16_sparse_layer.py \
             --fixture "${RUNNER_TEMP}/checked-bf16-fixture" \
@@ -177,7 +178,15 @@ jobs:
             --selection docs/OFFICIAL-ROUTER-SELECTION.json \
             --layers 2,5 \
             --dtype bfloat16 \
-            --out "${RUNNER_TEMP}/checked-bf16.json" > /dev/null
+            --out "${RUNNER_TEMP}/checked-bf16.json" \
+            > /dev/null 2> "$error_log"
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            cat "$error_log" >&2
+            detail=$(tr '\n' ' ' < "$error_log" | sed 's/%/%25/g; s/\r/%0D/g')
+            printf '::error file=experiments/inkling/run_inkling_checked_bf16_sparse_layer.py,title=Checked BF16 profile execution failed::%s\n' "$detail"
+            exit "$rc"
+          fi
 
           python3 - <<'PY'
           import json, os
@@ -209,6 +218,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: checked-bf16-profile-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/checked-bf16.json
+          path: |
+            ${{ runner.temp }}/checked-bf16.json
+            ${{ runner.temp }}/checked-bf16.err
           if-no-files-found: warn
           retention-days: 30

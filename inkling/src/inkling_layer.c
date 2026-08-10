@@ -366,10 +366,12 @@ int waste_inkling_layer_step_backend_trace_profile(
             }
             for (int i = 0; i < hidden; i++) s->ff[i] = 0.0f;
             for (int k = 0; k < cfg->top_k; k++) {
-                waste_inkling_expert_weights ew;
                 const int expert = s->routed_index[k];
-                if (get_routed(cfg, w, layer, expert,
-                               expert_get, expert_ctx, &ew)) return -1;
+                /* In the BF16 profile every routed matrix is supplied by the
+                 * numeric backend. Do not require a second expert_get storage
+                 * path merely to validate an ID; that would reject the same
+                 * nonresident/quantized layout the loader is designed to bind. */
+                if (expert < 0 || expert >= cfg->n_routed_experts) return -1;
                 if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_ROUTED_GATE,
                         expert, s->gate, NULL, s->norm,
                         inter, hidden, profile) ||

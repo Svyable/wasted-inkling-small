@@ -5,7 +5,22 @@ on:
     paths:
       - "inkling/src/inkling*.c"
       - "inkling/src/inkling*.h"
+      - "inkling/tools/inkling_fixture.py"
+      - "mvp/discover_inkling_router_experts.py"
+      - "mvp/inkling_c_config.py"
+      - "mvp/inkling_canonical_route_layer_parity.py"
+      - "mvp/inkling_compact_layer_parity.py"
+      - "mvp/inkling_fixture_reference.py"
+      - "mvp/inkling_layer_parity.py"
+      - "mvp/inkling_release_config.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "mvp/run_inkling_fixture_reference_canonical.py"
       - "experiments/inkling/checked_bf16_profile_collector.py"
+      - "experiments/inkling/diagnose_inkling_bf16_stateful_mlp_boundary.py"
+      - "experiments/inkling/diagnose_inkling_native_bf16_backend.py"
+      - "experiments/inkling/diagnose_inkling_portable_bf16_composed_moe.py"
+      - "experiments/inkling/diagnose_inkling_portable_bf16_stateful_sparse_layer.py"
+      - "experiments/inkling/run_inkling_checked_bf16_sparse_layer.py"
       - "experiments/inkling/run_inkling_checked_bf16_stateful_layer.py"
       - ".github/workflows/evidence-inkling-checked-bf16-stateful-global.yml"
   workflow_dispatch:
@@ -164,6 +179,7 @@ jobs:
                   f"out_raw={out['raw_exact_fraction']:.9f} out_bf16={out['bfloat16_exact_fraction']:.9f}"
               )
           assert result['source']['source_rewriting'] is False
+          assert result['source']['routed_expert_storage'] == 'matrix-backend-only'
           assert result['positions'] == 8
           assert outcome['classification'] == 'checked_in_stateful_sparse_profile_exact'
           assert decision['classification'] == 'stateful_sparse_mlp_ladder_exact'

@@ -55,8 +55,9 @@ typedef struct {
     const float *shared_up;           /* [shared][moe_intermediate][hidden] */
     const float *shared_down;         /* [shared][hidden][moe_intermediate] */
 
-    /* Optional resident routed arrays for tests/small fixtures. Production
-     * streaming can leave these NULL and provide expert_get instead. */
+    /* Optional resident routed arrays for tests/small fixtures and the legacy
+     * F32 path. F32 streaming may leave these NULL and provide expert_get;
+     * BF16_REFERENCE routes expert matrices through the matrix backend only. */
     const float *routed_gate;         /* [routed][moe_intermediate][hidden] */
     const float *routed_up;
     const float *routed_down;         /* [routed][hidden][moe_intermediate] */
@@ -172,10 +173,11 @@ int waste_inkling_layer_step_backend_trace(
     waste_inkling_expert_get_fn expert_get, void *expert_ctx,
     const waste_inkling_trace *trace);
 
-/* Internal promotion seam. F32 delegates the exact legacy path.  The current
- * BF16_REFERENCE implementation is intentionally sparse-layer/evidence-backend
- * scoped: unsupported matrix paths fail closed rather than falling back to a
- * scalar F32 matvec and manufacturing a parity claim. */
+/* Internal promotion seam. F32 delegates the exact legacy path. The measured
+ * BF16_REFERENCE profile covers dense and sparse Inkling layer classes and
+ * requires the numeric matrix backend for kernel-sensitive BF16 matmuls.
+ * Unsupported backend/geometry paths fail closed rather than falling back to
+ * a scalar F32 matvec and manufacturing a parity claim. */
 int waste_inkling_layer_step_backend_trace_profile(
     const waste_inkling_config *cfg, int layer,
     const waste_inkling_layer_weights *weights,

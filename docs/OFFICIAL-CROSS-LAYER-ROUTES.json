@@ -1,6 +1,6 @@
 {
   "format": "inkling-cross-layer-route-discovery",
-  "version": 2,
+  "version": 3,
   "model_id": "thinkingmachines/Inkling-Small",
   "revision": "21152b5312c653be115f33a8342759064144e281",
   "config_sha256": "35443e7683b17529708e527270443e92b773205b68e5223c594a5a3b06c2fd73",
@@ -8,35 +8,176 @@
   "positions": 8,
   "input_dtype": "bfloat16",
   "inputs_sha256": "27e0a0a352ba631f058334256fd7f5f67c73fb314978721583932599bba4be6f",
-  "layers": [0, 1, 2],
+  "layers": [
+    0,
+    1,
+    2
+  ],
   "dense_output_sha256": {
     "0": "a716452dccfec6112309665c7f1700e7e2ab20d387c8024f622ef8c2850e1de3",
     "1": "630e020a743d3cea7fd2f3adcc9d1e611d0c78e679da34b80dea2b35672e0ecc"
   },
-  "layer2_seed_fixture_experts": [0],
+  "layer2_seed_fixture_experts": [
+    0
+  ],
   "layer2_topk_indices": [
-    [234, 140, 239, 189, 13, 43],
-    [140, 13, 239, 189, 7, 43],
-    [140, 13, 239, 189, 205, 166],
-    [131, 140, 48, 87, 78, 7],
-    [91, 170, 24, 172, 35, 40],
-    [73, 13, 166, 254, 26, 239],
-    [43, 96, 189, 13, 26, 179],
-    [73, 13, 79, 166, 239, 26]
+    [
+      234,
+      140,
+      239,
+      189,
+      13,
+      43
+    ],
+    [
+      140,
+      13,
+      239,
+      189,
+      7,
+      43
+    ],
+    [
+      140,
+      13,
+      239,
+      189,
+      205,
+      166
+    ],
+    [
+      131,
+      140,
+      48,
+      87,
+      78,
+      7
+    ],
+    [
+      91,
+      170,
+      24,
+      172,
+      35,
+      40
+    ],
+    [
+      73,
+      13,
+      166,
+      254,
+      26,
+      239
+    ],
+    [
+      43,
+      96,
+      189,
+      13,
+      26,
+      179
+    ],
+    [
+      73,
+      13,
+      79,
+      166,
+      239,
+      26
+    ]
   ],
   "layer2_topk_weights": [
-    [0.298828125, 0.296875, 0.30078125, 0.30078125, 0.298828125, 0.298828125],
-    [0.296875, 0.294921875, 0.298828125, 0.296875, 0.298828125, 0.298828125],
-    [0.30078125, 0.296875, 0.298828125, 0.296875, 0.296875, 0.298828125],
-    [0.296875, 0.296875, 0.3125, 0.30078125, 0.3046875, 0.30859375],
-    [0.296875, 0.294921875, 0.30859375, 0.3046875, 0.306640625, 0.296875],
-    [0.306640625, 0.291015625, 0.29296875, 0.298828125, 0.294921875, 0.29296875],
-    [0.30078125, 0.3046875, 0.314453125, 0.30859375, 0.3046875, 0.302734375],
-    [0.298828125, 0.29296875, 0.298828125, 0.294921875, 0.296875, 0.291015625]
+    [
+      0.298828125,
+      0.296875,
+      0.30078125,
+      0.30078125,
+      0.298828125,
+      0.298828125
+    ],
+    [
+      0.296875,
+      0.294921875,
+      0.298828125,
+      0.296875,
+      0.298828125,
+      0.298828125
+    ],
+    [
+      0.30078125,
+      0.296875,
+      0.298828125,
+      0.296875,
+      0.296875,
+      0.298828125
+    ],
+    [
+      0.296875,
+      0.296875,
+      0.3125,
+      0.30078125,
+      0.3046875,
+      0.30859375
+    ],
+    [
+      0.296875,
+      0.294921875,
+      0.30859375,
+      0.3046875,
+      0.306640625,
+      0.296875
+    ],
+    [
+      0.306640625,
+      0.291015625,
+      0.29296875,
+      0.298828125,
+      0.294921875,
+      0.29296875
+    ],
+    [
+      0.30078125,
+      0.3046875,
+      0.314453125,
+      0.30859375,
+      0.3046875,
+      0.302734375
+    ],
+    [
+      0.298828125,
+      0.29296875,
+      0.298828125,
+      0.294921875,
+      0.296875,
+      0.291015625
+    ]
   ],
   "layer2_expert_union": [
-    7, 13, 24, 26, 35, 40, 43, 48, 73, 78, 79, 87, 91, 96, 131, 140,
-    166, 170, 172, 179, 189, 205, 234, 239, 254
+    7,
+    13,
+    24,
+    26,
+    35,
+    40,
+    43,
+    48,
+    73,
+    78,
+    79,
+    87,
+    91,
+    96,
+    131,
+    140,
+    166,
+    170,
+    172,
+    179,
+    189,
+    205,
+    234,
+    239,
+    254
   ],
   "layer2_expert_union_size": 25,
   "reference_execution": "layer0-prefill -> direct-hidden-handoff -> layer1-prefill -> direct-hidden-handoff -> layer2-router-capture",
@@ -46,5 +187,58 @@
     "onednn_max_cpu_isa": "AVX2",
     "runner": "ubuntu-24.04",
     "workflow_run_id": 31439506979
+  },
+  "stacked_parent": {
+    "repository": "Svyable/wasted-inkling-small",
+    "branch": "agent/promote-inkling-bf16-profile",
+    "recorded_head": "5ca9807a45bb468e0c136ea1b07c6739b682cda5",
+    "freshness_mode": "dependency_blobs",
+    "dependencies": [
+      {
+        "path": "inkling/src/inkling_layer.c",
+        "blob_sha": "29aca44b3474d31223430d8a8328bf682e5f6932"
+      },
+      {
+        "path": "inkling/src/inkling_layer.h",
+        "blob_sha": "8a48fefcc22fc626a83edd96766a9149487afa8a"
+      },
+      {
+        "path": "inkling/src/inkling_numeric.h",
+        "blob_sha": "6c5c535684d3e731901c20ba5ed908af58fa6072"
+      },
+      {
+        "path": "mvp/discover_inkling_router_experts.py",
+        "blob_sha": "c564eed0ce706363cc648c3350469a7ef2045859"
+      },
+      {
+        "path": "mvp/diagnose_inkling_pre_router.py",
+        "blob_sha": "018d03c8b0bbc841e5afd1c8e4e43f9a5a58ea9b"
+      },
+      {
+        "path": "mvp/inkling_fixture_reference.py",
+        "blob_sha": "d8f42bb506c5408258a8e525fbabcd258c6c29a3"
+      },
+      {
+        "path": "experiments/inkling/measure_inkling_dense_bf16_profile.py",
+        "blob_sha": "dee3bd36f490e8c2fe67850c85abfe8f7e7005db"
+      },
+      {
+        "path": "experiments/inkling/run_inkling_checked_bf16_sparse_layer.py",
+        "blob_sha": "5391d46d866f4ae14d07c663fa6981d8ce703e3c"
+      },
+      {
+        "path": "experiments/inkling/run_inkling_checked_bf16_stateful_layer.py",
+        "blob_sha": "0c3d1cf8fade9535b815fd14097666f543ce8d28"
+      },
+      {
+        "path": "experiments/inkling/checked_bf16_profile_collector.py",
+        "blob_sha": "9c8fbf6ad3d9187c2f0d3c48edf50cb85881e2ea"
+      }
+    ],
+    "non_dependencies": [
+      "generated dist bundle and release packaging",
+      "documentation-only parent changes",
+      "unrelated CI metadata"
+    ]
   }
 }

@@ -24,6 +24,11 @@ on:
       - "experiments/inkling/probe_onednn_isa_arithmetic.py"
       - "experiments/inkling/test_onednn_isa_arithmetic_probe.py"
       - ".github/workflows/evidence-inkling-onednn-isa-probe.yml"
+  # The census is only worth anything if it accumulates hosts. Runs when the
+  # probe changes, and otherwise twice a day so the picture fills in on its own
+  # — about ninety seconds each, no fixture and no network.
+  schedule:
+    - cron: "43 4,16 * * *"
   workflow_dispatch:
 
 permissions:

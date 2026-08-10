@@ -94,18 +94,18 @@ class RunnerIsolationTest(unittest.TestCase):
                     root / "libinkling-complete.so"
                 )
             )
-        self.assertTrue(composed_library.is_file())
-        self.assertTrue(complete_library.is_file())
-        self.assertTrue(composed_source["production_source_unchanged"])
-        self.assertTrue(complete_source["production_source_unchanged"])
-        self.assertEqual(
-            composed_source["production_layer_sha256"],
-            complete_source["production_layer_sha256"],
-        )
-        self.assertNotEqual(
-            composed_source["probe_layer_sha256"],
-            complete_source["probe_layer_sha256"],
-        )
+            self.assertTrue(composed_library.is_file())
+            self.assertTrue(complete_library.is_file())
+            self.assertTrue(composed_source["production_source_unchanged"])
+            self.assertTrue(complete_source["production_source_unchanged"])
+            self.assertEqual(
+                composed_source["production_layer_sha256"],
+                complete_source["production_layer_sha256"],
+            )
+            self.assertNotEqual(
+                composed_source["probe_layer_sha256"],
+                complete_source["probe_layer_sha256"],
+            )
         self.assertIs(
             implementation.transform_aggregation_source,
             composed_runner.transform_aggregation_source,

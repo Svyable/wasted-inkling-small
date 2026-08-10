@@ -1,13 +1,17 @@
-name: Measure Inkling dense BF16 profile
+name: Evidence checked-in Inkling dense BF16 profile
 
 on:
   pull_request:
     paths:
       - "inkling/src/inkling*.c"
       - "inkling/src/inkling*.h"
+      - "inkling/tools/inkling_fixture.py"
       - "inkling/tools/inkling_layer_parity.py"
       - "inkling/tools/inkling_reference.py"
+      - "mvp/discover_inkling_router_experts.py"
+      - "mvp/inkling_c_config.py"
       - "mvp/inkling_fixture_reference.py"
+      - "mvp/inkling_remote_fixture.py"
       - "experiments/inkling/diagnose_inkling_native_bf16_backend.py"
       - "experiments/inkling/run_inkling_checked_bf16_sparse_layer.py"
       - "experiments/inkling/measure_inkling_dense_bf16_profile.py"
@@ -23,7 +27,7 @@ concurrency:
 
 jobs:
   dense-profile:
-    name: Measure layer-0 dense BF16 statefully
+    name: Checked-in layer-0 BF16 across eight tokens
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     env:
@@ -61,6 +65,8 @@ jobs:
           assert plan['revision'] == selection['revision']
           assert plan['config_sha256'] == selection['config_sha256']
           assert plan['index_sha256'] == selection['index_sha256']
+          assert plan['entries'] == 19
+          assert plan['payload_bytes'] == 490865154
           assert plan['payload_bytes'] < 2 * 1024**3
           print(
               'DENSE_BF16_PLAN '
@@ -116,7 +122,7 @@ jobs:
           PYTHONPATH=mvp python3 mvp/inkling_c_config.py \
             --model-config "${RUNNER_TEMP}/config.json" --out "${RUNNER_TEMP}/c-config.json"
 
-      - name: Measure dense BF16 hypothesis
+      - name: Execute checked-in dense BF16 profile
         shell: bash
         run: |
           set -uo pipefail
@@ -133,7 +139,7 @@ jobs:
           if [ "$rc" -ne 0 ]; then
             cat "$err" >&2
             detail=$(tr '\n' ' ' < "$err" | sed 's/%/%25/g; s/\r/%0D/g')
-            printf '::error file=experiments/inkling/measure_inkling_dense_bf16_profile.py,title=Dense BF16 measurement failed::%s\n' "$detail"
+            printf '::error file=experiments/inkling/measure_inkling_dense_bf16_profile.py,title=Checked dense BF16 execution failed::%s\n' "$detail"
             exit "$rc"
           fi
           python3 - <<'PY'
@@ -155,16 +161,18 @@ jobs:
                   f"bf16={value['bfloat16_exact_fraction']:.9f}"
               )
           assert result['source']['production_source_unchanged'] is True
-          assert result['source']['source_rewriting'] is True
-          # A mismatch is a legitimate measurement outcome and must not be
-          # converted into a false CI failure. The JSON and summary name it.
+          assert result['source']['source_rewriting'] is False
+          assert decision['classification'] == 'checked_in_dense_bf16_stateful_exact'
+          assert decision['first_nonexact_output_position'] is None
+          assert decision['first_nonexact_final_token_stage'] is None
+          assert len(result['backend_calls']) == 64
           PY
 
-      - name: Preserve dense BF16 measurement
+      - name: Preserve checked dense BF16 report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dense-bf16-measurement-${{ github.run_id }}-${{ github.run_attempt }}
+          name: checked-dense-bf16-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/dense-bf16.json
             ${{ runner.temp }}/dense-bf16.err

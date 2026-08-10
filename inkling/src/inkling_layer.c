@@ -248,12 +248,11 @@ int waste_inkling_layer_step_backend_trace_profile(
     const int rdim = l->num_heads * cfg->d_rel;
     const int bf16 = profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE;
 
-    /* The first promoted exact profile is deliberately sparse-only. Dense
-     * stateful evidence remains an open gate, so executing it here would turn
-     * an unmeasured assumption into checked-in policy.  Native BF16 matmuls are
-     * also mandatory.  Q scratch is reused as the shared FP32 accumulator only
-     * after attention is finished; fail closed when the geometry cannot hold H. */
-    if (bf16 && (!expected_sparse || !backend || !backend->matvec || qdim < hidden))
+    /* The measured exact profile requires native BF16 matmuls for both dense
+     * and sparse layers.  Sparse execution additionally reuses dead Q scratch
+     * as the shared FP32 accumulator after attention; dense layers do not need
+     * that alias, so only sparse geometry must satisfy Q >= H. */
+    if (bf16 && (!backend || !backend->matvec || (expected_sparse && qdim < hidden)))
         return -1;
 
     rmsnorm_profile(s->norm, x, w->input_norm, hidden, cfg->rms_eps, profile);
@@ -311,19 +310,28 @@ int waste_inkling_layer_step_backend_trace_profile(
     if (trace_f(trace, layer, "post_attention_norm", s->norm, (size_t)hidden))
         return -1;
     if (!w->sparse) {
-        /* Only reachable for the legacy F32 profile; BF16 dense execution is
-         * intentionally refused above until stateful layer-0 evidence lands. */
         if ((!backend && (!w->dense_gate || !w->dense_up || !w->dense_down)) ||
             !w->dense_global_scale) return -1;
         const int inter = cfg->dense_intermediate;
-        if (apply_matvec(backend, layer, WASTE_IK_MAT_DENSE_GATE, 0,
-                s->gate, w->dense_gate, s->norm, inter, hidden)) return -1;
-        if (apply_matvec(backend, layer, WASTE_IK_MAT_DENSE_UP, 0,
-                s->up, w->dense_up, s->norm, inter, hidden)) return -1;
-        for (int i = 0; i < inter; i++) s->gate[i] = silu(s->gate[i]) * s->up[i];
-        if (apply_matvec(backend, layer, WASTE_IK_MAT_DENSE_DOWN, 0,
-                s->ff, w->dense_down, s->gate, hidden, inter)) return -1;
-        for (int i = 0; i < hidden; i++) s->ff[i] *= *w->dense_global_scale;
+        if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_DENSE_GATE, 0,
+                s->gate, w->dense_gate, s->norm, inter, hidden, profile)) return -1;
+        if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_DENSE_UP, 0,
+                s->up, w->dense_up, s->norm, inter, hidden, profile)) return -1;
+        if (bf16) {
+            bf16_gated_activation(s->gate, s->up, inter);
+        } else {
+            for (int i = 0; i < inter; i++) s->gate[i] = silu(s->gate[i]) * s->up[i];
+        }
+        if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_DENSE_DOWN, 0,
+                s->ff, w->dense_down, s->gate, hidden, inter, profile)) return -1;
+        if (bf16) {
+            const float scale = waste_inkling_bf16_round(*w->dense_global_scale);
+            for (int i = 0; i < hidden; i++)
+                s->ff[i] = waste_inkling_bf16_round(
+                    waste_inkling_bf16_round(s->ff[i]) * scale);
+        } else {
+            for (int i = 0; i < hidden; i++) s->ff[i] *= *w->dense_global_scale;
+        }
         if (trace_f(trace, layer, "dense_mlp_out", s->ff, (size_t)hidden))
             return -1;
     } else {

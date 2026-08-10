@@ -5,6 +5,8 @@ on:
     paths:
       - "inkling/src/inkling*.c"
       - "inkling/src/inkling*.h"
+      - "experiments/inkling/checked_bf16_profile_collector.py"
+      - "experiments/inkling/run_inkling_checked_bf16_profile.py"
       - "experiments/inkling/run_inkling_checked_bf16_sparse_layer.py"
       - ".github/workflows/evidence-inkling-checked-bf16-profile.yml"
   workflow_dispatch:
@@ -49,7 +51,10 @@ jobs:
 
       - name: Compile the checked-in profile harness
         run: |
-          python3 -m compileall -q experiments/inkling/run_inkling_checked_bf16_sparse_layer.py
+          python3 -m compileall -q \
+            experiments/inkling/checked_bf16_profile_collector.py \
+            experiments/inkling/run_inkling_checked_bf16_profile.py \
+            experiments/inkling/run_inkling_checked_bf16_sparse_layer.py
           PYTHONPATH=inkling/tools:mvp:experiments/inkling python3 - <<'PY'
           import ctypes, tempfile
           from pathlib import Path
@@ -170,7 +175,7 @@ jobs:
           set -uo pipefail
           error_log="${RUNNER_TEMP}/checked-bf16.err"
           PYTHONPATH=inkling/tools:mvp:experiments/inkling python3 \
-            experiments/inkling/run_inkling_checked_bf16_sparse_layer.py \
+            experiments/inkling/run_inkling_checked_bf16_profile.py \
             --fixture "${RUNNER_TEMP}/checked-bf16-fixture" \
             --model-config "${RUNNER_TEMP}/config.json" \
             --c-config "${RUNNER_TEMP}/c-config.json" \
@@ -184,7 +189,7 @@ jobs:
           if [ "$rc" -ne 0 ]; then
             cat "$error_log" >&2
             detail=$(tr '\n' ' ' < "$error_log" | sed 's/%/%25/g; s/\r/%0D/g')
-            printf '::error file=experiments/inkling/run_inkling_checked_bf16_sparse_layer.py,title=Checked BF16 profile execution failed::%s\n' "$detail"
+            printf '::error file=experiments/inkling/run_inkling_checked_bf16_profile.py,title=Checked BF16 profile execution failed::%s\n' "$detail"
             exit "$rc"
           fi
 

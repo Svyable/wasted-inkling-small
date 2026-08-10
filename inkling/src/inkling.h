@@ -4,6 +4,8 @@
 #ifndef WASTE_INKLING_H
 #define WASTE_INKLING_H
 
+#include "inkling_numeric.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -31,6 +33,17 @@ int waste_inkling_route(const float *logits, const float *correction_bias,
                         float route_scale, float global_scale,
                         int *routed_index, float *routed_weight,
                         float *shared_weight);
+
+/* Internal numeric-profile variant.  F32 is exactly the legacy function above.
+ * BF16_REFERENCE applies only the measured BF16 normalization completion
+ * policy; it deliberately keeps WASTE's deterministic low-ID tie rule rather
+ * than pretending platform-specific official top-k ties are portable. */
+int waste_inkling_route_profile(
+    const float *logits, const float *correction_bias,
+    int n_routed, int n_shared, int top_k,
+    float route_scale, float global_scale,
+    int *routed_index, float *routed_weight, float *shared_weight,
+    waste_inkling_numeric_profile profile);
 
 /* One causal depthwise short-convolution update, matching Inkling's fp32
  * cached-decode path.  state is [channels][kernel] and is updated in place.

@@ -1,33 +1,26 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Measure one dense-layer BF16 policy before promoting it into checked-in C.
+"""Prove the checked-in dense BF16 layer profile on official layer-0 bytes.
 
-Sparse BF16 execution is already checked-in and stateful-exact on the retained
-layer-2/layer-5 fixtures. Dense execution intentionally still fails closed.
-This evidence-only probe copies the current source, changes exactly two dense
-promotion seams in that temporary copy, and runs official layer 0 across all
-eight source-bound inputs with one live C state.
+The dense completion policy was first measured in an evidence-only source copy
+and was exact across all eight source-bound layer-0 outputs.  The policy is now
+checked into ``inkling/src``.  This gate compiles that source unchanged and
+repeats the same stateful official-weight comparison, so future edits cannot
+pass by keeping the old temporary rewrite exact while the shipped C drifts.
 
-Hypothesis under test:
+The promoted policy is deliberately narrow:
 
-* reuse the already-promoted BF16 norm/attention/residual policy;
+* reuse the BF16 norm/attention/residual policy proven on sparse layers;
 * force dense gate/up/down through the native PyTorch BF16 matrix backend;
 * complete SiLU and the gated product to BF16;
-* complete the dense down result and global-scale multiply to BF16;
+* complete the dense down result and global-scale multiply to BF16; and
 * retain the existing F32 short-convolution state and final BF16 residual.
-
-The checked-in source is hashed before/after and must remain unchanged. A red
-result names the first final-token activation boundary and first output token;
-it is evidence, not a reason to widen tolerances.
 """
 from __future__ import annotations
 
 import argparse
 import ctypes
-import hashlib
 import json
-import shutil
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -55,11 +48,11 @@ from inkling_layer_parity import (
     TraceCollector,
     _build_config,
     bind_layer,
-    build_library,
 )
 from inkling_release_config import build_transformers_text_config
 from run_inkling_checked_bf16_sparse_layer import (
     BF16_REFERENCE,
+    build_checked_library,
     configure_profile_library,
 )
 
@@ -87,57 +80,6 @@ KIND_NAMES = {
     MAT_DENSE_UP: "dense_up",
     MAT_DENSE_DOWN: "dense_down",
 }
-
-_GUARD_OLD = """    if (bf16 && (!expected_sparse || !backend || !backend->matvec || qdim < hidden))
-        return -1;
-"""
-_GUARD_NEW = """    if (bf16 && (!backend || !backend->matvec || (expected_sparse && qdim < hidden)))
-        return -1;
-"""
-
-_DENSE_OLD = """    if (!w->sparse) {
-        /* Only reachable for the legacy F32 profile; BF16 dense execution is
-         * intentionally refused above until stateful layer-0 evidence lands. */
-        if ((!backend && (!w->dense_gate || !w->dense_up || !w->dense_down)) ||
-            !w->dense_global_scale) return -1;
-        const int inter = cfg->dense_intermediate;
-        if (apply_matvec(backend, layer, WASTE_IK_MAT_DENSE_GATE, 0,
-                s->gate, w->dense_gate, s->norm, inter, hidden)) return -1;
-        if (apply_matvec(backend, layer, WASTE_IK_MAT_DENSE_UP, 0,
-                s->up, w->dense_up, s->norm, inter, hidden)) return -1;
-        for (int i = 0; i < inter; i++) s->gate[i] = silu(s->gate[i]) * s->up[i];
-        if (apply_matvec(backend, layer, WASTE_IK_MAT_DENSE_DOWN, 0,
-                s->ff, w->dense_down, s->gate, hidden, inter)) return -1;
-        for (int i = 0; i < hidden; i++) s->ff[i] *= *w->dense_global_scale;
-        if (trace_f(trace, layer, "dense_mlp_out", s->ff, (size_t)hidden))
-            return -1;
-"""
-_DENSE_NEW = """    if (!w->sparse) {
-        if ((!backend && (!w->dense_gate || !w->dense_up || !w->dense_down)) ||
-            !w->dense_global_scale) return -1;
-        const int inter = cfg->dense_intermediate;
-        if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_DENSE_GATE, 0,
-                s->gate, w->dense_gate, s->norm, inter, hidden, profile)) return -1;
-        if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_DENSE_UP, 0,
-                s->up, w->dense_up, s->norm, inter, hidden, profile)) return -1;
-        if (bf16) {
-            bf16_gated_activation(s->gate, s->up, inter);
-        } else {
-            for (int i = 0; i < inter; i++) s->gate[i] = silu(s->gate[i]) * s->up[i];
-        }
-        if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_DENSE_DOWN, 0,
-                s->ff, w->dense_down, s->gate, hidden, inter, profile)) return -1;
-        if (bf16) {
-            const float scale = waste_inkling_bf16_round(*w->dense_global_scale);
-            for (int i = 0; i < hidden; i++)
-                s->ff[i] = waste_inkling_bf16_round(
-                    waste_inkling_bf16_round(s->ff[i]) * scale);
-        } else {
-            for (int i = 0; i < hidden; i++) s->ff[i] *= *w->dense_global_scale;
-        }
-        if (trace_f(trace, layer, "dense_mlp_out", s->ff, (size_t)hidden))
-            return -1;
-"""
 
 FINAL_POINTS = (
     "input_norm",
@@ -178,42 +120,6 @@ def metrics(reference: torch.Tensor, candidate: torch.Tensor) -> dict[str, Any]:
         "raw_max_abs": float(raw.max()) if raw.numel() else 0.0,
         "bfloat16_exact_fraction": float(torch.eq(ref_bf16, cand_bf16).float().mean()),
         "bfloat16_max_abs": float(bf16.max()) if bf16.numel() else 0.0,
-    }
-
-
-def build_dense_probe_library(out: Path) -> tuple[Path, dict[str, Any]]:
-    source_root = Path(__file__).resolve().parents[2] / "inkling" / "src"
-    temporary = Path(tempfile.mkdtemp(prefix="inkling-dense-bf16-probe-"))
-    probe_root = temporary / "src"
-    shutil.copytree(source_root, probe_root)
-    layer_path = probe_root / "inkling_layer.c"
-    original = layer_path.read_text(encoding="utf-8")
-    transformed = original
-    for old, new, label in (
-        (_GUARD_OLD, _GUARD_NEW, "dense BF16 fail-closed guard"),
-        (_DENSE_OLD, _DENSE_NEW, "dense MLP branch"),
-    ):
-        count = transformed.count(old)
-        if count != 1:
-            raise DenseBfloat16ProbeError(
-                f"expected exactly one {label}; found {count}"
-            )
-        transformed = transformed.replace(old, new, 1)
-    layer_path.write_text(transformed, encoding="utf-8")
-    library = build_library(probe_root, out)
-    current = (source_root / "inkling_layer.c").read_text(encoding="utf-8")
-    return library, {
-        "production_source_unchanged": current == original,
-        "production_layer_sha256": hashlib.sha256(original.encode()).hexdigest(),
-        "probe_layer_sha256": hashlib.sha256(transformed.encode()).hexdigest(),
-        "source_rewriting": True,
-        "hypothesis": [
-            "enable the existing BF16 norm/attention/residual profile for dense layers",
-            "native BF16 dense gate/up/down matrix callbacks",
-            "BF16 SiLU and gated product",
-            "BF16 down output and dense global-scale multiply",
-            "existing F32 MLP short-convolution state followed by BF16 final residual",
-        ],
     }
 
 
@@ -379,9 +285,9 @@ def main(argv: list[str] | None = None) -> int:
             dtype=dtype,
         )
         module = build_layer_from_fixture(fixture, config, 0, device=device, dtype=dtype)
-        library, source = build_dense_probe_library(Path(args.out).with_suffix(".so"))
-        if not source["production_source_unchanged"]:
-            raise DenseBfloat16ProbeError("production source changed during probe build")
+        library, source = build_checked_library(Path(args.out).with_suffix(".so"))
+        if source["source_rewriting"] is not False:
+            raise DenseBfloat16ProbeError("dense gate must compile checked-in source unchanged")
         lib = ctypes.CDLL(str(library))
         configure_profile_library(lib)
         provider = DenseMatrixProvider(0, module)
@@ -412,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         first_stage = first_nonexact(stage_metrics)
         result = {
-            "format": "inkling-dense-bfloat16-profile-measurement",
+            "format": "inkling-checked-in-dense-bfloat16-profile",
             "version": 1,
             "source": source,
             "execution_profile": {
@@ -421,9 +327,9 @@ def main(argv: list[str] | None = None) -> int:
             },
             "decision": {
                 "classification": (
-                    "dense_bf16_hypothesis_stateful_exact"
+                    "checked_in_dense_bf16_stateful_exact"
                     if first_output is None and first_stage is None
-                    else "dense_bf16_hypothesis_mismatch"
+                    else "checked_in_dense_bf16_stateful_mismatch"
                 ),
                 "first_nonexact_output_position": first_output,
                 "first_nonexact_final_token_stage": first_stage,

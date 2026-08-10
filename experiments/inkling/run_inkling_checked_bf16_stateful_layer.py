@@ -103,7 +103,6 @@ def run_c_stateful_profile(
 
     outputs: list[torch.Tensor] = []
     preexpert: list[torch.Tensor] = []
-    expert_get = ctypes.cast(compact.provider.callback, ctypes.c_void_p)
     for position, input_row in enumerate(inputs):
         if len(input_row) != hidden:
             raise CheckedStatefulError(
@@ -115,7 +114,7 @@ def run_c_stateful_profile(
         rc = lib.waste_inkling_layer_step_backend_trace_profile(
             ctypes.byref(config), layer, ctypes.byref(compact.weights),
             ctypes.byref(provider.backend), ctypes.byref(layer_state), x, position,
-            ctypes.byref(scratch), expert_get, None,
+            ctypes.byref(scratch), ctypes.c_void_p(), None,
             ctypes.byref(collector.c_trace), BF16_REFERENCE,
         )
         if provider.error:

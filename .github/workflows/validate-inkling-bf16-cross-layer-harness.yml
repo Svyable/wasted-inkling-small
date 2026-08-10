@@ -4,6 +4,10 @@ on:
   pull_request:
     paths:
       - "docs/OFFICIAL-CROSS-LAYER-ROUTES.json"
+      - "mvp/port_trace.py"
+      - "mvp/check_stacked_evidence_freshness.py"
+      - "mvp/test_port_trace.py"
+      - "mvp/test_stacked_evidence_freshness.py"
       - "experiments/inkling/run_inkling_checked_bf16_cross_layer.py"
       - "experiments/inkling/run_inkling_checked_bf16_stateful_layer.py"
       - "experiments/inkling/measure_inkling_dense_bf16_profile.py"
@@ -17,7 +21,7 @@ permissions:
 
 jobs:
   harness:
-    name: Import and build continuity harness
+    name: Validate trace, freshness, import and checked build
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -30,6 +34,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Prove shared trace and stacked-evidence contracts before dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            mvp/port_trace.py \
+            mvp/check_stacked_evidence_freshness.py \
+            mvp/test_port_trace.py \
+            mvp/test_stacked_evidence_freshness.py
+          PYTHONPATH=mvp python3 mvp/test_port_trace.py
+          PYTHONPATH=mvp python3 mvp/test_stacked_evidence_freshness.py
+          git fetch --no-tags --depth=200 origin \
+            +refs/heads/agent/promote-inkling-bf16-profile:refs/remotes/origin/agent/promote-inkling-bf16-profile
+          PYTHONPATH=mvp python3 mvp/check_stacked_evidence_freshness.py \
+            docs/OFFICIAL-CROSS-LAYER-ROUTES.json \
+            --parent-ref refs/remotes/origin/agent/promote-inkling-bf16-profile
 
       - name: Install pinned Python stack
         run: |
@@ -44,7 +65,7 @@ jobs:
           from pathlib import Path
           archive = json.loads(Path('docs/OFFICIAL-CROSS-LAYER-ROUTES.json').read_text())
           assert archive['format'] == 'inkling-cross-layer-route-discovery'
-          assert archive['version'] == 2
+          assert archive['version'] == 3
           assert archive['layers'] == [0, 1, 2]
           assert archive['positions'] == 8
           assert len(archive['layer2_topk_indices']) == 8
@@ -53,7 +74,10 @@ jobs:
           assert all(len(row) == 6 for row in archive['layer2_topk_weights'])
           assert len(archive['layer2_expert_union']) == archive['layer2_expert_union_size'] == 25
           assert sorted({expert for row in archive['layer2_topk_indices'] for expert in row}) == archive['layer2_expert_union']
-          print('CROSS_LAYER_ARCHIVE rows=8 topk=6 experts=25')
+          parent = archive['stacked_parent']
+          assert parent['freshness_mode'] == 'dependency_blobs'
+          assert len(parent['dependencies']) == 10
+          print('CROSS_LAYER_ARCHIVE rows=8 topk=6 experts=25 dependencies=10')
           PY
 
       - name: Build checked-in BF16 runtime and weight helper

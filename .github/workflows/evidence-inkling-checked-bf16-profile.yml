@@ -1,0 +1,214 @@
+name: Evidence checked-in Inkling BF16 profile
+
+on:
+  pull_request:
+    paths:
+      - "inkling/src/inkling*.c"
+      - "inkling/src/inkling*.h"
+      - "experiments/inkling/run_inkling_checked_bf16_sparse_layer.py"
+      - ".github/workflows/evidence-inkling-checked-bf16-profile.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-checked-bf16-profile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checked-profile:
+    name: Checked-in sparse BF16 profile on official bytes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      OMP_NUM_THREADS: 1
+      MKL_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+      ONEDNN_MAX_CPU_ISA: AVX2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            'torch==2.13.0' 'transformers==5.14.1'
+          python3 - <<'PY'
+          import os, torch
+          assert torch.__version__.split('+', 1)[0] == '2.13.0'
+          assert os.environ['ONEDNN_MAX_CPU_ISA'] == 'AVX2'
+          print(
+              'CHECKED_BF16_BACKEND '
+              f'torch={torch.__version__} '
+              f'dispatch={torch.backends.cpu.get_cpu_capability()} '
+              f'onednn_cap={os.environ["ONEDNN_MAX_CPU_ISA"]}'
+          )
+          PY
+
+      - name: Compile the checked-in profile harness
+        run: |
+          python3 -m compileall -q experiments/inkling/run_inkling_checked_bf16_sparse_layer.py
+          PYTHONPATH=inkling/tools:mvp:experiments/inkling python3 - <<'PY'
+          import ctypes, tempfile
+          from pathlib import Path
+          from run_inkling_checked_bf16_sparse_layer import (
+              build_checked_library,
+              configure_profile_library,
+          )
+          with tempfile.TemporaryDirectory() as directory:
+              library, source = build_checked_library(Path(directory) / 'profile.so')
+              assert source['source_rewriting'] is False
+              lib = ctypes.CDLL(str(library))
+              configure_profile_library(lib)
+              assert hasattr(lib, 'waste_inkling_layer_step_backend_trace_profile')
+          print('CHECKED_BF16_BUILD source_rewriting=false profile_symbol=present')
+          PY
+
+      - name: Reproduce the exact position-zero fixture plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          plan="${RUNNER_TEMP}/checked-bf16-plan.json"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" \
+            --layers 2,5 \
+            --experts '2:13,67,69,90,150,238;5:56,63,66,105,180,238' \
+            --max-total-gib 2 \
+            --plan-only > "$plan"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          plan = json.loads((root / 'checked-bf16-plan.json').read_text())
+          selection = json.loads(Path('docs/OFFICIAL-ROUTER-SELECTION.json').read_text())
+          expected = {
+              '2': sorted(selection['layers']['2']['topk_indices'][0]),
+              '5': sorted(selection['layers']['5']['topk_indices'][0]),
+          }
+          actual = {layer: sorted(values) for layer, values in plan['experts'].items()}
+          assert actual == expected
+          assert plan['entries'] == 64
+          assert plan['payload_bytes'] == 985959432
+          assert plan['revision'] == selection['revision']
+          assert plan['config_sha256'] == selection['config_sha256']
+          assert plan['index_sha256'] == selection['index_sha256']
+          print(
+              'CHECKED_BF16_PLAN '
+              f"entries={plan['entries']} payload_bytes={plan['payload_bytes']} "
+              f"experts={actual}"
+          )
+          PY
+
+      - name: Extract and bind one CRC-verified fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          fixture="${RUNNER_TEMP}/checked-bf16-fixture"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" \
+              --layers 2,5 \
+              --experts '2:13,67,69,90,150,238;5:56,63,66,105,180,238' \
+              --max-total-gib 2 \
+              --out "$fixture" > "${RUNNER_TEMP}/checked-bf16-manifest.json"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((10 << (attempt - 1)))
+              echo "fixture attempt ${attempt} failed; retrying after ${delay}s" >&2
+              sleep "$delay"
+            fi
+          done
+          if [ "$extracted" != true ]; then
+            echo 'checked BF16 fixture extraction exhausted four attempts' >&2
+            exit 2
+          fi
+          python3 inkling/tools/inkling_fixture.py --fixture "$fixture" --verify
+
+          PYTHONPATH=mvp python3 - <<PY
+          import json, time
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import deterministic_hidden_states, input_sha256
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+          root = Path('${RUNNER_TEMP}')
+          config = None
+          for attempt in range(4):
+              try:
+                  source = HttpRangeSource(
+                      'https://huggingface.co/thinkingmachines/Inkling-Small',
+                      '$revision',
+                  )
+                  config = source.file('config.json')
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3:
+                      raise
+                  time.sleep(10 * (2**attempt))
+          assert config is not None
+          (root / 'config.json').write_bytes(config)
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          selection = json.loads(Path('docs/OFFICIAL-ROUTER-SELECTION.json').read_text())
+          assert input_sha256(inputs, torch.bfloat16) == selection['inputs_sha256']
+          (root / 'inputs.json').write_text(json.dumps(inputs.tolist()) + '\n')
+          PY
+
+          PYTHONPATH=mvp python3 mvp/inkling_c_config.py \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --out "${RUNNER_TEMP}/c-config.json"
+
+      - name: Execute checked-in sparse BF16 profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=inkling/tools:mvp:experiments/inkling python3 \
+            experiments/inkling/run_inkling_checked_bf16_sparse_layer.py \
+            --fixture "${RUNNER_TEMP}/checked-bf16-fixture" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --c-config "${RUNNER_TEMP}/c-config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --selection docs/OFFICIAL-ROUTER-SELECTION.json \
+            --layers 2,5 \
+            --dtype bfloat16 \
+            --out "${RUNNER_TEMP}/checked-bf16.json" > /dev/null
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = json.loads((Path(os.environ['RUNNER_TEMP']) / 'checked-bf16.json').read_text())
+          assert result['source']['source_rewriting'] is False
+          assert result['execution_profile']['thread_environment']['ONEDNN_MAX_CPU_ISA'] == 'AVX2'
+          outcome = result['evidence_outcome']
+          print(
+              'CHECKED_BF16_DECISION '
+              f"classification={outcome['classification']} "
+              f"nonexact_layers={outcome['nonexact_layers']}"
+          )
+          for layer, value in sorted(result['layers'].items(), key=lambda item: int(item[0])):
+              decision = value['decision']
+              router = value['router_contract']
+              print(
+                  'CHECKED_BF16_LAYER '
+                  f"layer={layer} first={decision['first_nonexact_stage']} "
+                  f"route_match={router['raw_route_matches_canonical']} "
+                  f"routed_weight_match={router['raw_routed_weights_match_exact']} "
+                  f"shared_weight_match={router['raw_shared_weights_match_exact']}"
+              )
+          assert outcome['classification'] == 'checked_in_bf16_sparse_profile_exact'
+          PY
+
+      - name: Preserve the checked-in profile report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: checked-bf16-profile-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/checked-bf16.json
+          if-no-files-found: warn
+          retention-days: 30

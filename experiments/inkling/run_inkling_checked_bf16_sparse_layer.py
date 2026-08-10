@@ -13,6 +13,11 @@ source-bound canonical official IDs and exact reference-profile weights are
 injected through the existing trace adapter.  That keeps a platform-specific
 top-k tie from changing the expert bank while still making any raw router
 mismatch visible instead of laundering it into a parity claim.
+
+All kernel-sensitive matrices, including routed experts, are supplied only by
+the native BF16 matrix backend.  The C call deliberately receives no
+``expert_get`` callback, so a green result proves the promoted profile does not
+silently depend on a second resident/streaming expert storage path.
 """
 from __future__ import annotations
 
@@ -74,6 +79,7 @@ def build_checked_library(out: Path) -> tuple[Path, dict[str, Any]]:
         "numeric_profile": "WASTE_INKLING_NUMERIC_BF16_REFERENCE",
         "numeric_profile_value": BF16_REFERENCE,
         "source_rewriting": False,
+        "routed_expert_storage": "matrix-backend-only",
     }
 
 
@@ -149,11 +155,10 @@ def run_c_layer_profile(
 
     collector.position = 0
     x = (ctypes.c_float * hidden)(*input_row)
-    expert_get = ctypes.cast(compact.provider.callback, ctypes.c_void_p)
     rc = lib.waste_inkling_layer_step_backend_trace_profile(
         ctypes.byref(config), layer, ctypes.byref(compact.weights),
         ctypes.byref(provider.backend), ctypes.byref(state), x, 0,
-        ctypes.byref(scratch), expert_get, None,
+        ctypes.byref(scratch), ctypes.c_void_p(), None,
         ctypes.byref(collector.c_trace), BF16_REFERENCE,
     )
     if provider.error:
@@ -195,6 +200,7 @@ def run_c_layer_profile(
             f"token.0.layer.{layer}.shared_weight"
         ],
         "backend_calls": provider.calls,
+        "expert_get_supplied": False,
     }
 
 
@@ -295,6 +301,10 @@ def analyze_layer(
             "raw_shared_weights_match_exact": shared_weights_match,
             "downstream_uses_canonical_ids_and_exact_weights": True,
         },
+        "backend_contract": {
+            "routed_experts_use_matrix_backend_only": True,
+            "expert_get_supplied": candidate["expert_get_supplied"],
+        },
         "backend_calls": candidate["backend_calls"],
     }
 
@@ -342,7 +352,6 @@ def main(argv: list[str] | None = None) -> int:
             raise CheckedBfloat16ProfileError("input hash differs from route archive")
 
         library, source = build_checked_library(Path(args.out).with_suffix(".runtime.so"))
-        configure_profile_library(ctypes.CDLL(str(library)))
         lib = ctypes.CDLL(str(library))
         configure_profile_library(lib)
         helper = composed.FixedWeightHelper(

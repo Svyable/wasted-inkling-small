@@ -40,6 +40,67 @@ int main(void)
     }
 
     {
+        /* The legacy route API must remain byte-identical to the explicit F32
+         * profile.  BF16_REFERENCE is a separate internal contract. */
+        const float logits[] = { 2.0f, -1.0f, 0.5f, 1.0f };
+        const float bias[] = { 0.0f, 0.0f, 0.0f };
+        int legacy_i[2], f32_i[2];
+        float legacy_r[2], legacy_s[1], f32_r[2], f32_s[1];
+        fail += waste_inkling_route(logits, bias, 3, 1, 2, 1.0f, 1.0f,
+                                    legacy_i, legacy_r, legacy_s) != 0;
+        fail += waste_inkling_route_profile(
+                    logits, bias, 3, 1, 2, 1.0f, 1.0f,
+                    f32_i, f32_r, f32_s, WASTE_INKLING_NUMERIC_F32) != 0;
+        fail += memcmp(legacy_i, f32_i, sizeof legacy_i) != 0;
+        fail += memcmp(legacy_r, f32_r, sizeof legacy_r) != 0;
+        fail += memcmp(legacy_s, f32_s, sizeof legacy_s) != 0;
+        fail += waste_inkling_route_profile(
+                    logits, bias, 3, 1, 2, 1.0f, 1.0f,
+                    f32_i, f32_r, f32_s,
+                    (waste_inkling_numeric_profile)99) == 0;
+    }
+
+    {
+        /* These two sigmoid scores are distinct in F32 but complete to the
+         * same BF16 choice value.  The BF16 profile must therefore use the
+         * portable lower-ID tie rule rather than inherit the F32 ordering. */
+        const float logits[] = { 0.0f, 0.0001f };
+        const float bias[] = { 0.0f, 0.0f };
+        int f32_i[1], bf16_i[1];
+        float f32_r[1], bf16_r[1];
+        fail += waste_inkling_route_profile(
+                    logits, bias, 2, 0, 1, 1.0f, 1.0f,
+                    f32_i, f32_r, NULL, WASTE_INKLING_NUMERIC_F32) != 0;
+        fail += waste_inkling_route_profile(
+                    logits, bias, 2, 0, 1, 1.0f, 1.0f,
+                    bf16_i, bf16_r, NULL,
+                    WASTE_INKLING_NUMERIC_BF16_REFERENCE) != 0;
+        fail += f32_i[0] != 1;
+        fail += bf16_i[0] != 0;
+        fail += bf16_r[0] != waste_inkling_bf16_round(bf16_r[0]);
+        fail += bf16_r[0] != 1.0f;
+    }
+
+    {
+        const float logits[] = { 2.0f, -1.0f, 0.5f, 1.0f };
+        const float bias[] = { 0.0f, 0.0f, 0.0f };
+        int idx[2]; float rw[2], sw[1];
+        fail += waste_inkling_route_profile(
+                    logits, bias, 3, 1, 2, 8.0f, 0.75f,
+                    idx, rw, sw, WASTE_INKLING_NUMERIC_BF16_REFERENCE) != 0;
+        fail += rw[0] != waste_inkling_bf16_round(rw[0]);
+        fail += rw[1] != waste_inkling_bf16_round(rw[1]);
+        fail += sw[0] != waste_inkling_bf16_round(sw[0]);
+    }
+
+    {
+        /* Nearest-even BF16 completion is a shared primitive, not an ad-hoc
+         * cast hidden in one evidence harness. */
+        fail += waste_inkling_bf16_round(1.00390625f) != 1.0f;
+        fail += waste_inkling_bf16_round(1.01171875f) != 1.015625f;
+    }
+
+    {
         const int local[] = { 0, 1 };
         waste_inkling_config_args a;
         waste_inkling_config c;

@@ -1,0 +1,92 @@
+name: Finalize reviewed WASTE Inkling bundle
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/finalize-waste-inkling-bundle.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: finalize-waste-inkling-bundle
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    name: Regenerate and commit exact bundle to BF16 promotion
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out the promotion branch to be finalized
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/promote-inkling-bf16-profile
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Generate, verify, and stage the deterministic bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          before=$(git rev-parse HEAD)
+          work="${RUNNER_TEMP}/waste-finalize"
+          out="${RUNNER_TEMP}/bundle"
+          tree=$(sh integration/waste/generate.sh "$work" "$out")
+
+          # shellcheck source=/dev/null
+          . integration/waste/baseline.env
+          test "$tree" = "$EXPECTED_APPLIED_TREE"
+
+          mapfile -t patches < <(find "$out" -maxdepth 1 -type f -name '*.patch' -print)
+          test "${#patches[@]}" -eq 1
+          generated_patch=${patches[0]}
+
+          dist="dist/waste-inkling-d9b919a"
+          target="$dist/patches/0001-Add-the-Inkling-Small-runtime-foundation-to-WASTE.patch"
+          mkdir -p "$dist/patches"
+          cp "$generated_patch" "$target"
+          patch_sha=$(sha256sum "$target" | awk '{print $1}')
+          printf '%s  %s\n' "$patch_sha" \
+            'patches/0001-Add-the-Inkling-Small-runtime-foundation-to-WASTE.patch' \
+            > "$dist/SHA256SUMS"
+
+          cat > "$dist/BASELINE" <<EOF
+          UPSTREAM_REPOSITORY=${UPSTREAM_REPOSITORY%.git}
+          UPSTREAM_COMMIT=$UPSTREAM_COMMIT
+          UPSTREAM_TREE=$UPSTREAM_TREE
+          UPSTREAM_VERSION=$UPSTREAM_VERSION
+          UPSTREAM_API_VERSION=$UPSTREAM_API_VERSION
+          UPSTREAM_FORMAT_VERSION=$UPSTREAM_FORMAT_VERSION
+          EXPECTED_APPLIED_TREE=$EXPECTED_APPLIED_TREE
+          PATCH_SHA256=$patch_sha
+          BUNDLE_KIND=generated-from-inkling-tree
+          BUNDLE_GENERATOR=integration/waste/generate.sh
+          SUPERSEDES=waste-inkling-patch-v18
+          EOF
+
+          expected=$(printf '%s\n' \
+            "$dist/BASELINE" \
+            "$dist/SHA256SUMS" \
+            "$target" | sort)
+          changed=$(git diff --name-only | sort)
+          test "$changed" = "$expected"
+
+          verify="${RUNNER_TEMP}/waste-reapply"
+          git clone --quiet "$UPSTREAM_REPOSITORY" "$verify"
+          git -C "$verify" checkout --quiet "$UPSTREAM_COMMIT"
+          git -C "$verify" config user.name 'WASTE bundle verifier'
+          git -C "$verify" config user.email waste-bundle@invalid
+          git -C "$verify" am --quiet --committer-date-is-author-date "$GITHUB_WORKSPACE/$target"
+          applied=$(git -C "$verify" rev-parse 'HEAD^{tree}')
+          test "$applied" = "$EXPECTED_APPLIED_TREE"
+
+          git config user.name 'WASTE Inkling bundle generator'
+          git config user.email inkling@waste.invalid
+          git add "$dist"
+          git commit -m 'Regenerate reviewed WASTE Inkling bundle'
+          test "$(git rev-parse HEAD^)" = "$before"
+          git push origin HEAD:agent/promote-inkling-bf16-profile
+
+          echo "FINAL_BUNDLE tree=$EXPECTED_APPLIED_TREE patch_sha256=$patch_sha"

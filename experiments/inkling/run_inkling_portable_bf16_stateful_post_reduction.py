@@ -23,6 +23,7 @@ import torch
 
 import diagnose_inkling_bf16_stateful_mlp_boundary as stateful_mlp
 import diagnose_inkling_portable_bf16_composed_moe as composed
+import run_inkling_portable_bf16_complete_sparse_layer as complete_runner
 from diagnose_inkling_bf16_router_post_reduction_denom import (
     EXPECTED_FLAGS,
     PostReductionDenomError,
@@ -206,7 +207,11 @@ def main(argv: list[str] | None = None) -> int:
                 "the stateful post-reduction probe requires CPU"
             )
 
-        library, source = composed.build_composed_library(
+        # Do not rely on importing the complete-layer runner to mutate the
+        # composed implementation.  Build the candidate through its explicit
+        # scoped entry point so the final BF16 residual is part of this exact
+        # stateful profile and module import order cannot change the result.
+        library, source = complete_runner.build_complete_sparse_layer_library(
             Path(args.out).with_suffix(".runtime.so")
         )
         if not source["production_source_unchanged"]:

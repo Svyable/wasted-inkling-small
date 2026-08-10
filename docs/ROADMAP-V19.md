@@ -238,6 +238,22 @@ excluded.
    AVX512_CORE_AMX → native` and names a rung only when exactness is a clean
    prefix of the ladder. Until it lands on an eligible host, the declared
    reference profile stays at the conservative AVX2 cap.
+
+   Eligibility is a runner lottery and a losing one — one eligible draw out of
+   every hand-made attempt so far — so the matrix now runs on a three-hourly
+   schedule rather than by hand. A neutral attempt costs a few seconds because
+   the gate runs before checkout, install, and the 985 MB fixture download.
+
+   The mechanism is separately settled without waiting for it.
+   `experiments/inkling/probe_onednn_isa_arithmetic.py` reproduces the matrix's
+   four-arm partition on a bare bfloat16 linear of `q_proj`'s shape, and on an
+   AVX-512 host advertising neither `amx_bf16` nor `avx512_bf16` the ladder is
+   monotone with `AVX512_CORE` first differing. Neither AMX nor AVX-512-BF16
+   kernels are necessary. The AVX2-capped arm is also bit-identical to what an
+   AVX2 host computes natively, so the declared profile is the same arithmetic
+   reached from two directions rather than a lucky agreement. This is a host
+   census, not parity evidence — the official-fixture ladder is still what
+   turns it into one.
 2. **Promote only the proven arithmetic policy** into a private fail-closed C
    profile.
 3. **Rerun layers 0, 2, and 5** without temporary source rewriting before

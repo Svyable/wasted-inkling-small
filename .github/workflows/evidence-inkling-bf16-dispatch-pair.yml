@@ -14,6 +14,18 @@ on:
       - "docs/INKLING-REFERENCE-PROFILES.md"
       - "docs/OFFICIAL-ROUTER-SELECTION.json"
       - ".github/workflows/evidence-inkling-bf16-dispatch-pair.yml"
+  # Eligibility is a runner lottery, and it is a losing one: of the attempts
+  # made by hand so far, exactly one drew a native-AVX512 host and the rest
+  # exited neutral in under seven seconds. Playing it by hand does not scale,
+  # and the five-rung ISA ladder needs an eligible host to run at all.
+  #
+  # A neutral attempt is cheap — the gate runs before checkout, install, or the
+  # 985 MB fixture download — so the schedule costs a few seconds most times
+  # and buys an eligible attempt occasionally. GitHub only honours `schedule`
+  # on the default branch, which is why this could not be added before the
+  # matrix merged.
+  schedule:
+    - cron: "17 */3 * * *"
   workflow_dispatch:
 
 permissions:

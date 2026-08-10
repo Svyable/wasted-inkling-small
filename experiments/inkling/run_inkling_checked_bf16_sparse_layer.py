@@ -10,7 +10,7 @@ compares the same named activations used by the temporary evidence stack.
 Routing remains two explicit contracts.  The raw deterministic WASTE route and
 weights are preserved in the report.  For downstream arithmetic only, the
 source-bound canonical official IDs and exact reference-profile weights are
-injected through the existing trace adapter.  That keeps a platform-specific
+injected through an explicit #51 adapter.  That keeps a platform-specific
 top-k tie from changing the expert bank while still making any raw router
 mismatch visible instead of laundering it into a parity claim.
 
@@ -31,6 +31,11 @@ from typing import Any
 import torch
 
 import diagnose_inkling_portable_bf16_composed_moe as composed
+from checked_bf16_profile_collector import (
+    CheckedExactWeightCollector,
+    CheckedPostReductionWeightHelper,
+    build_checked_weight_helper,
+)
 from diagnose_inkling_pre_router import _capture_official_pre_router
 from discover_inkling_router_experts import input_sha256
 from inkling_canonical_route_layer_parity import (
@@ -100,7 +105,7 @@ def run_c_layer_profile(
     input_row: list[float],
     row: RouteRow,
     provider: composed.CapturingMoeProvider,
-    collector: composed.ExactWeightCollector,
+    collector: CheckedExactWeightCollector,
 ) -> dict[str, Any]:
     compact = bind_sparse_layer_compact(fixture, cfg, layer)
     if compact.provider is None:
@@ -213,7 +218,7 @@ def first_nonexact(metrics: dict[str, dict[str, Any]]) -> str | None:
 
 def analyze_layer(
     lib: Any,
-    helper: composed.FixedWeightHelper,
+    helper: CheckedPostReductionWeightHelper,
     fixture: Any,
     config: Any,
     cfg: dict[str, Any],
@@ -246,7 +251,7 @@ def analyze_layer(
     }
 
     provider = composed.CapturingMoeProvider(layer, module)
-    collector = composed.ExactWeightCollector(
+    collector = CheckedExactWeightCollector(
         row,
         provider,
         helper,
@@ -270,8 +275,7 @@ def analyze_layer(
         and candidate["candidate_routed_weight"] == candidate["exact_routed_weight"]
     )
     shared_weights_match = (
-        route_matches
-        and candidate["candidate_shared_weight"] == candidate["exact_shared_weight"]
+        candidate["candidate_shared_weight"] == candidate["exact_shared_weight"]
     )
     return {
         "decision": {
@@ -336,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         layers = [int(value) for value in args.layers.split(",") if value]
         if not layers or any(layer < int(cfg["dense_layers"]) for layer in layers):
             raise CheckedBfloat16ProfileError(
-                "the first checked-in BF16 profile is sparse-layer only"
+                "the checked-in sparse BF16 gate requires sparse layers"
             )
         routes = load_canonical_routes(
             args.selection, fixture, input_values, layers
@@ -354,8 +358,8 @@ def main(argv: list[str] | None = None) -> int:
         library, source = build_checked_library(Path(args.out).with_suffix(".runtime.so"))
         lib = ctypes.CDLL(str(library))
         configure_profile_library(lib)
-        helper = composed.FixedWeightHelper(
-            composed.build_helper(Path(args.out).with_suffix(".weights.so"))
+        helper = CheckedPostReductionWeightHelper(
+            build_checked_weight_helper(Path(args.out).with_suffix(".weights.so"))
         )
         analyses = {
             str(layer): analyze_layer(

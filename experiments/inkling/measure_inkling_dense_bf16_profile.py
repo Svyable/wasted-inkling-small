@@ -370,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
             raise DenseBfloat16ProbeError("--inputs must contain eight source-bound rows")
         dtype = DTYPES["bfloat16"]
         device = torch.device("cpu")
-        reference, _ = run_layer_reference(
+        reference = run_layer_reference(
             fixture,
             config,
             0,

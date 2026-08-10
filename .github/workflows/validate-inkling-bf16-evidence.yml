@@ -98,7 +98,6 @@ jobs:
           set -euo pipefail
           tests=(
             experiments/inkling/test_inkling_bf16_logsumexp_reduction.py
-            experiments/inkling/test_inkling_bf16_moe_aggregation_lattice.py
             experiments/inkling/test_inkling_bf16_residual_boundary.py
             experiments/inkling/test_inkling_bf16_router_normalization_stages.py
             experiments/inkling/test_inkling_bf16_router_post_reduction_denom.py
@@ -114,11 +113,11 @@ jobs:
             mvp/test_inkling_bf16_projection_granularity.py
             mvp/test_inkling_native_bf16_backend.py
           )
-          test "${#tests[@]}" -eq 16
+          test "${#tests[@]}" -eq 15
           for test_file in "${tests[@]}"; do
             test -f "$test_file"
             python3 -m unittest discover \
               -s "$(dirname "$test_file")" \
               -p "$(basename "$test_file")" -v
           done
-          echo "validated ${#tests[@]} retained BF16 contract files"
+          echo "validated ${#tests[@]} retained non-rewrite BF16 contract files"

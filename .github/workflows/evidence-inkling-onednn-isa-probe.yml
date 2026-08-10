@@ -1,0 +1,133 @@
+name: Evidence Inkling oneDNN ISA arithmetic probe
+
+# The same-host reference matrix needs an eligible AVX-512 runner, a 985 MB
+# CRC-verified official fixture, and about four minutes. It has run neutral far
+# more often than it has run, and a neutral run teaches nothing about the host
+# it drew.
+#
+# This job takes the opposite trade. It gates on nothing, downloads nothing,
+# and finishes in about a minute, so every run adds one host to the census of
+# which oneDNN arms answer identically. It is deliberately NOT a parity check:
+# synthetic weights say nothing about whether the port is correct, and this
+# workflow must never be read as evidence that it is.
+
+on:
+  pull_request:
+    paths:
+      - "experiments/inkling/probe_onednn_isa_arithmetic.py"
+      - "experiments/inkling/test_onednn_isa_arithmetic_probe.py"
+      - ".github/workflows/evidence-inkling-onednn-isa-probe.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "experiments/inkling/probe_onednn_isa_arithmetic.py"
+      - "experiments/inkling/test_onednn_isa_arithmetic_probe.py"
+      - ".github/workflows/evidence-inkling-onednn-isa-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-onednn-isa-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  OPENBLAS_NUM_THREADS: "1"
+
+jobs:
+  probe:
+    name: Census this runner's oneDNN ISA arithmetic
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the classifier contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd experiments/inkling
+          PYTHONPATH=. python3 -m unittest test_onednn_isa_arithmetic_probe -v
+
+      # Pinned to the same Torch the reference matrix uses. A probe on a
+      # different build would be measuring a different oneDNN.
+      - name: Install the pinned official stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --break-system-packages torch==2.13.0
+
+      - name: Probe every arm in a fresh process
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 experiments/inkling/probe_onednn_isa_arithmetic.py \
+            --out "${RUNNER_TEMP}/onednn-isa-probe.json" > /dev/null
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          report = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "onednn-isa-probe.json").read_text()
+          )
+          print(
+              "ONEDNN_ISA_PROBE "
+              f"classification={report['classification']} "
+              f"cpu_capability={report['cpu_capability']} "
+              f"amx_bf16={report['amx_bf16_available']} "
+              f"avx512_bf16={report['avx512_bf16_available']} "
+              f"first_differing_rung={report['first_rung_differing_from_avx2_baseline']} "
+              f"monotone={report['monotone']} "
+              f"flags_sha256={report['flags_sha256']}"
+          )
+          for name, digest in sorted(report["output_sha256"].items()):
+              same = report["bitwise_identical_to_native"][name]
+              print(f"ONEDNN_ISA_PROBE_ARM {name} sha256={digest} same_as_native={same}")
+
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          with summary.open("a", encoding="utf-8") as out:
+              out.write("### oneDNN ISA arithmetic on this runner\n\n")
+              out.write(f"- Classification: `{report['classification']}`\n")
+              out.write(f"- Torch cpu_capability: `{report['cpu_capability']}`\n")
+              out.write(
+                  f"- Host advertises `amx_bf16`: "
+                  f"`{report['amx_bf16_available']}`, `avx512_bf16`: "
+                  f"`{report['avx512_bf16_available']}`\n"
+              )
+              out.write(
+                  "- First rung differing from the AVX2 baseline: "
+                  f"`{report['first_rung_differing_from_avx2_baseline']}`\n"
+              )
+              out.write(f"- Monotone: `{report['monotone']}`\n\n")
+              out.write("| Arm | Bitwise identical to native |\n| --- | --- |\n")
+              for name, same in sorted(
+                  report["bitwise_identical_to_native"].items()
+              ):
+                  out.write(f"| `{name}` | `{same}` |\n")
+              out.write(
+                  "\nSynthetic weights. This is a host census, not Inkling "
+                  "parity evidence.\n"
+              )
+
+          # The probe reports; it does not gate. The only thing asserted is
+          # that it produced a verdict it is willing to stand behind — a
+          # nonmonotone ladder is a legitimate verdict and must not fail here.
+          assert report["classification"]
+          assert report["format"] == "inkling-onednn-isa-arithmetic-probe"
+          PY
+
+      - name: Preserve the probe
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: onednn-isa-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/onednn-isa-probe.json
+          if-no-files-found: warn
+          retention-days: 30

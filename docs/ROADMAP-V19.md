@@ -206,9 +206,50 @@ position-zero complete-layer result remains 4/5 across unchanged hosted runs,
 and dense/global stateful coverage, decoder continuity, final normalization,
 and logits remain open.
 
-**Next.** Complete the predeclared same-host backend matrix, then promote only
-the proven arithmetic policy into a private fail-closed C profile. Rerun layers
-0, 2, and 5 without temporary source rewriting before extending through logits.
+**The same-host backend matrix is complete.** Run
+[31280408153](https://github.com/Svyable/wasted-inkling-small/actions/runs/31280408153)
+cleared the AVX-512 gate and executed all four arms on one host:
+
+| Arm | Exact | First pre-router divergence |
+| --- | --- | --- |
+| native (AVX512) | no | `q_proj` |
+| `ATEN_CPU_CAPABILITY=avx2` | no | `q_proj` |
+| `ONEDNN_MAX_CPU_ISA=AVX2` | **yes** | — |
+| `torch.backends.mkldnn.enabled=False` | **yes** | — |
+
+Classification `onednn_avx512_isa_path_is_profile_sensitive`, the first of the
+branches predeclared before the measurement. Forcing ATen to AVX2 changed
+nothing — same exactness, same stage, both layers — so **the ATen vectorized
+kernels are excluded**. The seam is oneDNN's AVX-512 path and it is already
+open at `q_proj`, the first linear operation in the layer; everything after it
+is consequence rather than cause.
+
+This also retires an earlier inference. "AMX is excluded by the
+reproduced-failure profiles" was read off CPU flag sets on hosts that happened
+not to advertise it. `ONEDNN_MAX_CPU_ISA` is a cap, not a request, so on such a
+host the AMX path is never selected and never tested — untested is not
+excluded.
+
+**Next.**
+
+1. **Bisect the ISA ladder.** One cap skips every AVX-512 rung at once, so the
+   matrix cannot separate the FP32 AVX-512 kernels from the BF16 kernels from
+   AMX. `classify_isa_ladder` walks `AVX2 → AVX512_CORE → AVX512_CORE_BF16 →
+   AVX512_CORE_AMX → native` and names a rung only when exactness is a clean
+   prefix of the ladder. Until it lands on an eligible host, the declared
+   reference profile stays at the conservative AVX2 cap.
+2. **Promote only the proven arithmetic policy** into a private fail-closed C
+   profile.
+3. **Rerun layers 0, 2, and 5** without temporary source rewriting before
+   extending through logits.
+
+**A parity job whose result depends on runner allocation is not evidence.** The
+layer-2 stateful post-reduction check exited on 2026-08-08 with `layer 2
+pre-expert regression invalidates MLP diagnosis` and passed on 2026-08-09 with
+identical code; nothing changed but the host. Its gated run is now pinned to
+the profile the matrix measured exact, and the uncapped native run executes
+alongside it — recorded, never gated — so a green board cannot be mistaken for
+a closed seam.
 
 **Do.** Run G0's loop and drive the differences to zero, in this order —
 earlier points are cheaper to debug and later ones inherit their errors:
@@ -424,7 +465,7 @@ and is the best parallel track for a second contributor.
 | Gate | Status | Evidence |
 | --- | --- | --- |
 | G0 fixture parity | **done** — bounded official and C sides execute immutable CRC-verified fixtures | `inkling_fixture.py`, `inkling_fixture_reference.py`, `inkling_layer_parity.py`, [REMOTE-FIXTURES.md](REMOTE-FIXTURES.md) |
-| G1 BF16 parity | **active** — layer-2 eight-position sparse ladder exact on named AVX2 profile; production policy, profile stability, remaining layer classes, decoder continuity, and logits open | [BF16-EVIDENCE.md](BF16-EVIDENCE.md), [INKLING-REFERENCE-PROFILES.md](INKLING-REFERENCE-PROFILES.md), #57 |
+| G1 BF16 parity | **active** — layer-2 eight-position sparse ladder exact on named AVX2 profile; same-host matrix complete and localizes the seam to oneDNN's AVX-512 path at `q_proj`; ISA rung, production policy, remaining layer classes, decoder continuity, and logits open | [BF16-EVIDENCE.md](BF16-EVIDENCE.md), [INKLING-REFERENCE-PROFILES.md](INKLING-REFERENCE-PROFILES.md), #57, #59 |
 | G2 quantized tolerance | **tooling promoted; official quality gate open** | [THROUGHPUT.md](THROUGHPUT.md) §5 |
 | — decode cost model | **done** — geometry exact, throughput projected and labelled | [THROUGHPUT.md](THROUGHPUT.md), `inkling_throughput.py`, 38 tests |
 | G3 conversion measurement | not started | — |

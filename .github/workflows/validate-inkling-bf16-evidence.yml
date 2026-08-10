@@ -7,6 +7,7 @@ on:
       - "mvp/test_inkling_*bf16*.py"
       - "experiments/inkling/*bf16*.py"
       - "docs/BF16-EVIDENCE.md"
+      - ".github/workflows/evidence-inkling-bf16-dispatch-pair.yml"
       - ".github/workflows/validate-inkling-bf16-evidence.yml"
   workflow_dispatch:
 
@@ -40,6 +41,27 @@ jobs:
       - name: Compile every retained evidence module
         run: python3 -m compileall -q mvp experiments/inkling
 
+      - name: Parse the durable BF16 workflows
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          paths = (
+              Path(".github/workflows/evidence-inkling-bf16-complete-sparse-layer.yml"),
+              Path(".github/workflows/evidence-inkling-bf16-dispatch-pair.yml"),
+              Path(".github/workflows/evidence-inkling-bf16-router-denominator.yml"),
+              Path(".github/workflows/evidence-inkling-bf16-stateful-post-reduction.yml"),
+              Path(".github/workflows/validate-inkling-bf16-evidence.yml"),
+              Path(".github/workflows/evidence-inkling-onednn-isa-probe.yml"),
+          )
+          for path in paths:
+              value = yaml.safe_load(path.read_text(encoding="utf-8"))
+              assert isinstance(value, dict), path
+              assert "jobs" in value, path
+          print(f"parsed {len(paths)} durable BF16 workflows")
+          PY
+
       - name: Run each BF16 unit-contract file in isolation
         shell: bash
         run: |
@@ -63,6 +85,7 @@ jobs:
             experiments/inkling/test_inkling_portable_bf16_single_token_moe_activation.py
             experiments/inkling/test_inkling_portable_bf16_stateful_post_reduction.py
             experiments/inkling/test_inkling_portable_bf16_stateful_sparse_layer.py
+            experiments/inkling/test_onednn_isa_arithmetic_probe.py
             mvp/test_inkling_bf16_attention_head_norm.py
             mvp/test_inkling_bf16_attention_lattice.py
             mvp/test_inkling_bf16_attention_reductions.py
@@ -71,7 +94,7 @@ jobs:
             mvp/test_inkling_bf16_projection_granularity.py
             mvp/test_inkling_native_bf16_backend.py
           )
-          test "${#tests[@]}" -eq 25
+          test "${#tests[@]}" -eq 26
           for test_file in "${tests[@]}"; do
             test -f "$test_file"
             python3 -m unittest discover \

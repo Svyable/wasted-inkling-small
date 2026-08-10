@@ -20,7 +20,9 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping
@@ -52,7 +54,11 @@ from diagnose_inkling_portable_bf16_single_token_moe_activation import (
     MoeActivationError,
     transform_activation_source,
 )
-from diagnose_inkling_pre_router import PreRouterDiagnosisError, _capture_official_pre_router
+from diagnose_inkling_pre_router import (
+    POINTS as PRE_ROUTER_POINTS,
+    PreRouterDiagnosisError,
+    _capture_official_pre_router,
+)
 from discover_inkling_router_experts import input_sha256
 from inkling_canonical_route_layer_parity import (
     CanonicalRouteCollector,
@@ -120,7 +126,81 @@ _CPUINFO_FIELDS = {
     "model name": "model_name",
     "stepping": "stepping",
     "microcode": "microcode",
+    "flags": "flags",
 }
+
+EXECUTION_PROFILE_SCHEMA_VERSION = 4
+REFERENCE_MATRIX_ARMS = (
+    "native",
+    "aten_avx2",
+    "onednn_avx2",
+    "mkldnn_off",
+)
+
+# ONEDNN_MAX_CPU_ISA rungs in ascending capability order. "native" is the
+# uncapped run and is the top rung by definition. The reference matrix's AVX2
+# arm and native arm are reused as the bottom and top rungs, so the ladder
+# costs two extra runs, not five.
+ISA_LADDER_RUNGS = (
+    "AVX2",
+    "AVX512_CORE",
+    "AVX512_CORE_BF16",
+    "AVX512_CORE_AMX",
+    "native",
+)
+
+
+def _torch_backend_profile(torch_module: Any) -> dict[str, Any]:
+    """Fingerprint the oneDNN/MKLDNN backend without assuming full Torch APIs."""
+    backends = getattr(torch_module, "backends", None)
+    mkldnn = getattr(backends, "mkldnn", None)
+    available_fn = getattr(mkldnn, "is_available", None)
+    try:
+        available = bool(available_fn()) if callable(available_fn) else None
+    except (RuntimeError, TypeError):
+        available = None
+    enabled_value = getattr(mkldnn, "enabled", None)
+    enabled = bool(enabled_value) if enabled_value is not None else None
+
+    config_module = getattr(torch_module, "__config__", None)
+    show = getattr(config_module, "show", None)
+    try:
+        build_config = str(show() or "") if callable(show) else ""
+    except (RuntimeError, TypeError):
+        build_config = ""
+    version_match = re.search(
+        r"(?:oneDNN|MKL-DNN)\s+v?([0-9][0-9A-Za-z.+_-]*)",
+        build_config,
+        flags=re.IGNORECASE,
+    )
+    return {
+        "mkldnn_available": available,
+        "mkldnn_enabled": enabled,
+        "onednn_version": version_match.group(1) if version_match else None,
+        "torch_build_config_sha256": hashlib.sha256(
+            build_config.encode()
+        ).hexdigest(),
+    }
+
+
+def configure_reference_backend(
+    *,
+    disable_mkldnn: bool,
+    torch_module: Any = torch,
+) -> None:
+    """Apply the explicit backend counterfactual before reference arithmetic."""
+    if not disable_mkldnn:
+        return
+    backends = getattr(torch_module, "backends", None)
+    mkldnn = getattr(backends, "mkldnn", None)
+    if mkldnn is None or not hasattr(mkldnn, "enabled"):
+        raise ComposedMoeError("Torch does not expose torch.backends.mkldnn.enabled")
+    try:
+        mkldnn.enabled = False
+    except (AttributeError, RuntimeError, TypeError) as exc:
+        raise ComposedMoeError("Torch refused to disable the MKLDNN backend") from exc
+    if bool(mkldnn.enabled):
+        raise ComposedMoeError("Torch refused to disable the MKLDNN backend")
 
 
 def _first_cpuinfo(path: Path) -> dict[str, Any]:
@@ -128,6 +208,7 @@ def _first_cpuinfo(path: Path) -> dict[str, Any]:
     values: dict[str, Any] = {
         "available": False,
         **{field: None for field in _CPUINFO_FIELDS.values()},
+        "flags_sha256": None,
     }
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -139,8 +220,17 @@ def _first_cpuinfo(path: Path) -> dict[str, Any]:
         key, separator, value = line.partition(":")
         if separator and key.strip() in _CPUINFO_FIELDS:
             values[_CPUINFO_FIELDS[key.strip()]] = value.strip()
+    flags = sorted(set((values.get("flags") or "").split()))
+    values["flags"] = flags
+    values["flags_sha256"] = (
+        hashlib.sha256(" ".join(flags).encode()).hexdigest()
+        if flags
+        else None
+    )
     values["available"] = any(
-        values[field] is not None for field in _CPUINFO_FIELDS.values()
+        values[field] is not None
+        for field in _CPUINFO_FIELDS.values()
+        if field != "flags"
     )
     return values
 
@@ -163,8 +253,9 @@ def collect_execution_profile(
             "machine": platform.machine(),
         }
     )
+    backend_profile = _torch_backend_profile(torch_module)
     profile = {
-        "schema_version": 1,
+        "schema_version": EXECUTION_PROFILE_SCHEMA_VERSION,
         "workflow": {
             "event_name": env.get("GITHUB_EVENT_NAME"),
             "job": env.get("GITHUB_JOB"),
@@ -186,6 +277,7 @@ def collect_execution_profile(
             "cpu_capability": torch_module.backends.cpu.get_cpu_capability(),
             "num_threads": int(torch_module.get_num_threads()),
             "num_interop_threads": int(torch_module.get_num_interop_threads()),
+            **backend_profile,
         },
         "thread_environment": {
             name: env.get(name)
@@ -194,6 +286,8 @@ def collect_execution_profile(
                 "MKL_NUM_THREADS",
                 "OPENBLAS_NUM_THREADS",
                 "ATEN_CPU_CAPABILITY",
+                "ONEDNN_MAX_CPU_ISA",
+                "ONEDNN_VERBOSE",
             )
         },
     }
@@ -203,11 +297,21 @@ def collect_execution_profile(
             for key in ("os", "arch", "image_os", "image_version")
         },
         "cpu": profile["cpu"],
-        "torch": profile["torch"],
-        "thread_environment": profile["thread_environment"],
     }
     profile["host_class_sha256"] = hashlib.sha256(
         json.dumps(host_class, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    reference_profile = {
+        "host_class_sha256": profile["host_class_sha256"],
+        "torch": profile["torch"],
+        "thread_environment": profile["thread_environment"],
+    }
+    profile["reference_profile_sha256"] = hashlib.sha256(
+        json.dumps(
+            reference_profile,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
     ).hexdigest()
     return profile
 
@@ -362,6 +466,26 @@ def metrics(reference: torch.Tensor, candidate: torch.Tensor) -> dict[str, Any]:
     }
 
 
+def tensor_payload(tensor: torch.Tensor) -> dict[str, Any]:
+    """Retain exact float32 and BF16 payload bits for paired-arm comparison."""
+    raw = tensor.detach().float().cpu().contiguous()
+    bfloat16 = raw.to(torch.bfloat16).contiguous()
+    raw_bits = raw.view(torch.int32).reshape(-1)
+    bfloat16_bits = bfloat16.view(torch.int16).reshape(-1)
+    return {
+        "shape": list(raw.shape),
+        "byte_order": sys.byteorder,
+        "float32_bits": raw_bits.tolist(),
+        "float32_sha256": hashlib.sha256(
+            raw_bits.numpy().tobytes(order="C")
+        ).hexdigest(),
+        "bfloat16_bits": bfloat16_bits.tolist(),
+        "bfloat16_sha256": hashlib.sha256(
+            bfloat16_bits.numpy().tobytes(order="C")
+        ).hexdigest(),
+    }
+
+
 def classify_stages(stage_metrics: dict[str, dict[str, Any]]) -> dict[str, Any]:
     prefix: list[str] = []
     for stage in STAGES:
@@ -399,6 +523,461 @@ def complete_evidence_outcome(
         ),
         "exact_layers": exact_layers,
         "nonexact_layers": nonexact_layers,
+    }
+
+
+def classify_dispatch_pair(
+    native: Mapping[str, Any],
+    forced_avx2: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Apply the predeclared native/forced-AVX2 interpretation table."""
+    native_profile = native["execution_profile"]
+    forced_profile = forced_avx2["execution_profile"]
+    profile_schema_version = native_profile["schema_version"]
+    if forced_profile["schema_version"] != profile_schema_version:
+        raise ComposedMoeError("dispatch-pair profile schema versions differ")
+    host_class = native_profile["host_class_sha256"]
+    if forced_profile["host_class_sha256"] != host_class:
+        raise ComposedMoeError("dispatch-pair arms ran on different host classes")
+    if (
+        native_profile["reference_profile_sha256"]
+        == forced_profile["reference_profile_sha256"]
+    ):
+        raise ComposedMoeError("dispatch-pair reference profiles are identical")
+    layers = sorted(native["layers"], key=int)
+    if layers != sorted(forced_avx2["layers"], key=int):
+        raise ComposedMoeError("dispatch-pair layer sets differ")
+
+    layer_out_bitwise: dict[str, Any] = {}
+    routing_weight_bitwise: dict[str, Any] = {}
+    first_nonexact_stages: dict[str, Any] = {}
+    for layer in layers:
+        native_layer = native["layers"][layer]
+        forced_layer = forced_avx2["layers"][layer]
+        native_payloads = native_layer["layer_out_payloads"]
+        forced_payloads = forced_layer["layer_out_payloads"]
+        comparison: dict[str, bool] = {}
+        for side in ("official", "candidate"):
+            for representation in ("float32", "bfloat16"):
+                key = f"{representation}_bits"
+                comparison[f"{side}_{representation}_equal"] = (
+                    native_payloads[side][key] == forced_payloads[side][key]
+                )
+        comparison["all_payloads_equal"] = all(comparison.values())
+        layer_out_bitwise[layer] = comparison
+
+        routing_comparison = {
+            "native_routed_equal": (
+                native_layer["exact_routed_weight"]
+                == native_layer["official_route"]["routed_weights"][0]
+            ),
+            "native_shared_equal": (
+                native_layer["exact_shared_weight"]
+                == native_layer["official_route"]["shared_gammas"][0]
+            ),
+            "forced_avx2_routed_equal": (
+                forced_layer["exact_routed_weight"]
+                == forced_layer["official_route"]["routed_weights"][0]
+            ),
+            "forced_avx2_shared_equal": (
+                forced_layer["exact_shared_weight"]
+                == forced_layer["official_route"]["shared_gammas"][0]
+            ),
+        }
+        routing_comparison["all_weights_match_official"] = all(
+            routing_comparison.values()
+        )
+        routing_weight_bitwise[layer] = routing_comparison
+        first_nonexact_stages[layer] = {
+            "native": native_layer["decision"]["first_nonexact_stage"],
+            "forced_avx2": forced_layer["decision"]["first_nonexact_stage"],
+        }
+
+    arms_equal = all(
+        value["all_payloads_equal"] for value in layer_out_bitwise.values()
+    )
+    routing_weights_match_official = all(
+        value["all_weights_match_official"]
+        for value in routing_weight_bitwise.values()
+    )
+    pre_router_mismatch = any(
+        stage in PRE_ROUTER_POINTS
+        for value in first_nonexact_stages.values()
+        for stage in value.values()
+    )
+    exact_classification = "complete_sparse_layers_are_bfloat16_exact"
+    native_exact = (
+        native["evidence_outcome"]["classification"] == exact_classification
+    )
+    forced_exact = (
+        forced_avx2["evidence_outcome"]["classification"]
+        == exact_classification
+    )
+
+    if native_exact and forced_exact:
+        if arms_equal:
+            classification = "both_dispatch_profiles_exact_and_bitwise_equal"
+            reference_profile_bound = False
+            next_action = "no_failure_reproduced"
+        else:
+            classification = (
+                "both_dispatch_profiles_exact_but_layer_out_is_dispatch_variant"
+            )
+            reference_profile_bound = True
+            next_action = "scope_official_exactness_to_named_reference_profiles"
+        denominator_live = False
+    elif not native_exact and forced_exact:
+        classification = "forced_avx2_closes_native_mismatch"
+        reference_profile_bound = True
+        denominator_live = False
+        next_action = "scope_official_exactness_to_named_reference_profiles"
+    elif native_exact and not forced_exact:
+        classification = "forced_avx2_introduces_mismatch"
+        reference_profile_bound = True
+        denominator_live = False
+        next_action = "scope_official_exactness_to_named_reference_profiles"
+    elif arms_equal and not routing_weights_match_official:
+        classification = (
+            "dispatch_invariant_routing_weight_mismatch_keeps_denominator_defect_live"
+        )
+        reference_profile_bound = False
+        denominator_live = True
+        next_action = "investigate_logsumexp_denominator_reduction"
+    elif arms_equal and pre_router_mismatch:
+        classification = (
+            "dispatch_invariant_pre_router_mismatch_excludes_denominator_cause"
+        )
+        reference_profile_bound = False
+        denominator_live = False
+        next_action = "investigate_hardware_capability_class_and_pre_router_math"
+    elif arms_equal:
+        classification = (
+            "dispatch_invariant_nonrouter_mismatch_excludes_denominator_cause"
+        )
+        reference_profile_bound = False
+        denominator_live = False
+        next_action = "localize_the_first_nonexact_nonrouter_stage"
+    else:
+        classification = "dispatch_variant_mismatch_remains_profile_bound"
+        reference_profile_bound = True
+        denominator_live = False
+        next_action = "scope_profiles_before_investigating_residual_mismatch"
+
+    return {
+        "format": "inkling-bfloat16-dispatch-pair-classification",
+        "version": 3,
+        "profile_schema_version": profile_schema_version,
+        "host_class_sha256": host_class,
+        "native_reference_profile_sha256": native_profile[
+            "reference_profile_sha256"
+        ],
+        "forced_avx2_reference_profile_sha256": forced_profile[
+            "reference_profile_sha256"
+        ],
+        "native_exact": native_exact,
+        "forced_avx2_exact": forced_exact,
+        "arms_bitwise_equal": arms_equal,
+        "layer_out_bitwise": layer_out_bitwise,
+        "routing_weights_match_official": routing_weights_match_official,
+        "routing_weight_bitwise": routing_weight_bitwise,
+        "first_nonexact_stages": first_nonexact_stages,
+        "classification": classification,
+        "reference_profile_bound": reference_profile_bound,
+        "denominator_defect_branch_live": denominator_live,
+        "next_action": next_action,
+    }
+
+
+def _is_complete_exact(result: Mapping[str, Any]) -> bool:
+    return (
+        result["evidence_outcome"]["classification"]
+        == "complete_sparse_layers_are_bfloat16_exact"
+    )
+
+
+def _first_nonexact_pre_router_stage(layer: Mapping[str, Any]) -> str | None:
+    stages = layer["stages"]
+    for point in PRE_ROUTER_POINTS:
+        if point not in stages:
+            raise ComposedMoeError(
+                f"reference-matrix result omits pre-router stage {point}"
+            )
+        if stages[point]["bfloat16_exact_fraction"] != 1.0:
+            return point
+    return None
+
+
+def _compare_pre_router_payloads(
+    native_layer: Mapping[str, Any],
+    arm_layer: Mapping[str, Any],
+) -> dict[str, Any]:
+    stages: dict[str, Any] = {}
+    first_changed_stage = None
+    for point in PRE_ROUTER_POINTS:
+        try:
+            native = native_layer["stage_payloads"][point]
+            arm = arm_layer["stage_payloads"][point]
+        except KeyError as exc:
+            raise ComposedMoeError(
+                f"reference-matrix payload omits pre-router stage {point}"
+            ) from exc
+        comparison: dict[str, bool] = {}
+        for side in ("official", "candidate"):
+            comparison[f"{side}_shape_equal"] = (
+                native[side]["shape"] == arm[side]["shape"]
+            )
+            for representation in ("float32", "bfloat16"):
+                key = f"{representation}_bits"
+                comparison[f"{side}_{representation}_equal"] = (
+                    native[side][key] == arm[side][key]
+                )
+        comparison["all_payloads_equal"] = all(comparison.values())
+        stages[point] = comparison
+        if first_changed_stage is None and not comparison["all_payloads_equal"]:
+            first_changed_stage = point
+    return {
+        "first_changed_stage": first_changed_stage,
+        "all_pre_router_payloads_equal": first_changed_stage is None,
+        "stages": stages,
+    }
+
+
+def classify_isa_ladder(arms: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """Locate the oneDNN ISA rung at which single-token exactness is lost.
+
+    The four-arm reference matrix establishes *that* the oneDNN AVX-512 path
+    is profile sensitive: capping oneDNN to AVX2 is exact and leaving it
+    native is not. It cannot say which AVX-512 kernel family is responsible,
+    because one cap skips every rung above AVX2 at once. This walks the rungs
+    individually, so "scope exactness to a reference profile" can name the
+    lowest profile that is actually exact instead of retreating to AVX2 by
+    default.
+
+    ``ONEDNN_MAX_CPU_ISA`` is a cap, not a request: on a host without a rung,
+    the rung's arm executes as the highest supported ISA and duplicates a
+    lower arm. That is why the host's ``amx_bf16`` flag is reported alongside
+    the verdict, and why AMX is only ever named as implicated when the host
+    advertises it *and* the AMX rung is the first nonexact one. Every other
+    outcome leaves AMX untested, which is not the same as exonerated.
+    """
+    missing = [rung for rung in ISA_LADDER_RUNGS if rung not in arms]
+    if missing:
+        raise ComposedMoeError(f"ISA ladder is missing rungs: {missing}")
+    profiles = {name: arms[name]["execution_profile"] for name in ISA_LADDER_RUNGS}
+    schemas = {profile["schema_version"] for profile in profiles.values()}
+    if schemas != {EXECUTION_PROFILE_SCHEMA_VERSION}:
+        raise ComposedMoeError(
+            "ISA-ladder arms must all use execution-profile schema "
+            f"{EXECUTION_PROFILE_SCHEMA_VERSION}"
+        )
+    host_classes = {profile["host_class_sha256"] for profile in profiles.values()}
+    if len(host_classes) != 1:
+        raise ComposedMoeError("ISA-ladder arms ran on different host classes")
+
+    exact = {rung: _is_complete_exact(arms[rung]) for rung in ISA_LADDER_RUNGS}
+    order = list(ISA_LADDER_RUNGS)
+    nonexact = [rung for rung in order if not exact[rung]]
+    first_nonexact_rung = nonexact[0] if nonexact else None
+    # Exactness must be a prefix of the ladder: every rung below the first
+    # failure exact, every rung at or above it nonexact. Anything else means
+    # the cap is not the variable being measured, and no rung may be named.
+    if first_nonexact_rung is None:
+        monotone = True
+    else:
+        boundary = order.index(first_nonexact_rung)
+        monotone = all(exact[rung] for rung in order[:boundary]) and all(
+            not exact[rung] for rung in order[boundary:]
+        )
+
+    cpu = profiles["native"].get("cpu") or {}
+    if "flags" not in cpu:
+        raise ComposedMoeError(
+            "ISA-ladder native arm omits cpu flags; AMX can be neither ruled "
+            "in nor ruled out without them"
+        )
+    flags = set(cpu["flags"] or ())
+    amx_available = "amx_bf16" in flags
+    amx_implicated = bool(
+        monotone and amx_available and first_nonexact_rung == "AVX512_CORE_AMX"
+    )
+
+    if first_nonexact_rung is None:
+        classification = "isa_ladder_exact_at_every_rung"
+        next_action = "no_isa_rung_reproduced_the_divergence"
+    elif not monotone:
+        classification = "isa_ladder_nonmonotone"
+        next_action = "do_not_name_a_rung_until_the_ladder_is_monotone"
+    elif amx_implicated:
+        classification = "onednn_amx_rung_is_the_first_nonexact_rung"
+        next_action = "isolate_the_onednn_amx_bf16_matmul"
+    else:
+        classification = "onednn_avx512_rung_is_the_first_nonexact_rung"
+        next_action = "isolate_the_onednn_kernel_family_at_the_first_nonexact_rung"
+
+    return {
+        "format": "inkling-bfloat16-isa-ladder-classification",
+        "version": 1,
+        "profile_schema_version": EXECUTION_PROFILE_SCHEMA_VERSION,
+        "host_class_sha256": next(iter(host_classes)),
+        "rungs": order,
+        "exact": exact,
+        "first_nonexact_rung": first_nonexact_rung,
+        "highest_exact_rung": (
+            order[order.index(first_nonexact_rung) - 1]
+            if first_nonexact_rung is not None and order.index(first_nonexact_rung) > 0
+            else (order[-1] if first_nonexact_rung is None else None)
+        ),
+        "monotone": monotone,
+        "amx_available_on_host": amx_available,
+        "amx_implicated": amx_implicated,
+        "first_actual_compared_pre_router_divergence": {
+            rung: {
+                layer: _first_nonexact_pre_router_stage(arms[rung]["layers"][layer])
+                for layer in sorted(arms[rung]["layers"], key=int)
+            }
+            for rung in order
+        },
+        "classification": classification,
+        "next_action": next_action,
+    }
+
+
+def classify_reference_matrix(
+    native: Mapping[str, Any],
+    aten_avx2: Mapping[str, Any],
+    onednn_avx2: Mapping[str, Any],
+    mkldnn_off: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Classify the predeclared four-arm same-host backend experiment."""
+    arms = {
+        "native": native,
+        "aten_avx2": aten_avx2,
+        "onednn_avx2": onednn_avx2,
+        "mkldnn_off": mkldnn_off,
+    }
+    profiles = {name: result["execution_profile"] for name, result in arms.items()}
+    schemas = {profile["schema_version"] for profile in profiles.values()}
+    if schemas != {EXECUTION_PROFILE_SCHEMA_VERSION}:
+        raise ComposedMoeError(
+            "reference-matrix arms must all use execution-profile schema "
+            f"{EXECUTION_PROFILE_SCHEMA_VERSION}"
+        )
+    host_classes = {
+        profile["host_class_sha256"] for profile in profiles.values()
+    }
+    if len(host_classes) != 1:
+        raise ComposedMoeError("reference-matrix arms ran on different host classes")
+    reference_hashes = {
+        name: profile["reference_profile_sha256"]
+        for name, profile in profiles.items()
+    }
+    if len(set(reference_hashes.values())) != len(REFERENCE_MATRIX_ARMS):
+        raise ComposedMoeError(
+            "reference-matrix arms do not have four distinct reference profiles"
+        )
+
+    layer_sets = {
+        tuple(sorted(result["layers"], key=int)) for result in arms.values()
+    }
+    if len(layer_sets) != 1:
+        raise ComposedMoeError("reference-matrix layer sets differ")
+    layers = list(next(iter(layer_sets)))
+    exact = {name: _is_complete_exact(result) for name, result in arms.items()}
+    first_nonexact = {
+        name: {
+            layer: _first_nonexact_pre_router_stage(result["layers"][layer])
+            for layer in layers
+        }
+        for name, result in arms.items()
+    }
+    payload_comparison = {
+        name: {
+            layer: _compare_pre_router_payloads(
+                native["layers"][layer], result["layers"][layer]
+            )
+            for layer in layers
+        }
+        for name, result in arms.items()
+        if name != "native"
+    }
+
+    projection_points = frozenset(
+        ("q_proj", "k_proj", "v_proj", "relative_proj_input")
+    )
+    native_first = [
+        stage for stage in first_nonexact["native"].values() if stage is not None
+    ]
+    backend_projection_change = any(
+        comparison["first_changed_stage"] in projection_points
+        for name in ("onednn_avx2", "mkldnn_off")
+        for comparison in payload_comparison[name].values()
+    )
+    post_projection_index = PRE_ROUTER_POINTS.index("relative_proj_input")
+    all_fail_after_projections = all(not value for value in exact.values()) and all(
+        any(stage is not None for stage in values.values())
+        and all(
+            stage is None
+            or PRE_ROUTER_POINTS.index(stage) > post_projection_index
+            for stage in values.values()
+        )
+        for values in first_nonexact.values()
+    )
+
+    if all(exact.values()):
+        classification = "all_reference_profiles_exact"
+        reference_profile_bound = False
+        next_action = "no_failure_reproduced"
+    elif (
+        not exact["native"]
+        and not exact["aten_avx2"]
+        and exact["onednn_avx2"]
+    ):
+        classification = "onednn_avx512_isa_path_is_profile_sensitive"
+        reference_profile_bound = True
+        next_action = "scope_exactness_to_the_onednn_avx2_reference_profile"
+    elif (
+        not exact["native"]
+        and not exact["aten_avx2"]
+        and not exact["onednn_avx2"]
+        and exact["mkldnn_off"]
+    ):
+        classification = "onednn_backend_is_profile_sensitive"
+        reference_profile_bound = True
+        next_action = "scope_exactness_and_isolate_the_onednn_operator"
+    elif (
+        native_first
+        and all(stage in projection_points for stage in native_first)
+        and backend_projection_change
+    ):
+        classification = "projection_backend_path_is_profile_sensitive"
+        reference_profile_bound = True
+        next_action = "isolate_the_first_profile_variant_projection"
+    elif all_fail_after_projections:
+        classification = "post_projection_reduction_or_attention_seam_remains_live"
+        reference_profile_bound = False
+        next_action = "localize_the_first_post_projection_operation"
+    else:
+        classification = "reference_matrix_mismatch_remains_unlocalized"
+        reference_profile_bound = len(set(exact.values())) > 1 or any(
+            comparison["first_changed_stage"] is not None
+            for values in payload_comparison.values()
+            for comparison in values.values()
+        )
+        next_action = "use_the_first_stage_and_payload_change_without_broadening_scope"
+
+    return {
+        "format": "inkling-bfloat16-reference-matrix-classification",
+        "version": 1,
+        "profile_schema_version": EXECUTION_PROFILE_SCHEMA_VERSION,
+        "host_class_sha256": next(iter(host_classes)),
+        "reference_profile_sha256": reference_hashes,
+        "exact": exact,
+        "first_actual_compared_pre_router_divergence": first_nonexact,
+        "payload_comparison_to_native": payload_comparison,
+        "classification": classification,
+        "reference_profile_bound": reference_profile_bound,
+        "denominator_defect_branch_live": False,
+        "next_action": next_action,
     }
 
 
@@ -659,6 +1238,11 @@ def analyze_layer(
         pre["post_attention_residual"][0],
         row,
     )
+    pre_router_official = {
+        point: pre[point][0].detach().float().reshape(-1)
+        for point in PRE_ROUTER_POINTS
+    }
+    official = {**official, **pre_router_official}
     provider = CapturingMoeProvider(layer, module)
     collector = ExactWeightCollector(
         row,
@@ -678,6 +1262,17 @@ def analyze_layer(
     return {
         "decision": classify_stages(comparisons),
         "stages": comparisons,
+        "stage_payloads": {
+            stage: {
+                "official": tensor_payload(official[stage]),
+                "candidate": tensor_payload(candidate["stages"][stage]),
+            }
+            for stage in PRE_ROUTER_POINTS
+        },
+        "layer_out_payloads": {
+            "official": tensor_payload(official["layer_out"]),
+            "candidate": tensor_payload(candidate["stages"]["layer_out"]),
+        },
         "official_route": official_route,
         "candidate_routed_index": candidate["candidate_routed_index"],
         "candidate_routed_weight": candidate["candidate_routed_weight"],
@@ -700,8 +1295,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", required=True)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--dtype", choices=("bfloat16",), default="bfloat16")
+    parser.add_argument(
+        "--disable-mkldnn",
+        action="store_true",
+        help="disable torch.backends.mkldnn before reference arithmetic",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="write the result without printing its full payload to stdout",
+    )
     args = parser.parse_args(argv)
     try:
+        configure_reference_backend(disable_mkldnn=args.disable_mkldnn)
         fixture = load_fixture(args.fixture)
         config_json = verify_config_binding(fixture, args.model_config)
         config = build_transformers_text_config(config_json)
@@ -740,7 +1346,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         result = {
             "format": "inkling-portable-bfloat16-composed-moe-probe",
-            "version": 1,
+            "version": 2,
             "model_id": fixture.model_id,
             "revision": fixture.source.get("revision"),
             "config_sha256": fixture.source.get("config_sha256"),
@@ -775,7 +1381,8 @@ def main(argv: list[str] | None = None) -> int:
     ) as exc:
         parser.error(str(exc))
         return 2
-    print(json.dumps(result, indent=2, sort_keys=True))
+    if not args.quiet:
+        print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
 

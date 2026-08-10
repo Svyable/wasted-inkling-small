@@ -5,7 +5,21 @@ on:
     paths:
       - "inkling/src/inkling*.c"
       - "inkling/src/inkling*.h"
+      - "inkling/tools/inkling_fixture.py"
+      - "inkling/tools/inkling_reference.py"
+      - "mvp/discover_inkling_router_experts.py"
+      - "mvp/inkling_c_config.py"
+      - "mvp/inkling_canonical_route_layer_parity.py"
+      - "mvp/inkling_compact_layer_parity.py"
+      - "mvp/inkling_fixture_reference.py"
+      - "mvp/inkling_layer_parity.py"
+      - "mvp/inkling_release_config.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "mvp/run_inkling_fixture_reference_canonical.py"
       - "experiments/inkling/checked_bf16_profile_collector.py"
+      - "experiments/inkling/diagnose_inkling_native_bf16_backend.py"
+      - "experiments/inkling/diagnose_inkling_portable_bf16_composed_moe.py"
+      - "experiments/inkling/diagnose_inkling_pre_router.py"
       - "experiments/inkling/run_inkling_checked_bf16_profile.py"
       - "experiments/inkling/run_inkling_checked_bf16_sparse_layer.py"
       - ".github/workflows/evidence-inkling-checked-bf16-profile.yml"
@@ -65,6 +79,7 @@ jobs:
           with tempfile.TemporaryDirectory() as directory:
               library, source = build_checked_library(Path(directory) / 'profile.so')
               assert source['source_rewriting'] is False
+              assert source['routed_expert_storage'] == 'matrix-backend-only'
               lib = ctypes.CDLL(str(library))
               configure_profile_library(lib)
               assert hasattr(lib, 'waste_inkling_layer_step_backend_trace_profile')
@@ -198,6 +213,7 @@ jobs:
           from pathlib import Path
           result = json.loads((Path(os.environ['RUNNER_TEMP']) / 'checked-bf16.json').read_text())
           assert result['source']['source_rewriting'] is False
+          assert result['source']['routed_expert_storage'] == 'matrix-backend-only'
           assert result['execution_profile']['thread_environment']['ONEDNN_MAX_CPU_ISA'] == 'AVX2'
           outcome = result['evidence_outcome']
           print(
@@ -208,13 +224,17 @@ jobs:
           for layer, value in sorted(result['layers'].items(), key=lambda item: int(item[0])):
               decision = value['decision']
               router = value['router_contract']
+              backend = value['backend_contract']
               print(
                   'CHECKED_BF16_LAYER '
                   f"layer={layer} first={decision['first_nonexact_stage']} "
                   f"route_match={router['raw_route_matches_canonical']} "
                   f"routed_weight_match={router['raw_routed_weights_match_exact']} "
-                  f"shared_weight_match={router['raw_shared_weights_match_exact']}"
+                  f"shared_weight_match={router['raw_shared_weights_match_exact']} "
+                  f"expert_get={backend['expert_get_supplied']}"
               )
+              assert backend['routed_experts_use_matrix_backend_only'] is True
+              assert backend['expert_get_supplied'] is False
           assert outcome['classification'] == 'checked_in_bf16_sparse_profile_exact'
           PY
 

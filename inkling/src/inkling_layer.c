@@ -67,12 +67,6 @@ static void rmsnorm_profile(float *out, const float *x, const float *weight,
     }
 }
 
-static void rmsnorm(float *out, const float *x, const float *weight,
-                    int n, float eps)
-{
-    rmsnorm_profile(out, x, weight, n, eps, WASTE_INKLING_NUMERIC_F32);
-}
-
 static float silu(float x) { return x / (1.0f + expf(-x)); }
 
 static int trace_f(const waste_inkling_trace *trace, int layer,

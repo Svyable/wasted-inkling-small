@@ -1,0 +1,141 @@
+name: Reproduce Inkling BF16 cross-layer routes
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    name: Route layer 2 after official dense 0-1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      OMP_NUM_THREADS: 1
+      MKL_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+      ONEDNN_MAX_CPU_ISA: AVX2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            'torch==2.13.0' 'transformers==5.14.1'
+          PYTHONPATH=inkling/tools:mvp:experiments/inkling python3 -m py_compile \
+            experiments/inkling/discover_inkling_cross_layer_routes.py
+
+      - name: Bound route-discovery fixture with one seed expert
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" \
+            --layers 0,1,2 \
+            --experts '2:0' \
+            --max-total-gib 2 \
+            --plan-only > "${RUNNER_TEMP}/route-discovery-plan.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan = json.loads((Path(os.environ['RUNNER_TEMP']) / 'route-discovery-plan.json').read_text())
+          archive = json.loads(Path('docs/OFFICIAL-CROSS-LAYER-ROUTES.json').read_text())
+          assert plan['revision'] == archive['revision']
+          assert plan['config_sha256'] == archive['config_sha256']
+          assert plan['index_sha256'] == archive['index_sha256']
+          assert plan['layers'] == [0, 1, 2]
+          assert plan['experts'] == {'2': [0]}
+          assert plan['payload_bytes'] < 2 * 1024**3
+          print(
+              'CROSS_LAYER_DISCOVERY_PLAN '
+              f"entries={plan['entries']} payload_bytes={plan['payload_bytes']} "
+              f"requests={plan['requests']} seed_expert={plan['experts']['2']}"
+          )
+          PY
+
+      - name: Extract CRC-verified route-discovery fixture and inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          fixture="${RUNNER_TEMP}/cross-layer-discovery-fixture"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" --layers 0,1,2 --experts '2:0' \
+              --max-total-gib 2 --out "$fixture" \
+              > "${RUNNER_TEMP}/route-discovery-manifest.json"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then sleep $((10 << (attempt - 1))); fi
+          done
+          test "$extracted" = true
+          python3 inkling/tools/inkling_fixture.py --fixture "$fixture" --verify
+
+          PYTHONPATH=mvp python3 - <<PY
+          import json, time
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import deterministic_hidden_states, input_sha256
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+          root = Path('${RUNNER_TEMP}')
+          config = None
+          for attempt in range(4):
+              try:
+                  config = HttpRangeSource(
+                      'https://huggingface.co/thinkingmachines/Inkling-Small', '$revision'
+                  ).file('config.json')
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3: raise
+                  time.sleep(10 * (2**attempt))
+          assert config is not None
+          (root / 'config.json').write_bytes(config)
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          archive = json.loads(Path('docs/OFFICIAL-CROSS-LAYER-ROUTES.json').read_text())
+          assert input_sha256(inputs, torch.bfloat16) == archive['inputs_sha256']
+          (root / 'inputs.json').write_text(json.dumps(inputs.tolist()) + '\n')
+          PY
+
+      - name: Reproduce and compare cross-layer routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=inkling/tools:mvp:experiments/inkling python3 \
+            experiments/inkling/discover_inkling_cross_layer_routes.py \
+            --fixture "${RUNNER_TEMP}/cross-layer-discovery-fixture" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --out "${RUNNER_TEMP}/cross-layer-routes.json" > /dev/null
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = json.loads((Path(os.environ['RUNNER_TEMP']) / 'cross-layer-routes.json').read_text())
+          archive = json.loads(Path('docs/OFFICIAL-CROSS-LAYER-ROUTES.json').read_text())
+          for key in (
+              'revision', 'config_sha256', 'index_sha256', 'inputs_sha256',
+              'dense_output_sha256', 'layer2_topk_indices', 'layer2_topk_weights',
+              'layer2_expert_union', 'layer2_expert_union_size',
+          ):
+              assert result[key] == archive[key], key
+          print(
+              'CROSS_LAYER_ROUTES '
+              f"union_size={result['layer2_expert_union_size']} "
+              f"experts={result['layer2_expert_union']}"
+          )
+          PY
+
+      - name: Preserve reproduction report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cross-layer-route-reproduction-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cross-layer-routes.json
+          if-no-files-found: warn
+          retention-days: 30

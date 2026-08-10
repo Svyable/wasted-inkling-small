@@ -1,0 +1,17 @@
+diff --git a/src/model.h b/src/model.h
+index 13352a4..60605ba 100644
+--- a/src/model.h
++++ b/src/model.h
+@@ -199,6 +199,12 @@ typedef struct {
+      * counter are the only things it writes. Everything else it touches —
+      * the bank table, the expert shapes, `verify` — is fixed at load. */
+     pthread_mutex_t fetch_mu;
++    /* An Inkling container's config, bound weights and matrix backends.
++     * Opaque here — src/inkling_container.c owns the layout, and every
++     * Inkling-specific branch in this file is `if (m->inkling)`. NULL on a
++     * Kimi-family container, which is every container the forward pass
++     * below knows how to run. */
++    void *inkling;
+ } waste_model;
+ 
+ /* Everything the load needs that is not in the container. These are

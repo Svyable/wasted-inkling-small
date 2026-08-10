@@ -1,5 +1,5 @@
 diff --git a/tests/run.sh b/tests/run.sh
-index a644b0a..da3aab6 100755
+index cf35765..8954dd4 100755
 --- a/tests/run.sh
 +++ b/tests/run.sh
 @@ -53,6 +53,20 @@ else
@@ -23,7 +23,7 @@ index a644b0a..da3aab6 100755
  # ---------------------------------------------------------------- unit ----
  head_ "kernels vs the reference implementations"
  
-@@ -770,6 +784,73 @@ PYFV
+@@ -790,6 +804,121 @@ PYFV
          no "format_version not enforced (rc=$rc rc2=$rc2)"
      fi
  
@@ -45,15 +45,17 @@ index a644b0a..da3aab6 100755
 +    # defaulting its way to a number, so `plan` prints no FLOOR line.
 +    if [ "$plan_rc" -ne 0 ] && [ "$info_rc" -ne 0 ] && [ "$load_rc" -ne 0 ] &&
 +       ! printf '%s' "$plan_out" | grep -q "FLOOR" &&
-+       printf '%s' "$load_out" | grep -q "no integrated public Inkling"; then
++       printf '%s' "$load_out" | grep -q "Inkling container: config"; then
 +        ok "a Kimi container relabelled Inkling is refused by every path"
 +    else
 +        no "Inkling seam on a mislabelled container (plan=$plan_rc info=$info_rc load=$load_rc)"
 +    fi
 +
 +    # A real Inkling manifest plans, because planning is arithmetic over
-+    # declared geometry. It still must not open: a forward path that has
-+    # never run the official weights has not earned a token.
++    # declared geometry. It still must not open — not because Inkling is
++    # refused any more, but because this manifest describes a container
++    # whose bytes are not there: three trunk entries for a 42-layer model
++    # and one expert bank for forty sparse layers.
 +    IB=$(mktemp -d)
 +    python3 - "$IB/manifest.json" <<'PYIB'
 +import json, sys
@@ -88,10 +90,56 @@ index a644b0a..da3aab6 100755
 +    rm -rf "$IB"
 +    if [ "$iplan_rc" -eq 0 ] && [ "$ipart_rc" -ne 0 ] && [ "$iload_rc" -ne 0 ] &&
 +       printf '%s' "$iplan_out" | grep -q "FLOOR" &&
-+       printf '%s' "$iload_out" | grep -q "no integrated public Inkling"; then
-+        ok "an Inkling container plans, fails closed on a missing field, and still refuses to load"
++       printf '%s' "$iload_out" | grep -q "one bank per sparse layer"; then
++        ok "an Inkling container plans, fails closed on a missing field, and refuses an incomplete container"
 +    else
 +        no "Inkling planning (plan=$iplan_rc partial=$ipart_rc load=$iload_rc)"
++    fi
++
++    # And a complete one loads. Two containers, one seed, two stored widths:
++    # the f32 side is the oracle, the quantized side exercises the path this
++    # promotion added — matrices that are never materialized and vocabulary
++    # tables that stay on disk. Neither may produce a token.
++    IC=$(mktemp -d)
++    ic_rc=0
++    python3 tools/make_inkling_container.py --out "$IC/f32" --trunk-bits 32 \
++        >/dev/null 2>&1 || ic_rc=1
++    python3 tools/make_inkling_container.py --out "$IC/q8" --trunk-bits 8 \
++        >/dev/null 2>&1 || ic_rc=1
++    python3 tools/make_inkling_container.py --out "$IC/q4" --trunk-bits 4 \
++        >/dev/null 2>&1 || ic_rc=1
++    if [ "$ic_rc" -eq 0 ]; then
++        # Tolerances are relative and stated per stored width: eight bits
++        # agrees to a few thousandths, four to a few hundredths, and a
++        # tolerance that covered both would stop distinguishing rounding
++        # from reading the wrong row.
++        ic_out=$(./test_inkling_container "$IC/f32" "$IC/q8" 0.02 0.03 2>&1); ic_rc=$?
++        ic4_out=$(./test_inkling_container "$IC/f32" "$IC/q4" 0.15 0.25 2>&1); ic4_rc=$?
++        # WASTE_Q8=0 dequantizes the trunk at load, so the same container
++        # binds every matrix resident and the backend is never consulted.
++        # Same answers either way, or one of the two paths is wrong.
++        icq8_out=$(WASTE_Q8=0 ./test_inkling_container "$IC/f32" "$IC/q8" 0.02 0.03 2>&1)
++        icq8_rc=$?
++        icinfo=$(./waste info "$IC/q8" 2>&1); icinfo_rc=$?
++        # A tensor removed from the manifest must fail the binding by name
++        # rather than bind a model with a hole in it.
++        python3 - "$IC/q8/manifest.json" <<'PYID'
++import json, sys
++m = json.load(open(sys.argv[1]))
++m["trunk"] = [t for t in m["trunk"] if t["name"] != "inkling.layer.0.k_sconv"]
++json.dump(m, open(sys.argv[1], "w"))
++PYID
++        icmiss_rc=0; ./waste info "$IC/q8" >/dev/null 2>&1 || icmiss_rc=$?
++    else
++        ic4_rc=1; icq8_rc=1; icinfo_rc=1; icmiss_rc=0; ic_out="generator failed"
++    fi
++    rm -rf "$IC"
++    if [ "$ic_rc" -eq 0 ] && [ "$ic4_rc" -eq 0 ] && [ "$icq8_rc" -eq 0 ] &&
++       [ "$icinfo_rc" -eq 0 ] && [ "$icmiss_rc" -ne 0 ] &&
++       printf '%s' "$icinfo" | grep -q "inkling"; then
++        ok "an Inkling container loads, binds, plans to the byte, and refuses to step"
++    else
++        no "Inkling load (q8=$ic_rc q4=$ic4_rc deq=$icq8_rc info=$icinfo_rc missing=$icmiss_rc) $ic_out"
 +    fi
 +
      if [ -n "${WASTE_SANITIZED:-}" ]; then

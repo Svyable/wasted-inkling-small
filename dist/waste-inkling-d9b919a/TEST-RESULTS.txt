@@ -41,35 +41,39 @@ PASS  integration/waste/generate.sh is deterministic on a fixed toolchain
 
 PASS  committed bundle applies to the reviewed tree
       git am of dist/waste-inkling-d9b919a/patches/*.patch onto the pinned
-      upstream yields 8c51f8c2442bbfda5fd95588d89c5792a839a19a.
-      Patch sha256: a574944854ddb800f5017a1626eec3e89402322150516efd81542e66e1d68ffe
+      upstream yields ab0dab7a5a6039abefce8b0bb82c9c522b509ff2.
+      Patch sha256: eeef11a078d4c79734965f18a81112aa485a0a1df7f255e7512fa1afa100e9a4
 
 PASS  integration/waste/verify.sh
-      Generated tree: 8c51f8c2442bbfda5fd95588d89c5792a839a19a
+      Generated tree: ab0dab7a5a6039abefce8b0bb82c9c522b509ff2
 
 VALIDATION
 ----------
 PASS  PATH=/usr/bin:/bin make check
-      Result: 33 passed, 0 failed, 13 skipped
+      Result: 34 passed, 0 failed, 13 skipped
       Includes:
         - cgroup-v2 limits vs the automatic budget ceiling
         - Inkling architecture seam and scalar runtime primitives
         - a Kimi container relabelled Inkling refused by every path
         - an Inkling container plans, fails closed on a missing config
-          field, and still refuses to load
+          field, and refuses an incomplete container
+        - an Inkling container loads, binds, plans to the byte, and
+          refuses to step
         - the staged tensor and expert-bank readers, as C
         - upstream serve suite: 168 checks passed
 
 PASS  PATH=/usr/bin:/bin make asan
-      Result: 32 passed, 0 failed, 14 skipped
-      AddressSanitizer and UndefinedBehaviorSanitizer were clean.
+      Result: 33 passed, 0 failed, 14 skipped
+      AddressSanitizer and UndefinedBehaviorSanitizer were clean, including
+      the new public-loader check, which loads three containers and frees
+      them.
 
 PASS  PATH=/usr/bin:/bin make fuzz-asan FUZZ_RUNS=200
-      Result: 200 cases; 145 rejected; 55 loaded; 0 crashed; 0 hung
+      Result: 200 cases; 137 rejected; 63 loaded; 0 crashed; 0 hung
 
 PASS  strict compile of src/arch.c and all src/inkling*.c
       Flags: -std=gnu11 -Wall -Wextra -Werror -Isrc
-      Result: 12 translation units compiled
+      Result: 14 translation units compiled
 
 PASS  integration/waste/check_upstream_contracts.py
       WASTE 0.6.6 waste_cfg ABI/defaults, VQ4P and expert-parallel markers,
@@ -110,6 +114,10 @@ PASS  python3 -m compileall -q tools tests
 
 PASS  Windows cross-build and execution
       Toolchain: x86_64-w64-mingw32-gcc-posix 13.2.0, run under Wine 9.0
+      NOT RE-RUN for the public-loader change: the host that produced this
+      revision has no MinGW and no Wine, so the two new translation units
+      are covered by the CI job and not by this file. The unit count the
+      job asserts was raised from 12 to 14 with them.
       - all 12 Inkling translation units compiled -Werror for the target
       - full `make CC=x86_64-w64-mingw32-gcc-posix` produced waste.exe and
         libwaste.dll
@@ -233,6 +241,68 @@ PASS  expert matvec measured: this port expands what upstream never does
       backend instead of a resident-F32 expert, which carries parity risk and
       belongs behind G1. Both implementations are scalar and single-threaded,
       so the ratio is the finding and the absolute times are this machine's.
+
+THE PUBLIC LOADER (ROADMAP G6, STEP 2)
+--------------------------------------
+Host for this revision: Linux x86_64, 15 GB usable RAM, GCC / cc, Python
+3.11.15, no torch, no MinGW, no Wine. Only the gates listed below were rerun
+here; every other figure in this file is from the host named at the top.
+
+The loader guard became a branch. waste_model_load() no longer refuses an
+Inkling manifest: it builds the geometry through the same reader the planner
+uses, loads trunk.bin through upstream's own load_trunk, and binds the result
+with waste_inkling_bind_weights_ex_backend(). Quantized matrices are not
+materialized — they bind non-resident and reach the arithmetic through
+waste_matmul_t, WASTE's optimized kernel, not the scalar path.
+
+What did NOT move: execution. waste_model_step, waste_model_prefill,
+waste_eval and waste_generate all refuse an Inkling model, and that refusal
+is now what the suite asserts. `waste plan` and `waste info` work.
+
+PASS  an Inkling container loads, binds, plans to the byte, and refuses
+      to step
+      tests/test_inkling_container.c against three containers written by
+      tools/make_inkling_container.py from one seed at three stored widths.
+      The f32 container is the oracle.
+        - f32 vs Q8G:  worst relative row error 0.0039, worst relative
+                       matvec error 0.0069 (tolerances 0.02 / 0.03)
+        - f32 vs Q4G:  0.0703 / 0.1037 (tolerances 0.15 / 0.25)
+        - the same comparison under WASTE_Q8=0, which dequantizes the trunk
+          at load and so takes the resident path instead of the backend
+        - both shared-expert blocks, required to be several times further
+          apart than the width's own rounding, so a block-offset bug could
+          have been caught
+        - the f32 backend against a longhand dot product, worst 1e-4
+        - a row past the end of a vocabulary table, a layer index out of
+          range, a width the tensor does not have, and a matrix the layer
+          class does not own: all refused
+        - waste_model_step and waste_model_prefill: NULL
+
+PASS  the plan and the load agree to the byte
+      waste_plan_memory()'s trunk_bytes against the resident set the load
+      actually produced, summed from waste_tensor:
+        f32 container  153552 == 153552
+        Q8G container   50416 ==  50416
+      This is the invariant behind waste_arch_row_backed(): the planner
+      leaves the two vocabulary tables out of the floor, the loader leaves
+      them on disk, and one function is why those are the same set. The
+      planner's condition also now matches the loader's on storage width —
+      an f32 vocabulary table has no on-disk row reader, so it is resident
+      and is counted.
+
+PASS  a Kimi container relabelled Inkling is still refused by every path
+      The refusal moved rather than weakened: the Inkling config build
+      rejects a Kimi config for a missing dimension, so `plan`, `info` and
+      a direct load all fail and no FLOOR line is printed.
+
+PASS  an incomplete Inkling container is refused
+      A manifest declaring three trunk tensors and one expert bank for a
+      42-layer, 40-sparse-layer model fails at the bank count, before any
+      file is opened.
+
+PASS  a tensor removed from the manifest fails the binding
+      inkling.layer.0.k_sconv deleted; the load fails rather than binding a
+      model with a hole in it.
 
 REBASED TO WASTE 0.6.6, AND A CONTRIBUTION WITHDRAWN
 ---------------------------------------------------

@@ -381,6 +381,16 @@ reference exactly.
 
 ## G5 — Public format extension
 
+> **Update.** G6 step 2 settled the design by consuming it: the loader reads
+> this shape today, `tools/make_inkling_container.py` writes one, and
+> [INKLING-CONTAINER.md](INKLING-CONTAINER.md) records the result — including
+> the part prose had left open, which tensors may be stored quantized and
+> which the binder dereferences directly. What is still missing is the
+> converter side: nothing yet turns a checkpoint into a public container, so
+> the only containers that exist are synthetic. That is what remains of this
+> gate, and it is now a writer against a specified format rather than a
+> design.
+
 Only after G1-G4. The design is already implied by what
 `runtime-stage.bin` v3 records, and needs **no new top-level manifest shape**:
 
@@ -401,6 +411,11 @@ the format extension is documented in `docs/FORMAT.md` alongside K3's.
 ---
 
 ## G6 — Public dispatch
+
+**Steps 1 and 2 are done.** An Inkling container plans, opens, binds its
+tensors and reports itself through `waste info`. It does not run: the expert
+cache and the forward path are the remaining promotions, and the refusal now
+lives at the step rather than at the loader.
 
 **The API surface exists already, on the private path.** `tools/inkling_serve.py`
 serves `/v1/chat/completions` — streaming and not — over
@@ -431,10 +446,33 @@ Turn the two guards into a branch, in this order:
    `src/inkling_public.c`. Promoted ahead of the rest deliberately: a plan is
    geometry, so its failure mode is a wrong byte count rather than a wrong
    token. Everything below stays refused.
-2. loader → Inkling config build + tensor binding via
-   `waste_inkling_bind_weights_ex_backend()`;
+2. ✅ loader → Inkling config build + tensor binding via
+   `waste_inkling_bind_weights_ex_backend()`, in `src/inkling_container.c`.
+   The guard in `waste_model_load()` became the branch it was always going to
+   become. Loading extends step 1's argument by one link: it decides where
+   bytes live and which name refers to which matrix, and it still decides
+   nothing about what a token is. See
+   [INKLING-CONTAINER.md](INKLING-CONTAINER.md) for the format it now reads.
+
+   Three things this deliberately did *not* do. It did not write a second
+   reader for `trunk.bin` — upstream's `load_trunk` reads it, exposed rather
+   than copied, because one format with two readers is two things to keep in
+   step with the converter. It did not materialize quantized matrices: they
+   bind non-resident and reach the arithmetic through `waste_matmul_t`, which
+   is WASTE's optimized kernel and its thread pool. And it did not invent a
+   name set: the canonical `inkling.*` names the private index already used
+   are the manifest's, which is what "the private index was always a
+   rehearsal" has to mean if it means anything.
+
+   `waste plan` and `waste info` now work on an Inkling container.
+   `waste_model_step`, `waste_model_prefill`, `waste_eval` and
+   `waste_generate` refuse, and the suite asserts the refusal rather than
+   assuming it.
 3. expert cache → the Inkling expert callback, reusing WASTE's `ecache` and its
-   optimized VQ kernels rather than the scalar `inkling_wexp.c` path;
+   optimized VQ kernels rather than the scalar `inkling_wexp.c` path. Step 2
+   validates and records the bank metadata — one bank per sparse layer, record
+   stride, codebook base — and opens no descriptor, which is exactly the state
+   this step starts from;
 4. step / reset / statistics / errors;
 5. `manifest.json` published last;
 6. `WASTE_E_UNSUPPORTED` **retained** for every variant that has not earned
@@ -486,8 +524,8 @@ and is the best parallel track for a second contributor.
 | — decode cost model | **done** — geometry exact, throughput projected and labelled | [THROUGHPUT.md](THROUGHPUT.md), `inkling_throughput.py`, 38 tests |
 | G3 conversion measurement | not started | — |
 | G4 tokenizer / chat | not started | — |
-| G5 format extension | not started | — |
-| G6 public dispatch | **planning promoted**; open/step/serve still refused | `inkling_public.c`, 2 suite checks |
+| G5 format extension | **specified and exercised**, not converter-written | [INKLING-CONTAINER.md](INKLING-CONTAINER.md), `make_inkling_container.py` |
+| G6 public dispatch | **steps 1-2 promoted** — plan, load, bind, `waste info`; expert cache, step and serve still refused | `inkling_public.c`, `inkling_manifest.c`, `inkling_container.c`, `test_inkling_container.c`, 3 suite checks |
 
 Keep this table honest. It is the only part of the document that will be read
 twice.

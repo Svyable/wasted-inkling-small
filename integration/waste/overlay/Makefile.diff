@@ -1,8 +1,8 @@
 diff --git a/Makefile b/Makefile
-index 34a282c..0a937b4 100644
+index 34a282c..ed28335 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -100,9 +100,12 @@ CFLAGS  += -DVQ_SUPER=$(VQ_SUPER)
+@@ -100,9 +100,13 @@ CFLAGS  += -DVQ_SUPER=$(VQ_SUPER)
  # and then corrupts memory at run time.
  CFLAGS  += -MMD -MP
  
@@ -12,21 +12,21 @@ index 34a282c..0a937b4 100644
 +SRC := src/model.c src/arch.c src/inkling.c src/inkling_config.c \
 +       src/inkling_attention.c src/inkling_layer.c src/inkling_model.c \
 +       src/inkling_bind.c src/inkling_stage_reader.c src/inkling_wexp.c \
-+       src/inkling_qtensor.c src/inkling_private.c src/inkling_public.c src/kda.c src/backend.c \
++       src/inkling_qtensor.c src/inkling_private.c src/inkling_manifest.c \
++       src/inkling_public.c src/inkling_container.c src/kda.c src/backend.c \
 +       src/ecache.c src/version.c src/tokenizer.c src/waste.c src/vq.c \
 +       src/vision.c src/image.c src/crc32.c src/memory.c
  # Match what backend.c tests for. Linux/aarch64 reports "aarch64", which
  # does not contain "arm" — the old findstring left kda_neon.c out of the
  # build while backend.c still emitted the call to it, so the link failed
-@@ -227,12 +230,20 @@ waste$(EXE): cli/main.o libwaste.a
+@@ -227,12 +231,25 @@ waste$(EXE): cli/main.o libwaste.a
  # One list, used by both `test` and `clean`. A stale test binary is one of
  # the two failures tests/run.sh was written to catch, so a binary that
  # `test` builds and `clean` forgets defeats the check meant to notice it.
 -TESTNAMES := test_kda test_container test_forward test_tokenizer test_k3parts \
--             test_state test_vision test_image test_memory test_cpus sweep
-+TESTNAMES := test_inkling test_inkling_io test_kda test_container test_forward \
-+             test_tokenizer test_k3parts test_state test_vision test_image \
-+             test_memory test_cpus sweep
++TESTNAMES := test_inkling test_inkling_io test_inkling_container test_kda \
++             test_container test_forward test_tokenizer test_k3parts \
+              test_state test_vision test_image test_memory test_cpus sweep
  TESTBINS  := $(addsuffix $(EXE),$(TESTNAMES))
  
  test: $(TESTBINS)
@@ -37,6 +37,11 @@ index 34a282c..0a937b4 100644
 +# only test that a Windows cross-build can run, and therefore the only thing
 +# that ever executes inkling_stage_reader.c's ReadFile/OVERLAPPED branch.
 +test_inkling_io$(EXE): tests/test_inkling_io.o libwaste.a
++	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
++# The public loader against real containers on disk. Needs the whole library
++# rather than a handful of translation units, because what it is testing is
++# that waste_model_load dispatches at all.
++test_inkling_container$(EXE): tests/test_inkling_container.o libwaste.a
 +	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
  test_kda$(EXE): tests/test_kda.o libwaste.a
  	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)

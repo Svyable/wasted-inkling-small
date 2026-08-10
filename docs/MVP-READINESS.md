@@ -2,11 +2,20 @@
 
 ## Current handoff
 
-The public memory planner is live for valid Inkling manifests. Public loading,
-step execution, chat, and serving remain deliberately refused. The bounded
-official-weight loop is now real and reproducible; the next hard gate is moving
-its proven BF16 policy into a private checked-in runtime path without confusing
-that promotion with public model support.
+The public memory planner and the public **loader** are live for valid Inkling
+containers: `waste plan` and `waste info` work, the geometry is built through
+the same reader the planner uses, and every canonical tensor binds — quantized
+matrices non-resident, through WASTE's own `waste_matmul_t`, and the two
+vocabulary tables through a row callback. The format is written down in
+[INKLING-CONTAINER.md](INKLING-CONTAINER.md) and written *out* by
+`inkling/tools/make_inkling_container.py`.
+
+Step execution, chat, and serving remain deliberately refused, and the refusal
+moved with the promotion: it is asserted at `waste_model_step` and
+`waste_model_prefill` rather than at the loader. Nothing here is a claim about
+tokens. The bounded official-weight loop is real and reproducible; the next
+hard gate is still moving its proven BF16 policy into a private checked-in
+runtime path without confusing that promotion with public model support.
 
 The repository has bounded checkpoint fixtures, a fixture-backed C decoder
 layer runner, and an official `InklingDecoderLayer` harness that avoids

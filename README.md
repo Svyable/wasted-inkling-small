@@ -203,7 +203,9 @@ Today only the planning path crosses the public boundary. Execution APIs return
 | Sparse memory bound | Selected experts are supplied through `expert_get`; no full 256-expert float32 bank expansion |
 | Stateful sparse-layer evidence | Layer 2 is BF16-exact through routed/shared weights, MoE output, MLP branch, and final residual at all eight tested positions on the named Linux AVX2 profile — [docs/BF16-EVIDENCE.md](docs/BF16-EVIDENCE.md) |
 | Decode cost model | Exact per-token geometry, the expert cache measured against upstream's real `ecache.c`, and a throughput projection calibrated to reproduce K3's measured decode — [docs/THROUGHPUT.md](docs/THROUGHPUT.md) |
-| Chat API surface | `/v1/chat/completions` served over the staged runtime, streaming and not, run end to end; public `waste_open` still refused |
+| Public container loading | `waste_open` builds the Inkling geometry, reads `trunk.bin` through upstream's own loader, and binds every canonical tensor — quantized matrices non-resident, through WASTE's optimized kernel. `waste info` describes the container it opened. Format: [docs/INKLING-CONTAINER.md](docs/INKLING-CONTAINER.md) |
+| Plan/load agreement | The planned resident trunk equals the resident set the load produces, to the byte, on containers written at f32, Q8G and Q4G |
+| Chat API surface | `/v1/chat/completions` served over the staged runtime, streaming and not, run end to end; public generation still refused |
 
 The committed official selection contains **33 unique routed experts for layer
 2** and **26 unique routed experts for layer 5** across the eight deterministic
@@ -238,7 +240,8 @@ official-weight execution has now crossed several important gates:
 | Coverage beyond local sparse layer 2 | Stateful dense layer 0, global sparse layer 5, cross-layer decoder continuity, final normalization, and logits are not yet established |
 | Tokenizer and chat-template parity | Not yet promoted into the release gate |
 | Quantized model quality | Q8/Q4/VQ tolerances, throughput, conversion time, and memory floors still require official measurement |
-| Public loader and generation | Deliberately disabled |
+| Public expert cache and generation | The loader is promoted and the expert banks are validated but not opened; `waste_model_step`, `waste_model_prefill`, `waste_eval` and `waste_generate` refuse an Inkling model, and the suite asserts that refusal |
+| Public container writer | Nothing yet converts a checkpoint into a public Inkling container; the format is specified and exercised, and the only containers that exist are synthetic |
 | Native Windows and operator validation | Final release and serving gate |
 
 ---
@@ -295,8 +298,9 @@ Inkling-Small profile gate; only the explicit, deliberately tedious flag
 permits reopening a stage as synthetic.
 
 It drives the **converter-private** path on purpose. Upstream's `serve/`
-reaches the engine only through `waste_open`, so when the loader dispatch
-lands, `serve/` becomes the chat server unchanged and this becomes redundant.
+reaches the engine only through `waste_open`, `waste_tokenize` and the step
+API. The loader dispatch has now landed; when the step does too, `serve/`
+becomes the chat server unchanged and this becomes redundant.
 That is the intended outcome, and it is why it implements the same wire format
 rather than a nicer one.
 

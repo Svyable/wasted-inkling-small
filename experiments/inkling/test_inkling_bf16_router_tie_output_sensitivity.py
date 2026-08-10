@@ -10,11 +10,9 @@ from types import SimpleNamespace
 import torch
 from torch.nn import functional as F
 
-# Install #39's complete temporary-source transform before importing composed.
-import run_inkling_portable_bf16_complete_sparse_layer  # noqa: F401
-import diagnose_inkling_portable_bf16_composed_moe as composed
 from diagnose_inkling_bf16_router_tie_resolution import cutoff_partition
 from diagnose_inkling_bf16_router_tie_output_sensitivity import (
+    _build_complete_layer_library,
     classify_impact,
     enumerate_routes,
     exact_route_row,
@@ -97,7 +95,7 @@ class TieOutputSensitivityTest(unittest.TestCase):
 
     def test_complete_candidate_compiles_without_production_changes(self):
         with tempfile.TemporaryDirectory() as directory:
-            library, source = composed.build_composed_library(
+            library, source = _build_complete_layer_library(
                 Path(directory) / "libinkling-tie-impact.so"
             )
             self.assertTrue(library.is_file())

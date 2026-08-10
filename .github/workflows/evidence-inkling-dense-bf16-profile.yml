@@ -3,6 +3,13 @@ name: Measure Inkling dense BF16 profile
 on:
   pull_request:
     paths:
+      - "inkling/src/inkling*.c"
+      - "inkling/src/inkling*.h"
+      - "inkling/tools/inkling_layer_parity.py"
+      - "inkling/tools/inkling_reference.py"
+      - "mvp/inkling_fixture_reference.py"
+      - "experiments/inkling/diagnose_inkling_native_bf16_backend.py"
+      - "experiments/inkling/run_inkling_checked_bf16_sparse_layer.py"
       - "experiments/inkling/measure_inkling_dense_bf16_profile.py"
       - ".github/workflows/evidence-inkling-dense-bf16-profile.yml"
   workflow_dispatch:
@@ -33,7 +40,10 @@ jobs:
         run: |
           python3 -m pip install --quiet --break-system-packages \
             'torch==2.13.0' 'transformers==5.14.1'
-          python3 -m py_compile experiments/inkling/measure_inkling_dense_bf16_profile.py
+          python3 -m py_compile \
+            inkling/tools/inkling_reference.py \
+            mvp/inkling_fixture_reference.py \
+            experiments/inkling/measure_inkling_dense_bf16_profile.py
 
       - name: Plan exact layer-0 fixture
         shell: bash

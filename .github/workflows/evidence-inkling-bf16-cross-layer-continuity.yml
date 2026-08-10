@@ -1,0 +1,211 @@
+name: Evidence checked-in Inkling BF16 cross-layer continuity
+
+on:
+  pull_request:
+    paths:
+      - "inkling/src/inkling*.c"
+      - "inkling/src/inkling*.h"
+      - "inkling/tools/inkling_fixture.py"
+      - "inkling/tools/inkling_layer_parity.py"
+      - "docs/OFFICIAL-CROSS-LAYER-ROUTES.json"
+      - "mvp/discover_inkling_router_experts.py"
+      - "mvp/diagnose_inkling_pre_router.py"
+      - "mvp/inkling_c_config.py"
+      - "mvp/inkling_fixture_reference.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "mvp/inkling_remote_fixture_core.py"
+      - "experiments/inkling/checked_bf16_profile_collector.py"
+      - "experiments/inkling/diagnose_inkling_bf16_stateful_mlp_boundary.py"
+      - "experiments/inkling/diagnose_inkling_native_bf16_backend.py"
+      - "experiments/inkling/diagnose_inkling_portable_bf16_stateful_sparse_layer.py"
+      - "experiments/inkling/measure_inkling_dense_bf16_profile.py"
+      - "experiments/inkling/run_inkling_checked_bf16_sparse_layer.py"
+      - "experiments/inkling/run_inkling_checked_bf16_stateful_layer.py"
+      - "experiments/inkling/run_inkling_checked_bf16_cross_layer.py"
+      - ".github/workflows/evidence-inkling-bf16-cross-layer-continuity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-bf16-cross-layer-continuity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  continuity:
+    name: Checked BF16 dense-0 to sparse-2 continuity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 130
+    env:
+      OMP_NUM_THREADS: 1
+      MKL_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+      ONEDNN_MAX_CPU_ISA: AVX2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            'torch==2.13.0' 'transformers==5.14.1'
+          PYTHONPATH=inkling/tools:mvp:experiments/inkling python3 -m py_compile \
+            experiments/inkling/run_inkling_checked_bf16_cross_layer.py
+
+      - name: Plan exact consecutive fixture from archived routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > "${RUNNER_TEMP}/fixture.env"
+          import json
+          from pathlib import Path
+          archive = json.loads(Path('docs/OFFICIAL-CROSS-LAYER-ROUTES.json').read_text())
+          experts = archive['layer2_expert_union']
+          assert archive['layer2_expert_union_size'] == len(experts) == 25
+          print('REVISION=' + archive['revision'])
+          print('EXPERTS=2:' + ','.join(map(str, experts)))
+          PY
+          # shellcheck source=/dev/null
+          . "${RUNNER_TEMP}/fixture.env"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$REVISION" --layers 0,1,2 --experts "$EXPERTS" \
+            --max-total-gib 4 --plan-only > "${RUNNER_TEMP}/cross-layer-plan.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          archive = json.loads(Path('docs/OFFICIAL-CROSS-LAYER-ROUTES.json').read_text())
+          plan = json.loads((Path(os.environ['RUNNER_TEMP']) / 'cross-layer-plan.json').read_text())
+          assert plan['revision'] == archive['revision']
+          assert plan['config_sha256'] == archive['config_sha256']
+          assert plan['index_sha256'] == archive['index_sha256']
+          assert plan['layers'] == [0, 1, 2]
+          assert plan['experts'] == {'2': archive['layer2_expert_union']}
+          assert plan['payload_bytes'] < 4 * 1024**3
+          print(
+              'CROSS_LAYER_PLAN '
+              f"entries={plan['entries']} payload_bytes={plan['payload_bytes']} "
+              f"requests={plan['requests']} experts={len(plan['experts']['2'])}"
+          )
+          PY
+
+      - name: Extract CRC-verified consecutive fixture and inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . "${RUNNER_TEMP}/fixture.env"
+          fixture="${RUNNER_TEMP}/cross-layer-fixture"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$REVISION" --layers 0,1,2 --experts "$EXPERTS" \
+              --max-total-gib 4 --out "$fixture" \
+              > "${RUNNER_TEMP}/cross-layer-manifest.json"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then sleep $((10 << (attempt - 1))); fi
+          done
+          test "$extracted" = true
+          python3 inkling/tools/inkling_fixture.py --fixture "$fixture" --verify
+
+          PYTHONPATH=mvp python3 - <<PY
+          import json, time
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import deterministic_hidden_states, input_sha256
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+          root = Path('${RUNNER_TEMP}')
+          archive = json.loads(Path('docs/OFFICIAL-CROSS-LAYER-ROUTES.json').read_text())
+          config = None
+          for attempt in range(4):
+              try:
+                  config = HttpRangeSource(
+                      'https://huggingface.co/thinkingmachines/Inkling-Small',
+                      archive['revision'],
+                  ).file('config.json')
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3: raise
+                  time.sleep(10 * (2**attempt))
+          assert config is not None
+          (root / 'config.json').write_bytes(config)
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          assert input_sha256(inputs, torch.bfloat16) == archive['inputs_sha256']
+          (root / 'inputs.json').write_text(json.dumps(inputs.tolist()) + '\n')
+          PY
+          PYTHONPATH=mvp python3 mvp/inkling_c_config.py \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --out "${RUNNER_TEMP}/c-config.json"
+
+      - name: Execute checked 0-to-2 continuity
+        shell: bash
+        run: |
+          set -uo pipefail
+          err="${RUNNER_TEMP}/cross-layer.err"
+          PYTHONPATH=inkling/tools:mvp:experiments/inkling python3 \
+            experiments/inkling/run_inkling_checked_bf16_cross_layer.py \
+            --fixture "${RUNNER_TEMP}/cross-layer-fixture" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --c-config "${RUNNER_TEMP}/c-config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --routes docs/OFFICIAL-CROSS-LAYER-ROUTES.json \
+            --out "${RUNNER_TEMP}/cross-layer.json" \
+            > /dev/null 2> "$err"
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            cat "$err" >&2
+            detail=$(tr '\n' ' ' < "$err" | sed 's/%/%25/g; s/\r/%0D/g')
+            printf '::error file=experiments/inkling/run_inkling_checked_bf16_cross_layer.py,title=Checked cross-layer BF16 failed::%s\n' "$detail"
+            exit "$rc"
+          fi
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = json.loads((Path(os.environ['RUNNER_TEMP']) / 'cross-layer.json').read_text())
+          decision = result['decision']
+          print(
+              'CROSS_LAYER_DECISION '
+              f"classification={decision['classification']} "
+              f"first_boundary={decision['first_boundary']}"
+          )
+          assert result['source']['source_rewriting'] is False
+          assert result['positions'] == 8
+          assert result['layers'] == [0, 1, 2]
+          assert result['route_archive']['expert_union_size'] == 25
+          assert result['route_archive']['official_route_reproduced_before_adapter'] is True
+          assert decision['classification'] == 'checked_in_bf16_cross_layer_0_1_2_exact'
+          assert decision['first_boundary'] is None
+          for layer in ('0', '1'):
+              values = result['dense'][layer]
+              assert len(values['backend_calls']) == 64
+              for position, metrics in enumerate(values['outputs']):
+                  assert metrics['raw_exact_fraction'] == 1.0
+                  assert metrics['bfloat16_exact_fraction'] == 1.0
+                  print(
+                      'CROSS_LAYER_DENSE '
+                      f"layer={layer} position={position} raw={metrics['raw_exact_fraction']:.9f} "
+                      f"bf16={metrics['bfloat16_exact_fraction']:.9f}"
+                  )
+          sparse = result['sparse_layer_2']
+          assert sparse['decision']['classification'] == 'stateful_sparse_mlp_ladder_exact'
+          assert sparse['decision']['first_boundary_stage'] is None
+          assert sparse['decision']['first_boundary_position'] is None
+          assert len(sparse['backend_calls']) == 240
+          PY
+
+      - name: Preserve continuity evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: checked-bf16-cross-layer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/cross-layer-plan.json
+            ${{ runner.temp }}/cross-layer.json
+            ${{ runner.temp }}/cross-layer.err
+          if-no-files-found: warn
+          retention-days: 30

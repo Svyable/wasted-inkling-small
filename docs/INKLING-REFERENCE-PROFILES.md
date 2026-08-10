@@ -61,6 +61,11 @@ which an exact official route/output claim was observed. At minimum it binds:
 - Transformers version when model-side arithmetic is executed;
 - operating system, architecture, and relevant runtime/toolchain identity;
 - CPU dispatch policy, including an `ATEN_CPU_CAPABILITY` override when used;
+- **oneDNN ISA policy: `ONEDNN_MAX_CPU_ISA` when set, and whether
+  `torch.backends.mkldnn` was enabled.** The reference matrix showed this is
+  the control that decides exactness on an AVX-512 host, and that forcing ATen
+  does not — see "What makes a profile a profile" below. A profile missing it
+  is incomplete;
 - thread/BLAS controls that can affect the native reference backend;
 - route-selection artifact identity;
 - BF16 router-choice archive SHA-256 when the route primitive is isolated;
@@ -109,6 +114,48 @@ The stacked evidence through #57 establishes the following bounded facts:
   composes through all eight source-bound positions of local sparse layer 2:
   routed/shared weights, `moe_out`, `mlp_branch`, and `layer_out` are BF16-exact
   and no first mismatch is present (#57).
+
+### What makes a profile a profile: the oneDNN ISA cap
+
+Until #59 the profile contract listed `ATEN_CPU_CAPABILITY` as the CPU dispatch
+control and said nothing about oneDNN's ISA cap. That ordering was backwards.
+The same-host reference matrix
+([run 31280408153](https://github.com/Svyable/wasted-inkling-small/actions/runs/31280408153))
+ran all four arms on one AVX-512 host and found:
+
+| Arm | Exact | First pre-router divergence |
+| --- | --- | --- |
+| native (AVX512) | no | `q_proj` |
+| `ATEN_CPU_CAPABILITY=avx2` | no | `q_proj` |
+| `ONEDNN_MAX_CPU_ISA=AVX2` | **yes** | — |
+| `torch.backends.mkldnn.enabled=False` | **yes** | — |
+
+Forcing ATen changed nothing — same exactness, same stage, both layers. The
+control the contract already named is not the one that moves the arithmetic;
+`ONEDNN_MAX_CPU_ISA` is. **A profile that records `ATEN_CPU_CAPABILITY` and
+omits `ONEDNN_MAX_CPU_ISA` does not pin the thing that decides the result.**
+
+`experiments/inkling/probe_onednn_isa_arithmetic.py` reproduces that partition
+arm-for-arm on a bare bfloat16 linear of `q_proj`'s shape, with no fixture and
+no Inkling code in the process. On an AVX-512 host advertising neither
+`amx_bf16` nor `avx512_bf16`, the ladder is monotone and the first rung
+differing from the AVX2 baseline is `AVX512_CORE`: neither AMX nor
+AVX-512-BF16 kernels are necessary for the divergence.
+
+Two consequences for claim scope:
+
+- The `LINUX-AVX2` profile's exactness is bound to the oneDNN AVX2 cap, not to
+  the ATen override in its name. Restating an AVX2-profile result on an
+  uncapped AVX-512 host is not a restatement, it is a different measurement.
+- An earlier claim that "AMX is excluded by the reproduced-failure profiles" is
+  withdrawn. It was read off CPU flag sets on hosts that did not advertise AMX.
+  The ISA setting is a cap rather than a request, so on such a host the AMX
+  path is never selected and never tested — and untested is not excluded.
+
+The synthetic probe is a host census, **not** parity evidence: its weights are
+not the checkpoint's, and agreement there says nothing about whether the port
+is correct. It localizes the mechanism; the reference matrix remains what
+establishes what the mechanism does to Inkling.
 
 This is **not** full-model parity. The stateful result covers one local sparse
 layer on one named reference profile. It does not cover stateful dense/global

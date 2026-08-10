@@ -114,7 +114,6 @@ typedef struct {
     float *gate;
     float *up;
     float *ff;
-    float *shared_accum; /* sparse BF16 profile only; NULL for dense layers */
     float *router_logits;
     float *routed_weight;
     float *shared_weight;

@@ -29,8 +29,7 @@ from typing import Any
 import torch
 from torch.nn import functional as F
 
-# Install the retained complete evidence-only transforms from the #44 lineage.
-import run_inkling_portable_bf16_complete_sparse_layer as complete_runner  # noqa: F401
+import run_inkling_portable_bf16_complete_sparse_layer as complete_runner
 import run_inkling_portable_bf16_composed_moe as composed_runner
 import diagnose_inkling_portable_bf16_composed_moe as composed
 from diagnose_inkling_bf16_layer_residual_boundary import torch_fingerprint
@@ -48,13 +47,9 @@ from inkling_layer_parity import LayerParityError, configure_library
 from inkling_release_config import build_transformers_text_config
 
 
-# The #44 runner installs the exact final-residual source transform. Preserve
-# the explicit policy metadata that #41's fail-closed validation consumes.
-_original_build_composed_library = composed.build_composed_library
-
-
 def _build_complete_layer_library(out: Path) -> tuple[Path, dict[str, Any]]:
-    library, source = _original_build_composed_library(out)
+    """Build the retained complete candidate without import-time mutation."""
+    library, source = complete_runner.build_complete_sparse_layer_library(out)
     source = dict(source)
     source["layer_residual_policy"] = {
         "residual_operand": "bfloat16_completed",
@@ -63,9 +58,6 @@ def _build_complete_layer_library(out: Path) -> tuple[Path, dict[str, Any]]:
         "result": "bfloat16_completed",
     }
     return library, source
-
-
-composed.build_composed_library = _build_complete_layer_library
 
 
 class TieOutputSensitivityError(RuntimeError):
@@ -329,7 +321,9 @@ def main(argv: list[str] | None = None) -> int:
         )["inputs_sha256"]:
             raise TieOutputSensitivityError("input hash differs from route archive")
 
-        library, source = composed.build_composed_library(Path(args.out).with_suffix(".runtime.so"))
+        library, source = _build_complete_layer_library(
+            Path(args.out).with_suffix(".runtime.so")
+        )
         if not source["production_source_unchanged"]:
             raise TieOutputSensitivityError("production source changed")
         if source.get("layer_residual_policy", {}).get("result") != "bfloat16_completed":

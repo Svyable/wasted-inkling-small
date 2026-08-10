@@ -107,9 +107,14 @@ def measure() -> dict[str, Any]:
 
     produced = y.view(torch.int16)
     expected = reference.view(torch.int16)
+    # `Tensor.numpy()` would be the obvious way to get bytes to hash, and it
+    # raises "Numpy is not available" on a runner that has Torch but not numpy
+    # — which is the default for `pip install torch` on the hosted image. A
+    # probe whose whole point is running anywhere must not carry that
+    # dependency, so the int16 bit patterns go through `tolist()` instead.
     return {
         "output_sha256": hashlib.sha256(
-            produced.numpy().tobytes()
+            ",".join(str(bits) for bits in produced.flatten().tolist()).encode()
         ).hexdigest(),
         "exact_fraction_vs_fp64": float((produced == expected).float().mean()),
         "max_abs_error_vs_fp64": float(

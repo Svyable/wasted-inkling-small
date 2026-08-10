@@ -1,0 +1,79 @@
+name: Plan Inkling BF16 cross-layer continuity fixture
+
+on:
+  pull_request:
+    paths:
+      - "docs/OFFICIAL-CROSS-LAYER-ROUTES.json"
+      - "mvp/inkling_remote_fixture.py"
+      - "mvp/inkling_remote_fixture_core.py"
+      - ".github/workflows/plan-inkling-bf16-cross-layer-continuity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-bf16-cross-layer-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Bound layers 0-1-2 with discovered experts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Plan exact fixture from archived route union
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > "${RUNNER_TEMP}/experts.txt"
+          import json
+          from pathlib import Path
+          archive = json.loads(Path('docs/OFFICIAL-CROSS-LAYER-ROUTES.json').read_text())
+          experts = archive['layer2_expert_union']
+          assert archive['layer2_expert_union_size'] == len(experts) == 25
+          print('2:' + ','.join(map(str, experts)))
+          PY
+          experts=$(cat "${RUNNER_TEMP}/experts.txt")
+          revision=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('docs/OFFICIAL-CROSS-LAYER-ROUTES.json').read_text())['revision'])
+          PY
+          )
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" \
+            --layers 0,1,2 \
+            --experts "$experts" \
+            --max-total-gib 4 \
+            --plan-only > "${RUNNER_TEMP}/cross-layer-plan.json"
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          archive = json.loads(Path('docs/OFFICIAL-CROSS-LAYER-ROUTES.json').read_text())
+          plan = json.loads((Path(os.environ['RUNNER_TEMP']) / 'cross-layer-plan.json').read_text())
+          assert plan['revision'] == archive['revision']
+          assert plan['config_sha256'] == archive['config_sha256']
+          assert plan['index_sha256'] == archive['index_sha256']
+          assert plan['layers'] == [0, 1, 2]
+          assert plan['experts'] == {'2': archive['layer2_expert_union']}
+          assert plan['payload_bytes'] < 4 * 1024**3
+          print(
+              'CROSS_LAYER_PLAN '
+              f"entries={plan['entries']} payload_bytes={plan['payload_bytes']} "
+              f"requests={plan['requests']} experts={len(plan['experts']['2'])}"
+          )
+          PY
+
+      - name: Preserve exact plan
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cross-layer-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cross-layer-plan.json
+          if-no-files-found: error
+          retention-days: 30

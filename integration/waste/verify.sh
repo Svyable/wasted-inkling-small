@@ -26,6 +26,13 @@ if [ "$tree" != "$EXPECTED_APPLIED_TREE" ]; then
     printf 'verify.sh: FAIL generated tree %s, expected %s\n' \
         "$tree" "$EXPECTED_APPLIED_TREE" >&2
     printf 'verify.sh: if the change is intended, update EXPECTED_APPLIED_TREE\n' >&2
+    # GitHub's log endpoint is not always available to connector-backed review.
+    # Preserve the ordinary stderr message above and additionally surface the
+    # content-addressed values as a check annotation when running in Actions.
+    if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+        printf '::error file=integration/waste/baseline.env,title=Generated tree mismatch::generated tree %s; expected %s\n' \
+            "$tree" "$EXPECTED_APPLIED_TREE"
+    fi
     exit 1
 fi
 printf 'verify.sh: PASS tree %s\n' "$tree"

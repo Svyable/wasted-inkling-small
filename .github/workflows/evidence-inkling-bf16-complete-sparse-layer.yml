@@ -156,8 +156,15 @@ jobs:
             --model-config "${RUNNER_TEMP}/config.json" \
             --out "${RUNNER_TEMP}/c-config.json"
 
+      # The same-host matrix proved that the official reference becomes
+      # profile-sensitive at q_proj on AVX-512 hosts. Exactness claims here are
+      # therefore scoped to the measured oneDNN AVX2 reference profile instead
+      # of whichever runner GitHub happens to allocate. The scheduled matrix
+      # and ISA census keep the uncapped counterfactual visible separately.
       - name: Execute the complete sparse layer token
         shell: bash
+        env:
+          ONEDNN_MAX_CPU_ISA: AVX2
         run: |
           set -euo pipefail
           PYTHONPATH=mvp:experiments/inkling python3 \
@@ -177,6 +184,7 @@ jobs:
           result = json.loads((Path(os.environ["RUNNER_TEMP"]) / "complete-sparse.json").read_text())
           profile = result["execution_profile"]
           outcome = result["evidence_outcome"]
+          assert profile["thread_environment"]["ONEDNN_MAX_CPU_ISA"] == "AVX2"
           print(
               "COMPLETE_SPARSE_PROFILE "
               f"outcome={outcome['classification']} "

@@ -1,11 +1,6 @@
 # Inkling-Small on WASTE 0.6.6 — generated bundle
 
-This directory is a **build product**. It is regenerated from
-[`inkling/`](../../inkling) and [`integration/waste/`](../../integration/waste)
-by `integration/waste/generate.sh`; nothing here is edited by hand.
-
-If you want to read the code, read `inkling/src/*.c`. If you want to apply it
-to WASTE, use the patch below.
+This directory is a **build product** generated from `inkling/` and `integration/waste/`. Do not edit the patch by hand.
 
 ## Apply
 
@@ -17,60 +12,29 @@ git am /path/to/dist/waste-inkling-d9b919a/patches/0001-Add-the-Inkling-Small-ru
 PATH=/usr/bin:/bin make check
 ```
 
-Verify it first:
+Verify the bundle first with `sha256sum -c SHA256SUMS` from this directory.
+The applied Git tree must be `7fafa7942ee43abe6196481bd88c5621e40e6843`.
+
+## What this bundle now contains
+
+- the checked-in Inkling numerical/runtime foundation and final-head primitive;
+- load-time bound trunk and row-backed vocabulary tensors;
+- validated Inkling WEXP expert-bank geometry;
+- routed-expert **storage** through WASTE's existing bounded `ecache` and
+  native direct-I/O bank opener, including get, hold/release and routing hints;
+- strict raw WEXP identity, geometry, codebook and optional CRC validation;
+- an explicit zero-cache fallback that remains bounded and reports honest misses;
+- public Inkling step/prefill/generation still fail-closed.
+
+The hot-path follow-up is cached native WEXP -> WASTE's existing VQ/SIMD
+gate/up/down kernels. This bundle does not add a decompressed-F32 expert engine.
+
+## Regenerate
 
 ```sh
-cd /path/to/dist/waste-inkling-d9b919a
-sha256sum -c SHA256SUMS
+integration/waste/verify.sh WORKDIR
+integration/waste/generate.sh WORKDIR2 dist/waste-inkling-d9b919a/patches
 ```
 
-The applied Git tree must be `8c51f8c2442bbfda5fd95588d89c5792a839a19a`.
-
-## Regenerate and verify from source
-
-```sh
-integration/waste/verify.sh            # tree, compile, upstream contracts, tests
-integration/waste/generate.sh WORKDIR dist/waste-inkling-d9b919a/patches
-```
-
-The generator pins the commit timestamp and passes `--no-signature`, so
-repeated runs over identical sources produce identical patch bytes rather than
-recording when the build ran or which Git emitted it.
-
-The authoritative check is nonetheless the **applied tree hash**, not the patch
-bytes. `format-patch` output is a function of the local Git as well as the
-content, so CI verifies that the committed patch *applies to*
-`8c51f8c2442bbfda5fd95588d89c5792a839a19a` — which is what a consumer actually
-depends on, and is immune to toolchain drift.
-
-## What changed against `waste-inkling-patch-v18`
-
-- the complete fail-closed Inkling private-runtime foundation, repinned from
-  WASTE 0.6.3 to `d9b919a` (WASTE 0.6.6);
-- `tools/inkling_fixture.py` — a dependency-free reader for the bounded parity
-  fixtures `inkling_parity.py` has always been able to extract and nothing
-  could consume;
-- `tools/inkling_layer_parity.py` — the candidate side of layer-level parity:
-  binds one layer's weights from a fixture and runs the traced C decoder layer;
-- `inkling_plan.py` now exposes its source-name tables, so the harness resolves
-  tensor names through the planner instead of a second copy;
-- `tests/test_inkling_fixture.py` and `tests/test_inkling_layer_parity.py` —
-  53 new tests;
-- `src/inkling_public.c` — **the first public Inkling capability**:
-  `waste_plan_memory()` answers for an Inkling container. `waste_open` and
-  everything downstream still return `WASTE_E_UNSUPPORTED`;
-- `tests/test_inkling_io.c` — the staged readers as dependency-free C, so the
-  Windows `ReadFile`/`OVERLAPPED` branch is compiled *and executed*.
-- decode geometry, cache and expert-kernel measurement tools;
-- an OpenAI-shaped preview chat endpoint whose weight provenance is accepted
-  as official only by the C runtime's verified Inkling-Small profile gate.
-
-## Evidence
-
-See [`TEST-RESULTS.txt`](./TEST-RESULTS.txt). Summary: 33 passed / 0 failed /
-13 skipped in the WASTE suite, 168 server checks, 12 translation units
-compiled with `-Werror`, the WASTE 0.6.6 integration contracts verified, and
-280 Python tests passing (including 34 focused chat tests).
-
-Public Inkling inference remains disabled. This bundle changes how the port is
-built and reviewed, not what the public loader will run.
+The generator pins commit metadata and emits a content-addressed tree; CI
+independently re-applies this committed patch to pinned WASTE 0.6.6.

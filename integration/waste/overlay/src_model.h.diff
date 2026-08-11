@@ -15,3 +15,16 @@ index 13352a4..60605ba 100644
  } waste_model;
  
  /* Everything the load needs that is not in the container. These are
+@@ -231,5 +237,12 @@ int  waste_model_load(waste_model *m, const char *dir, int kv_cap,
+                       const waste_load_opts *opt);
+ void waste_model_free(waste_model *m);
++
++/* Architecture-neutral bank open used by the native Kimi loader and by
++ * Inkling's storage adapter. It preserves WASTE's O_DIRECT/F_NOCACHE probe
++ * and fallback rules instead of giving each architecture its own I/O path. */
++int waste_expert_bank_open(const char *path, size_t rec_bytes,
++                           int want_direct, int *direct_io);
++
+ /* Runs one token; returns logits (vocab floats, owned by the model), or
+  * NULL when an expert record failed to read or failed verification —
+  * waste_model_read_error then says which one and why.

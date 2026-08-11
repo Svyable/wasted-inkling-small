@@ -171,7 +171,9 @@ jobs:
       # inkling_stage_reader.c carries a whole second I/O implementation for
       # Windows — ReadFile with OVERLAPPED — that no job compiled until this
       # one. Every Inkling unit must build for the target with warnings as
-      # errors, exactly as the native build does.
+      # errors, exactly as the native build does. Keep the exact unit count as
+      # a fail-closed inventory: a new Inkling translation unit must be wired
+      # into both the generated Makefile and this portability gate explicitly.
       - name: Cross-compile every Inkling unit with -Werror
         shell: bash
         run: |
@@ -184,7 +186,7 @@ jobs:
               -I"$work/src" -c "$source" -o "$objects/$(basename "${source%.c}").o"
             units=$((units + 1))
           done
-          test "$units" -eq 14
+          test "$units" -eq 15
           echo "cross-compiled $units Inkling translation units"
 
       - name: Build the Windows binaries from a clean target tree
@@ -197,10 +199,11 @@ jobs:
           # wrong target ABI, so remove all native products before MinGW.
           PATH=/usr/bin:/bin make -C "$work" clean
           PATH=/usr/bin:/bin make -C "$work" \
-            CC=x86_64-w64-mingw32-gcc-posix test_inkling.exe test_inkling_io.exe
+            CC=x86_64-w64-mingw32-gcc-posix \
+            test_inkling.exe test_inkling_io.exe test_inkling_expert_store.exe
 
-      # Compiling proves the branch parses. Running it proves the positional
-      # reads actually work, which is the part that had never been true.
+      # Compiling proves the branches parse. Running them proves the positional
+      # reads and the native expert-cache contract both work on the target.
       # WINEPREFIX must sit under a directory this job owns. Wine refuses to
       # create a configuration directory beneath one it does not — "/tmp is
       # not owned by you" — which is invisible when you develop as root and
@@ -218,4 +221,5 @@ jobs:
           wineboot --init >/dev/null 2>&1 || true
           (cd "$work" && wine ./test_inkling.exe | grep -q "^INKLING OK")
           (cd "$work" && wine ./test_inkling_io.exe "Z:$scratch" | grep -q "^INKLING IO OK")
-          echo "Inkling scalar primitives and staged readers pass on Windows"
+          (cd "$work" && wine ./test_inkling_expert_store.exe | grep -q "^INKLING_EXPERT_STORE_OK")
+          echo "Inkling primitives, staged readers, and expert storage pass on Windows"

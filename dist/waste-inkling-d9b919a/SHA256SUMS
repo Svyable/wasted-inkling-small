@@ -1,1 +1,4 @@
-356d7613fbc5acd7b6fef221617d700e940520bfc748e721a3fc49d4bd8171ff  patches/0001-Add-the-Inkling-Small-runtime-foundation-to-WASTE.patch
+fc212e69124baccc54bfe066ac516513526ad97d960331a229f6c91b6103e3bb  README.md
+312c608194266ea312c711800c8cf09fdbe655a1acd5e0c13eafdffcb3c6b42c  BASELINE
+a5f56069957ac9c0bd56dbd8bf198620b212ccffadc55fb32d4f0bce31d5a168  TEST-RESULTS.txt
+21fc0c90bd985a582c5e36b5c08bd59ed75f7c8d6cfb601543718bdc337f4ea2  patches/0001-Add-the-Inkling-Small-runtime-foundation-to-WASTE.patch

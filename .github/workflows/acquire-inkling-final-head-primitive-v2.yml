@@ -118,7 +118,8 @@ jobs:
           norm_weight = bf16(norm_raw, (hidden_size,))
           rows = bf16(rows_raw, (len(row_ids), hidden_size))
 
-          norm = InklingRMSNorm(hidden_size, eps=eps).eval()
+          norm = InklingRMSNorm(hidden_size, eps=eps).to(dtype=torch.bfloat16).eval()
+          assert norm.weight.dtype == torch.bfloat16
           with torch.no_grad():
               norm.weight.copy_(norm_weight)
               final_norm = norm(hidden)
@@ -165,6 +166,7 @@ jobs:
                   'torch': torch.__version__,
                   'transformers': '5.14.1',
                   'onednn_max_cpu_isa': os.environ.get('ONEDNN_MAX_CPU_ISA'),
+                  'module_dtype': 'BF16',
                   'rms_eps': eps,
                   'logits_mup_width_multiplier': width,
               },

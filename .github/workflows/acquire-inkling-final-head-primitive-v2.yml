@@ -1,18 +1,18 @@
-name: Acquire bounded Inkling final-head primitive fixture v2
+name: Reproduce bounded Inkling final-head primitive fixture
 
 on:
   workflow_dispatch:
 
 permissions:
   actions: read
-  contents: write
+  contents: read
 
 concurrency:
-  group: acquire-inkling-final-head-primitive-v2
+  group: reproduce-inkling-final-head-primitive
   cancel-in-progress: false
 
 jobs:
-  acquire:
+  reproduce:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
@@ -23,9 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: agent/inkling-final-head-primitive
-          fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Install pinned official stack
         run: python3 -m pip install --quiet --break-system-packages 'torch==2.13.0' 'transformers==5.14.1'
@@ -43,7 +41,7 @@ jobs:
             --dir "${RUNNER_TEMP}/source-artifact"
           test -f "${RUNNER_TEMP}/source-artifact/local-global-trace/expected/layer-5/output.bf16.bin"
 
-      - name: Fetch bounded head tensors and freeze official primitive
+      - name: Reproduce bounded official primitive
         shell: bash
         env:
           PYTHONPATH: ${{ github.workspace }}/mvp
@@ -60,6 +58,7 @@ jobs:
           import torch
           import torch.nn.functional as F
           from transformers.models.inkling.modeling_inkling import InklingRMSNorm
+          from inkling_release_config import build_transformers_text_config
           from inkling_remote_fixture_core import HttpRanges, RemoteSafetensors
 
           revision = '21152b5312c653be115f33a8342759064144e281'
@@ -87,8 +86,16 @@ jobs:
           index_raw = source.file('model.safetensors.index.json')
           assert hashlib.sha256(config_raw).hexdigest() == config_sha
           assert hashlib.sha256(index_raw).hexdigest() == index_sha
-          reader = RemoteSafetensors(source, index_raw)
 
+          # Bind every claimed head constant to the pinned official config.
+          config_json = json.loads(config_raw)
+          official = build_transformers_text_config(config_json)
+          assert int(official.hidden_size) == hidden_size
+          assert int(official.unpadded_vocab_size) == semantic_vocab
+          assert float(official.rms_norm_eps) == eps
+          assert float(official.logits_mup_width_multiplier) == width
+
+          reader = RemoteSafetensors(source, index_raw)
           norm_loc = reader.location('model.llm.norm.weight')
           head_loc = reader.location('model.llm.unembed.weight')
           assert norm_loc.dtype == 'BF16' and norm_loc.shape == (hidden_size,)
@@ -207,13 +214,8 @@ jobs:
           }, sort_keys=True))
           PY
 
-      - name: Commit bounded immutable fixture
+      - name: Require byte-for-byte reproduction
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name 'Inkling evidence acquisition'
-          git config user.email 'inkling@waste.invalid'
-          git add tests/fixtures/inkling/final_head_primitive_real
-          test -n "$(git diff --cached --name-only)"
-          git commit -m 'Freeze bounded Inkling final-head primitive fixture'
-          git push origin HEAD:agent/inkling-final-head-primitive
+          git diff --exit-code -- tests/fixtures/inkling/final_head_primitive_real

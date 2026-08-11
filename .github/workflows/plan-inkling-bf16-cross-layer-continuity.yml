@@ -65,7 +65,9 @@ jobs:
           assert plan['index_sha256'] == archive['index_sha256']
           assert plan['layers'] == [0, 1, 2]
           assert plan['experts'] == {'2': archive['layer2_expert_union']}
-          assert plan['payload_bytes'] < 4 * 1024**3
+          assert plan['entries'] == 119
+          assert plan['payload_bytes'] == 2783300104
+          assert plan['requests'] == 50
           print(
               'CROSS_LAYER_PLAN '
               f"entries={plan['entries']} payload_bytes={plan['payload_bytes']} "

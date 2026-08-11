@@ -81,6 +81,7 @@ jobs:
             experiments/inkling/test_inkling_portable_bf16_complete_sparse_layer.py
             experiments/inkling/test_inkling_portable_bf16_composed_moe.py
             experiments/inkling/test_inkling_portable_bf16_preexpert.py
+            experiments/inkling/test_inkling_portable_bf16_runner_isolation.py
             experiments/inkling/test_inkling_portable_bf16_single_token_moe.py
             experiments/inkling/test_inkling_portable_bf16_single_token_moe_activation.py
             experiments/inkling/test_inkling_portable_bf16_stateful_post_reduction.py
@@ -94,7 +95,7 @@ jobs:
             mvp/test_inkling_bf16_projection_granularity.py
             mvp/test_inkling_native_bf16_backend.py
           )
-          test "${#tests[@]}" -eq 26
+          test "${#tests[@]}" -eq 27
           for test_file in "${tests[@]}"; do
             test -f "$test_file"
             python3 -m unittest discover \
@@ -102,3 +103,10 @@ jobs:
               -p "$(basename "$test_file")" -v
           done
           echo "validated ${#tests[@]} isolated BF16 contract files"
+
+      - name: Prove the complete and composed runners share one interpreter
+        run: |
+          python3 -m unittest -v \
+            test_inkling_portable_bf16_complete_sparse_layer \
+            test_inkling_portable_bf16_composed_moe \
+            test_inkling_portable_bf16_runner_isolation

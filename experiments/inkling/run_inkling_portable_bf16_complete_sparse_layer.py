@@ -6,14 +6,22 @@ This is evidence-only. It reuses #36's composed temporary source and changes
 only the final decoder-layer residual in that copied source: complete both
 operands to BF16, add, and retain a BF16 result. Production source and the
 public matrix-backend ABI remain unchanged.
+
+Unlike the historical runner, importing this module does not permanently
+rebind the shared composed-MoE implementation. The complete-layer overrides
+exist only while this runner is building or executing, and are restored even
+when the underlying probe raises.
 """
 from __future__ import annotations
+
+from contextlib import contextmanager
+from typing import Iterator
 
 import run_inkling_portable_bf16_composed_moe as composed_runner
 import diagnose_inkling_portable_bf16_composed_moe as implementation
 
 
-_base_transform_aggregation_source = implementation.transform_aggregation_source
+_base_transform_aggregation_source = composed_runner.transform_aggregation_source
 
 _FINAL_RESIDUAL_OLD = """    for (int i = 0; i < hidden; i++) x[i] += s->ff[i];
 """
@@ -40,12 +48,31 @@ def transform_complete_sparse_layer_source(source: str) -> str:
     )
 
 
-implementation.transform_aggregation_source = transform_complete_sparse_layer_source
-implementation.ExactWeightCollector = composed_runner.ExactWeightCollector
+@contextmanager
+def complete_sparse_layer_overrides() -> Iterator[None]:
+    """Install the complete-layer adapters without leaking module state."""
+    original_transform = implementation.transform_aggregation_source
+    original_collector = implementation.ExactWeightCollector
+    try:
+        implementation.transform_aggregation_source = (
+            transform_complete_sparse_layer_source
+        )
+        implementation.ExactWeightCollector = composed_runner.ExactWeightCollector
+        yield
+    finally:
+        implementation.transform_aggregation_source = original_transform
+        implementation.ExactWeightCollector = original_collector
+
+
+def build_complete_sparse_layer_library(out):
+    """Build the complete-layer candidate with scoped source transforms."""
+    with complete_sparse_layer_overrides():
+        return implementation.build_composed_library(out)
 
 
 def main(argv: list[str] | None = None) -> int:
-    return implementation.main(argv)
+    with complete_sparse_layer_overrides():
+        return implementation.main(argv)
 
 
 if __name__ == "__main__":

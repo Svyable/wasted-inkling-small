@@ -13,6 +13,10 @@ The archived layer-2 route is independently reproduced from the official dense
 Raw C routing remains visible in the sparse analysis; archived canonical IDs
 and exact post-reduction weights are used only for downstream arithmetic, the
 same bounded tie contract as the checked single-layer evidence.
+
+The sparse candidate runner is injected explicitly. This continuity proof never
+rebinds a module-global execution function, so import order cannot select which
+numeric path is measured.
 """
 from __future__ import annotations
 
@@ -25,11 +29,13 @@ from typing import Any
 
 import torch
 
-import diagnose_inkling_bf16_stateful_mlp_boundary as sparse_boundary
-import diagnose_inkling_portable_bf16_stateful_sparse_layer as sparse_stateful
 from checked_bf16_profile_collector import (
     CheckedPostReductionWeightHelper,
     build_checked_weight_helper,
+)
+from checked_bf16_stateful_analysis import (
+    CheckedStatefulAnalysisError,
+    analyze_layer as analyze_checked_stateful_layer,
 )
 from diagnose_inkling_pre_router import _capture_official_pre_router
 from discover_inkling_router_experts import _causal_mask, input_sha256
@@ -286,24 +292,20 @@ def main(argv: list[str] | None = None) -> int:
         helper = CheckedPostReductionWeightHelper(
             build_checked_weight_helper(Path(args.out).with_suffix(".weights.so"))
         )
-        original_runner = sparse_stateful.run_c_stateful
-        sparse_stateful.run_c_stateful = run_c_stateful_profile
-        try:
-            sparse = sparse_boundary.analyze_layer(
-                lib,
-                helper,
-                fixture,
-                config,
-                cfg,
-                2,
-                official[1],
-                dense1_values,
-                rows,
-                device=device,
-                dtype=dtype,
-            )
-        finally:
-            sparse_stateful.run_c_stateful = original_runner
+        sparse = analyze_checked_stateful_layer(
+            lib,
+            helper,
+            fixture,
+            config,
+            cfg,
+            2,
+            official[1],
+            dense1_values,
+            rows,
+            device=device,
+            dtype=dtype,
+            candidate_runner=run_c_stateful_profile,
+        )
 
         first = first_dense_boundary(dense_metrics)
         if first is None and sparse["decision"]["classification"] != "stateful_sparse_mlp_ladder_exact":
@@ -319,11 +321,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         result = {
             "format": "inkling-checked-in-bfloat16-cross-layer-continuity",
-            "version": 1,
+            "version": 2,
             "positions": 8,
             "layers": [0, 1, 2],
             "inputs_sha256": archive["inputs_sha256"],
             "source": source,
+            "adapter_contract": "explicit_candidate_runner_no_module_rebinding",
             "decision": {
                 "classification": classification,
                 "first_boundary": first,
@@ -350,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
         )
     except (
+        CheckedStatefulAnalysisError,
         CheckedStatefulError,
         CrossLayerContinuityError,
         DenseBfloat16ProbeError,

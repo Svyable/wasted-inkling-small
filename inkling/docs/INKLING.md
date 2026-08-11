@@ -295,12 +295,20 @@ public Windows deployment:
 
 ### Public WASTE integration
 
-Only after parity:
-
-- define the final Inkling manifest/schema extension;
-- route `waste_plan_memory()` through the tested Inkling contract;
-- connect the public expert cache to the Inkling callback;
-- route `waste_open`, step, reset, statistics, and errors to the Inkling model;
+- ✅ define the final Inkling manifest/schema extension — no new top-level
+  shape, canonical `inkling.*` names, empty `tensor_prefix`; recorded in
+  `docs/INKLING-CONTAINER.md` and written by
+  `tools/make_inkling_container.py`;
+- ✅ route `waste_plan_memory()` through the tested Inkling contract
+  (`inkling_public.c`);
+- ✅ route `waste_open` through the Inkling config build and tensor binding
+  (`inkling_container.c`) — quantized matrices stay in their stored width and
+  reach the arithmetic through `waste_matmul_t`; the two vocabulary tables
+  stay on disk and are read a row at a time;
+- connect the public expert cache to the Inkling callback — the bank metadata
+  is validated and recorded, and no descriptor is opened yet;
+- route step, reset, statistics, and errors to the Inkling model; until then
+  every execution entry refuses and the suite asserts it;
 - publish `manifest.json` last;
 - retain fail-closed handling for unsupported variants.
 

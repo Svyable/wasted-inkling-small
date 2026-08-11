@@ -1,17 +1,18 @@
 diff --git a/src/waste.c b/src/waste.c
-index b1d9bbd..dfff891 100644
+index b59cbf6..5b95029 100644
 --- a/src/waste.c
 +++ b/src/waste.c
-@@ -22,6 +22,8 @@
+@@ -22,6 +22,9 @@
  #endif
  #include <time.h>
  
 +#include "arch.h"
++#include "inkling_container.h"
 +#include "inkling_public.h"
  #include "json.h"
  #include "memory.h"
  #include "model.h"
-@@ -175,6 +177,26 @@ waste_status waste_plan_memory(const char *model_path, uint32_t ctx_tokens,
+@@ -175,6 +178,26 @@ waste_status waste_plan_memory(const char *model_path, uint32_t ctx_tokens,
      js_doc d;
      if (js_parse(&d, src) < 0) { free(src); return WASTE_E_FORMAT; }
  
@@ -38,7 +39,7 @@ index b1d9bbd..dfff891 100644
      memset(out, 0, sizeof *out);
  
      /* trunk: sum the tensor payloads as they are stored, minus the ones the
-@@ -463,7 +485,8 @@ waste_status waste_open(const char *model_path, const waste_cfg *cfg_in,
+@@ -496,7 +519,8 @@ waste_status waste_open(const char *model_path, const waste_cfg *cfg_in,
               * on K3 that is tens of gigabytes lost to one bad manifest. */
              waste_model_free(&c->m);
              free(c);
@@ -48,3 +49,53 @@ index b1d9bbd..dfff891 100644
          }
      }
      /* Before the warm, which reads records too. The load already applied
+@@ -746,10 +770,26 @@ const char *waste_error_detail(const waste_ctx *c)
+     return (c && c->detail[0]) ? c->detail : NULL;
+ }
+ 
++/* An Inkling container opens — the plan is real, the tensors are bound, and
++ * `info` describes what is actually held. It does not run: the forward pass
++ * is Kimi's, and a promotion that let it produce tokens from these weights
++ * would be a claim no measurement in this repository supports yet. The
++ * model layer refuses too; this is the same refusal with the status code
++ * the caller can act on, and a detail line saying which half is missing. */
++static int inkling_unsupported(waste_ctx *c)
++{
++    if (!waste_inkling_container_present(&c->m)) return 0;
++    snprintf(c->detail, sizeof c->detail,
++             "Inkling container loaded; the public forward path is not "
++             "integrated in this build");
++    return 1;
++}
++
+ waste_status waste_eval(waste_ctx *c, const int32_t *tokens, size_t n,
+                         const float **logits_out, size_t *vocab_out)
+ {
+     if (!c || !tokens || !n) return WASTE_E_ARG;
++    if (inkling_unsupported(c)) return WASTE_E_UNSUPPORTED;
+     { const waste_status st = check_ids(c, tokens, n); if (st) return st; }
+     /* Refused before anything is written, so a prompt that does not fit
+      * leaves the conversation as it was rather than half-prefilled. */
+@@ -875,6 +915,7 @@ waste_status waste_generate(waste_ctx *c, const int32_t *prompt, size_t n,
+                             waste_token_cb cb, void *user)
+ {
+     if (!c || !prompt || !n) return WASTE_E_ARG;
++    if (inkling_unsupported(c)) return WASTE_E_UNSUPPORTED;
+     { const waste_status st = check_ids(c, prompt, n); if (st) return st; }
+     /* The prompt has to fit before a single expert is read for it. One
+      * position is kept back so there is somewhere to put the first
+@@ -1028,7 +1069,13 @@ waste_status waste_model_get_info(const waste_ctx *c, waste_model_info *out)
+         const waste_tensor *t = &c->m.t[i];
+         if (plen && strncmp(t->name, cf->prefix, plen) != 0) continue;
+         trunk += (uint64_t)t->n;
+-        if (!strstr(t->name, "embed_tokens.weight")) trunk_active += (uint64_t)t->n;
++        /* Inkling has two of these and calls them something else. Counting
++         * them as active reports 1.6 billion parameters a token never
++         * touches, on a model whose whole claim is 12 billion of them. */
++        if (!strstr(t->name, "embed_tokens.weight") &&
++            !(waste_inkling_container_present(&c->m) &&
++              waste_arch_row_backed(t->name)))
++            trunk_active += (uint64_t)t->n;
+     }
+ 
+     out->params_total  = pe * (uint64_t)cf->n_experts * moe_layers + trunk;

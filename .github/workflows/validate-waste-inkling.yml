@@ -183,7 +183,7 @@ jobs:
               -I"$work/src" -c "$source" -o "$objects/$(basename "${source%.c}").o"
             units=$((units + 1))
           done
-          test "$units" -eq 12
+          test "$units" -eq 14
           echo "cross-compiled $units Inkling translation units"
 
       - name: Build the Windows binaries from a clean target tree

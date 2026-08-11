@@ -60,7 +60,9 @@ refactor.
                                     │
    ─────────────────────────────────┼──────────────────────── promotion boundary
                                     │
-   promoted         │ inkling_public.c         232 │  manifest → memory plan
+   promoted         │ inkling_manifest.c       128 │  manifest config → geometry
+                    │ inkling_public.c         141 │  manifest → memory plan
+                    │ inkling_container.c      435 │  container → bound weights
                     ├──────────────────────────────┤
    orchestration    │ inkling_private.c        791 │  staged dir → logits
                     │ inkling_bind.c           135 │  names → structs
@@ -86,11 +88,21 @@ refactor.
 exactly two places, both of which refuse before doing anything architecture-
 specific:
 
-- `src/waste.c:179` in `waste_plan_memory()` → `WASTE_E_UNSUPPORTED`
-- `src/model.c:976` in the loader, after `format_version`, before config
-  parsing or tensor binding → `-3` → `WASTE_E_UNSUPPORTED`
+- `src/waste.c` in `waste_plan_memory()` → `waste_inkling_plan_memory_json()`
+- `src/model.c` in the loader, after `format_version`, before Kimi config
+  parsing or tensor binding → `waste_inkling_container_load()`
 
-At promotion this file becomes the dispatch table. It does not get deleted.
+Both are now dispatches rather than refusals, which is what the promotion
+plan said they would become. The refusal did not disappear; it moved to
+`waste_model_step` and `waste_model_prefill`, where the claim it is refusing
+actually lives.
+
+`waste_arch_row_backed()` is the file's second export: the one definition of
+which tensor names are read a row at a time, shared by the planner (which
+leaves them out of the resident floor), the loader (which leaves them on
+disk) and the parameter report (which counts them as stored, not active). It
+is here because three copies of that rule is three ways for a plan and a load
+to describe different containers.
 
 ### `src/inkling_config.[ch]` — the geometry contract (185 + 125)
 
@@ -214,7 +226,38 @@ Q8G/Q4G artifacts: 96-byte header, row-major payload, FP16 group scales,
 independent CRCs for payload and scales, 4 KiB padding. Supports bounded row
 reads *and* direct quantized matvec without materializing F32.
 
-### `src/inkling_public.c` (232) — the promoted seam
+### `src/inkling_manifest.c` (128) — the config contract, read once
+
+`waste_inkling_manifest_config_token()` resolves `config` — flattened by the
+converter, or nested under `text_config` in a raw release config — and
+`waste_inkling_manifest_config()` turns it into a `waste_inkling_config`
+through the tested builder. Every dimension is required; nothing defaults.
+
+It exists as its own translation unit because the planner and the loader both
+need it, and a container planned as one model and opened as another is the
+exact failure the fail-closed discipline is for.
+
+### `src/inkling_container.c` (435) — the public loader
+
+Manifest and directory in, bound weights out. Reads the geometry through
+`inkling_manifest.c`, mirrors it into the Kimi-shaped `waste_config` that
+`waste info` and the parameter report read, validates `expert_quant` and one
+expert bank per sparse layer, calls upstream's own `load_trunk` for
+`trunk.bin`, builds a view per tensor, and binds through
+`waste_inkling_bind_weights_ex_backend()`.
+
+Two callbacks come out of it, and they are the reason the promotion is more
+than plumbing. The row callback serves the two vocabulary tables from disk at
+whatever width they are stored. The matrix backend answers one matvec against
+a tensor that was never materialized, by handing a row-offset view of it to
+`waste_matmul_t` — WASTE's optimized quantized kernel, not the scalar path.
+Shared-expert matrices are one stacked tensor and `index` selects a block by
+advancing the payload and its scale rows together.
+
+Nothing is opened for the expert banks: their metadata is validated and
+recorded, which is where the cache promotion starts.
+
+### `src/inkling_public.c` (141) — the promoted seam
 
 The only Inkling code a public API call reaches. `waste_plan_memory()` hands it
 an Inkling manifest; it reads the architecture out of `config`, builds a
@@ -264,6 +307,7 @@ resident bytes and canonical F32 resident bytes separately.
 | `inkling_fixture.py` | 268 | **dependency-free** fixture reader: CRC verification, axis-0 expert slices, BF16/F16/F32 → F32 decode, module-relative state-dict keys, fail-closed coverage checks |
 | `inkling_layer_parity.py` | 470 | binds one layer from a fixture and runs the traced C decoder layer; owns its ctypes ABI declarations, which a compiled probe checks against the headers |
 | `inkling_throughput.py` | 493 | **dependency-free** decode cost model: exact VQ record geometry, bytes per token, expert bank, the budget-resolver ladder, and a throughput projection calibrated against upstream's measured K3 decode |
+| `make_inkling_container.py` | 322 | **dependency-free** synthetic *public* container writer: manifest, `trunk.bin` at three stored widths with real group scales, codebooks, bank placeholders. The executable half of [INKLING-CONTAINER.md](INKLING-CONTAINER.md) |
 | `inkling_serve.py` | 648 | OpenAI-compatible chat over the staged private runtime: strict request validation, incremental UTF-8 streaming, finish reasons, and C-runtime-gated provenance on every response |
 | `inkling_expert_bench.c` | 243 | expand-then-dense against LUT gather at Inkling geometry; refuses to time two paths that disagree |
 | `inkling_cache_trace.py` | 254 | **dependency-free** routing-trace generator: two parameters, each fitted to one upstream measurement, validated against a third it was not fitted to |
@@ -289,6 +333,11 @@ This path never writes the ~480 GiB BF16 expert stage. `--stage-experts` plus
 
 - **C:** `tests/test_inkling.c` — the seam and scalar primitives; runs in
   `make check` on every platform.
+- **C:** `tests/test_inkling_container.c` — the public loader, against three
+  containers written from one seed at f32, Q8G and Q4G. The f32 one is the
+  oracle; the quantized ones exercise the path where a matrix is never
+  materialized. Also asserts that the planned resident trunk equals the one
+  the load produced, to the byte, and that stepping is refused.
 - **Dependency-light Python (CI):** `test_inspect_inkling.py`,
   `test_inkling_plan.py`, `test_inkling_release.py`, `test_inkling_config_c.py`
   — 17 tests, no torch.

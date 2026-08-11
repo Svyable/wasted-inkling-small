@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright 2026 SQLite Cloud, Inc.
  *
- * Storage-only routed expert contract.  This deliberately does not execute an
+ * Storage-only routed expert contract. This deliberately does not execute an
  * expert: it proves that Inkling's native WEXP bytes survive the same bounded
  * cache path WASTE already uses, including identity/CRC rejection and the
  * explicit zero-cache fallback.
@@ -14,7 +14,6 @@
 #include "../src/crc32.h"
 #include "../src/ecache.h"
 #include "../src/inkling_expert_store.h"
-#include "../src/platform.h"
 #include "../src/waste_format.h"
 
 static int fails;
@@ -83,11 +82,14 @@ int main(void)
     m.cfg.moe_inter = MOE_INTER;
     m.stages = 3;
     m.verify = 1;
+    m.want_direct = 0;
+    m.direct_io = 0;
     m.bank[LAYER].n_experts = EXPERTS;
     m.bank[LAYER].cb_base = CODEBOOK;
     m.bank[LAYER].rec_bytes = WASTE_ALIGN;
     check(pthread_mutex_init(&m.fetch_mu, NULL) == 0, "mutex init failed");
-    m.bank[LAYER].fd = waste_open_stream(path, 0);
+    m.bank[LAYER].fd = waste_expert_bank_open(
+        path, WASTE_ALIGN, m.want_direct, &m.direct_io);
     check(m.bank[LAYER].fd >= 0, "cannot open bank fixture");
     check(waste_ecache_init(&m.cache, (size_t)2 * WASTE_ALIGN,
                             WASTE_ALIGN, 0) == 0,

@@ -1,0 +1,229 @@
+name: Discover Inkling local-global pair routes
+
+on:
+  pull_request:
+    paths:
+      - "docs/OFFICIAL-INKLING-SMALL-LAYER-PATTERN.json"
+      - "experiments/inkling/discover_inkling_local_global_pair_routes.py"
+      - "mvp/discover_inkling_router_experts.py"
+      - "mvp/inkling_fixture_reference.py"
+      - "mvp/inkling_release_config.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "mvp/inkling_remote_fixture_core.py"
+      - "inkling/tools/inkling_fixture.py"
+      - ".github/workflows/discover-inkling-local-global-routes.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-local-global-routes-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  discover:
+    name: Discover actual layer-4 then layer-5 routes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    env:
+      OMP_NUM_THREADS: 1
+      MKL_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+      ONEDNN_MAX_CPU_ISA: AVX2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned official stack and validate pair contract
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            'torch==2.13.0' 'transformers==5.14.1'
+          PYTHONPATH=inkling/tools:mvp:experiments/inkling python3 -m py_compile \
+            experiments/inkling/discover_inkling_local_global_pair_routes.py
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          pattern = json.loads(Path('docs/OFFICIAL-INKLING-SMALL-LAYER-PATTERN.json').read_text())
+          assert pattern['revision'] == '21152b5312c653be115f33a8342759064144e281'
+          assert pattern['config_sha256'] == 'dcb5b1d587bce2f1e6b29833d739a724d05b4bfaa2dc1164fbe679330478ba53'
+          assert pattern['first_local_to_global_pair'] == [4, 5]
+          assert pattern['reference_profile']['artifact_id'] == 9084754999
+          assert pattern['reference_profile']['artifact_zip_sha256'] == 'a46d1ce66e5bd4ca726218a49145b3a02bece561423dd1a28b7a9e5fa278f50c'
+          print('PAIR_CONTRACT local=4 global=5')
+          PY
+
+      - name: Bound and extract seed-only layer-4 router fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" --layers 4 --experts '4:0' \
+            --max-total-gib 2 --plan-only > "${RUNNER_TEMP}/layer4-seed-plan.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          pattern = json.loads(Path('docs/OFFICIAL-INKLING-SMALL-LAYER-PATTERN.json').read_text())
+          plan = json.loads((Path(os.environ['RUNNER_TEMP']) / 'layer4-seed-plan.json').read_text())
+          assert plan['revision'] == pattern['revision']
+          assert plan['config_sha256'] == pattern['config_sha256']
+          assert plan['layers'] == [4]
+          assert plan['experts'] == {'4': [0]}
+          assert plan['payload_bytes'] < 2 * 1024**3
+          print('LAYER4_SEED_PLAN ' + json.dumps({
+              'entries': plan['entries'], 'payload_bytes': plan['payload_bytes'],
+              'requests': plan['requests']}, sort_keys=True))
+          PY
+          fixture="${RUNNER_TEMP}/layer4-seed-fixture"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" --layers 4 --experts '4:0' \
+              --max-total-gib 2 --out "$fixture" \
+              > "${RUNNER_TEMP}/layer4-seed-manifest.json"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then sleep $((10 << (attempt - 1))); fi
+          done
+          test "$extracted" = true
+          python3 inkling/tools/inkling_fixture.py --fixture "$fixture" --verify
+
+      - name: Fetch pinned config and discover layer-4 route union
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          PYTHONPATH=mvp python3 - <<PY
+          import hashlib, time
+          from pathlib import Path
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+          source = HttpRangeSource('https://huggingface.co/thinkingmachines/Inkling-Small', '$revision')
+          payload = None
+          for attempt in range(4):
+              try:
+                  payload = source.file('config.json')
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3: raise
+                  time.sleep(10 * (2**attempt))
+          assert payload is not None
+          assert hashlib.sha256(payload).hexdigest() == 'dcb5b1d587bce2f1e6b29833d739a724d05b4bfaa2dc1164fbe679330478ba53'
+          Path('${RUNNER_TEMP}/config.json').write_bytes(payload)
+          PY
+          PYTHONPATH=inkling/tools:mvp python3 mvp/discover_inkling_router_experts.py \
+            --fixture "${RUNNER_TEMP}/layer4-seed-fixture" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --layers 4 --tokens 8 --seed 19 \
+            --out "${RUNNER_TEMP}/layer4-route.json" > /dev/null
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          route = json.loads((Path(os.environ['RUNNER_TEMP']) / 'layer4-route.json').read_text())
+          layer = route['layers']['4']
+          assert layer['seed_fixture_experts'] == [0]
+          assert 1 <= len(layer['selected_experts']) <= 48
+          assert len(layer['topk_indices']) == 8
+          print(
+              'LAYER4_ROUTE '
+              f"union_size={len(layer['selected_experts'])} "
+              f"experts={layer['selected_experts']}"
+          )
+          PY
+
+      - name: Bound and extract full layer-4 plus seed layer-5 fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=21152b5312c653be115f33a8342759064144e281
+          experts=$(python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          route = json.loads((Path(os.environ['RUNNER_TEMP']) / 'layer4-route.json').read_text())
+          values = route['layers']['4']['selected_experts']
+          print('4:' + ','.join(map(str, values)) + ';5:0')
+          PY
+          )
+          printf '%s\n' "$experts" > "${RUNNER_TEMP}/pair-discovery-experts.txt"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" --layers 4,5 --experts "$experts" \
+            --max-total-gib 4 --plan-only > "${RUNNER_TEMP}/pair-discovery-plan.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          route = json.loads((Path(os.environ['RUNNER_TEMP']) / 'layer4-route.json').read_text())
+          plan = json.loads((Path(os.environ['RUNNER_TEMP']) / 'pair-discovery-plan.json').read_text())
+          assert plan['layers'] == [4, 5]
+          assert plan['experts']['4'] == route['layers']['4']['selected_experts']
+          assert plan['experts']['5'] == [0]
+          assert plan['payload_bytes'] < 4 * 1024**3
+          print('PAIR_DISCOVERY_PLAN ' + json.dumps({
+              'entries': plan['entries'], 'payload_bytes': plan['payload_bytes'],
+              'requests': plan['requests'],
+              'layer4_experts': len(plan['experts']['4'])}, sort_keys=True))
+          PY
+          fixture="${RUNNER_TEMP}/pair-discovery-fixture"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$revision" --layers 4,5 --experts "$experts" \
+              --max-total-gib 4 --out "$fixture" \
+              > "${RUNNER_TEMP}/pair-discovery-manifest.json"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then sleep $((10 << (attempt - 1))); fi
+          done
+          test "$extracted" = true
+          python3 inkling/tools/inkling_fixture.py --fixture "$fixture" --verify
+
+      - name: Execute official layer 4 and discover actual layer-5 route
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=inkling/tools:mvp:experiments/inkling python3 \
+            experiments/inkling/discover_inkling_local_global_pair_routes.py \
+            --fixture "${RUNNER_TEMP}/pair-discovery-fixture" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --first-layer 4 --second-layer 5 --tokens 8 --seed 19 \
+            --out "${RUNNER_TEMP}/local-global-routes.json" > /dev/null
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = json.loads((Path(os.environ['RUNNER_TEMP']) / 'local-global-routes.json').read_text())
+          stage1 = json.loads((Path(os.environ['RUNNER_TEMP']) / 'layer4-route.json').read_text())
+          assert result['pair'] == [4, 5]
+          assert result['structural_classes'] == ['local', 'global']
+          assert result['first_layer']['topk_indices'] == stage1['layers']['4']['topk_indices']
+          assert result['first_layer']['topk_weights'] == stage1['layers']['4']['topk_weights']
+          assert result['first_layer']['selected_experts'] == stage1['layers']['4']['selected_experts']
+          assert result['second_layer']['seed_fixture_experts'] == [0]
+          assert 1 <= len(result['second_layer']['selected_experts']) <= 48
+          print(
+              'LOCAL_GLOBAL_ROUTES '
+              f"layer4_union={len(result['first_layer']['selected_experts'])} "
+              f"layer5_union={len(result['second_layer']['selected_experts'])} "
+              f"layer4_output_sha={result['first_output_sha256']}"
+          )
+          print('LAYER5_EXPERTS ' + json.dumps(result['second_layer']['selected_experts']))
+          PY
+
+      - name: Preserve two-stage route discovery
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: local-global-routes-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/layer4-seed-plan.json
+            ${{ runner.temp }}/layer4-seed-manifest.json
+            ${{ runner.temp }}/layer4-route.json
+            ${{ runner.temp }}/pair-discovery-experts.txt
+            ${{ runner.temp }}/pair-discovery-plan.json
+            ${{ runner.temp }}/pair-discovery-manifest.json
+            ${{ runner.temp }}/local-global-routes.json
+          if-no-files-found: warn
+          retention-days: 30

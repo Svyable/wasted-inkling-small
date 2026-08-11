@@ -71,7 +71,9 @@ jobs:
               '4': route['first_layer']['selected_experts'],
               '5': route['second_layer']['selected_experts'],
           }
-          assert plan['payload_bytes'] < 4 * 1024**3
+          assert plan['entries'] == 178
+          assert plan['payload_bytes'] == 3629546504
+          assert plan['requests'] == 50
           print(
               'LOCAL_GLOBAL_FINAL_PLAN '
               f"entries={plan['entries']} payload_bytes={plan['payload_bytes']} "

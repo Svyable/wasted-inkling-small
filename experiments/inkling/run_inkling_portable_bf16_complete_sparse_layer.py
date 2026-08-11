@@ -43,7 +43,10 @@ _FINAL_RESIDUAL_NEW = """    for (int i = 0; i < hidden; i++) {
 _PROFILE_SPARSE_BEGIN = """        if (bf16) {
             /* Official expert reductions are ordered by expert id, not router
 """
-_PROFILE_SPARSE_ELSE = """        } else {
+# Include the preceding newline so a more deeply indented nested ``else`` cannot
+# satisfy this marker by matching halfway through its leading spaces.
+_PROFILE_SPARSE_ELSE = """
+        } else {
 """
 _PROFILE_SPARSE_END = """        }
         if (trace_f(trace, layer, "moe_out", s->ff, (size_t)hidden)) return -1;
@@ -70,8 +73,8 @@ def _legacy_f32_sparse_source(source: str) -> str:
         )
     begin = source.index(_PROFILE_SPARSE_BEGIN)
 
-    # The layer contains several unrelated ``} else {`` pairs. Only the split
-    # inside the uniquely identified sparse-profile region is relevant here.
+    # The layer contains several unrelated if/else pairs. Only an outer split
+    # whose closing brace begins at this exact indentation is accepted here.
     end_count = source[begin:].count(_PROFILE_SPARSE_END)
     if end_count != 1:
         raise implementation.ComposedMoeError(
@@ -95,7 +98,7 @@ def _legacy_f32_sparse_source(source: str) -> str:
     )
     if duplicate_else >= 0:
         raise implementation.ComposedMoeError(
-            "BF16 sparse-profile region has more than one F32 split"
+            "BF16 sparse-profile region has more than one outer F32 split"
         )
 
     body_start = else_line + len(_PROFILE_SPARSE_ELSE)

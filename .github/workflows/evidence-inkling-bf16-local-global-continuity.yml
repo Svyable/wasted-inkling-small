@@ -69,10 +69,14 @@ jobs:
           route_bytes = Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json').read_bytes()
           prov = json.loads(Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.provenance.json').read_text())
           assert hashlib.sha256(route_bytes).hexdigest() == prov['route_file_sha256'] == 'b56af980cb2bb55a6551edbf5865f12acbb04c462ed4b3bf0bf33162c850a067'
-          assert prov['bound_result']['final_pair_fixture'] == {
-              'entries': 178, 'payload_bytes': 3629546504, 'requests': 50,
-          }
-          print('PAIR_FRESHNESS artifact and semantic producers exact')
+          expected = prov['bound_result']['final_pair_fixture']
+          assert expected['entries'] == 164
+          assert expected['payload_bytes'] == 3502541832
+          assert expected['requests'] == 50
+          assert expected['plan_workflow_run_id'] == 31447354335
+          assert expected['plan_artifact_id'] == 9085039143
+          assert expected['plan_artifact_zip_sha256'] == '243b745aa70d43e41d58df71d4fd6bb3a012decbe6e1b1ceaffa530c7e5523ad'
+          print('PAIR_FRESHNESS artifact, final plan and semantic producers exact')
           PY
 
       - name: Install pinned official stack
@@ -104,7 +108,15 @@ jobs:
           import json, os
           from pathlib import Path
           route = json.loads(Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json').read_text())
+          prov = json.loads(Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.provenance.json').read_text())
           plan = json.loads((Path(os.environ['RUNNER_TEMP']) / 'local-global-plan.json').read_text())
+          expected = prov['bound_result']['final_pair_fixture']
+          print('PAIR_PLAN_ACTUAL ' + json.dumps({
+              'entries': plan.get('entries'),
+              'payload_bytes': plan.get('payload_bytes'),
+              'requests': plan.get('requests'),
+              'layers': plan.get('layers'),
+          }, sort_keys=True))
           assert plan['revision'] == route['revision']
           assert plan['config_sha256'] == route['config_sha256']
           assert plan['index_sha256'] == route['index_sha256']
@@ -113,10 +125,10 @@ jobs:
               '4': route['first_layer']['selected_experts'],
               '5': route['second_layer']['selected_experts'],
           }
-          assert plan['entries'] == 178
-          assert plan['payload_bytes'] == 3629546504
-          assert plan['requests'] == 50
-          print('PAIR_PLAN entries=178 payload_bytes=3629546504 requests=50 l4=37 l5=25')
+          assert plan['entries'] == expected['entries'] == 164
+          assert plan['payload_bytes'] == expected['payload_bytes'] == 3502541832
+          assert plan['requests'] == expected['requests'] == 50
+          print('PAIR_PLAN entries=164 payload_bytes=3502541832 requests=50 l4=37 l5=25')
           PY
 
       - name: Extract CRC-verified final pair fixture and inputs

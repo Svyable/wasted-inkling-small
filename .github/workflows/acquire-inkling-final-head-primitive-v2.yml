@@ -1,11 +1,6 @@
 name: Acquire bounded Inkling final-head primitive fixture v2
 
 on:
-  push:
-    branches:
-      - agent/inkling-final-head-primitive
-    paths:
-      - ".github/workflows/acquire-inkling-final-head-primitive-v2.yml"
   workflow_dispatch:
 
 permissions:

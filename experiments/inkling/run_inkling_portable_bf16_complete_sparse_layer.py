@@ -63,21 +63,42 @@ def _legacy_f32_sparse_source(source: str) -> str:
     the original F32 body, at its historical indentation, to the old transforms.
     The markers fail closed if production control flow changes again.
     """
-    for marker, label in (
-        (_PROFILE_SPARSE_BEGIN, "BF16 sparse-profile start"),
-        (_PROFILE_SPARSE_ELSE, "BF16/F32 sparse-profile split"),
-        (_PROFILE_SPARSE_END, "sparse-profile end"),
-    ):
-        count = source.count(marker)
-        if count != 1:
-            raise implementation.ComposedMoeError(
-                f"expected exactly one {label}; found {count}"
-            )
-
+    begin_count = source.count(_PROFILE_SPARSE_BEGIN)
+    if begin_count != 1:
+        raise implementation.ComposedMoeError(
+            f"expected exactly one BF16 sparse-profile start; found {begin_count}"
+        )
     begin = source.index(_PROFILE_SPARSE_BEGIN)
-    else_line = source.index(_PROFILE_SPARSE_ELSE, begin)
+
+    # The layer contains several unrelated ``} else {`` pairs. Only the split
+    # inside the uniquely identified sparse-profile region is relevant here.
+    end_count = source[begin:].count(_PROFILE_SPARSE_END)
+    if end_count != 1:
+        raise implementation.ComposedMoeError(
+            f"expected exactly one sparse-profile end after its start; found {end_count}"
+        )
+    end = source.index(_PROFILE_SPARSE_END, begin + len(_PROFILE_SPARSE_BEGIN))
+
+    else_line = source.find(
+        _PROFILE_SPARSE_ELSE,
+        begin + len(_PROFILE_SPARSE_BEGIN),
+        end,
+    )
+    if else_line < 0:
+        raise implementation.ComposedMoeError(
+            "BF16 sparse-profile region has no F32 else arm"
+        )
+    duplicate_else = source.find(
+        _PROFILE_SPARSE_ELSE,
+        else_line + len(_PROFILE_SPARSE_ELSE),
+        end,
+    )
+    if duplicate_else >= 0:
+        raise implementation.ComposedMoeError(
+            "BF16 sparse-profile region has more than one F32 split"
+        )
+
     body_start = else_line + len(_PROFILE_SPARSE_ELSE)
-    end = source.index(_PROFILE_SPARSE_END, body_start)
     f32_body = source[body_start:end]
 
     dedented: list[str] = []

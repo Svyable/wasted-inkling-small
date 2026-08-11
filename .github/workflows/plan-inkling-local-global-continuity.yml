@@ -33,7 +33,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY' > "${RUNNER_TEMP}/fixture.env"
-          import hashlib, json
+          import hashlib, json, shlex
           from pathlib import Path
           route_path = Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json')
           route_bytes = route_path.read_bytes()
@@ -49,8 +49,9 @@ jobs:
           assert len(l4) == 37 and len(l5) == 25
           assert sorted({x for row in route['first_layer']['topk_indices'] for x in row}) == l4
           assert sorted({x for row in route['second_layer']['topk_indices'] for x in row}) == l5
-          print('REVISION=' + route['revision'])
-          print('EXPERTS=4:' + ','.join(map(str, l4)) + ';5:' + ','.join(map(str, l5)))
+          experts = '4:' + ','.join(map(str, l4)) + ';5:' + ','.join(map(str, l5))
+          print('REVISION=' + shlex.quote(route['revision']))
+          print('EXPERTS=' + shlex.quote(experts))
           PY
           # shellcheck source=/dev/null
           . "${RUNNER_TEMP}/fixture.env"

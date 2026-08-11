@@ -3,10 +3,14 @@
 """Run checked-in BF16 sparse execution across the eight source-bound tokens.
 
 This is the stateful promotion gate after position-zero layers 2 and 5 became
-BF16-exact without source rewriting.  One checked-in C layer state is retained
+BF16-exact without source rewriting. One checked-in C layer state is retained
 across all eight inputs so K/V caches and all four short-convolution states are
-part of the claim.  Canonical route IDs and #51 exact weights remain an
-explicit downstream counterfactual adapter; raw candidate routes are preserved.
+part of the claim. Canonical route IDs and #51 exact weights remain an explicit
+downstream counterfactual adapter; raw candidate routes are preserved.
+
+The checked candidate runner is passed explicitly into the stateful analyzer.
+Import order and module-global rebinding therefore cannot select the arithmetic
+being measured.
 """
 from __future__ import annotations
 
@@ -18,12 +22,15 @@ from typing import Any
 
 import torch
 
-import diagnose_inkling_bf16_stateful_mlp_boundary as boundary
 import diagnose_inkling_portable_bf16_composed_moe as composed
 import diagnose_inkling_portable_bf16_stateful_sparse_layer as stateful
 from checked_bf16_profile_collector import (
     CheckedPostReductionWeightHelper,
     build_checked_weight_helper,
+)
+from checked_bf16_stateful_analysis import (
+    CheckedStatefulAnalysisError,
+    analyze_layer,
 )
 from discover_inkling_router_experts import input_sha256
 from inkling_canonical_route_layer_parity import CanonicalRouteError, RouteRow, load_canonical_routes
@@ -190,18 +197,23 @@ def main(argv: list[str] | None = None) -> int:
         helper = CheckedPostReductionWeightHelper(
             build_checked_weight_helper(Path(args.out).with_suffix(".weights.so"))
         )
-        original_runner = stateful.run_c_stateful
-        stateful.run_c_stateful = run_c_stateful_profile
-        try:
-            analyses = {
-                str(layer): boundary.analyze_layer(
-                    lib, helper, fixture, config, cfg, layer, inputs,
-                    input_values, routes[layer], device=torch.device("cpu"), dtype=dtype,
-                )
-                for layer in layers
-            }
-        finally:
-            stateful.run_c_stateful = original_runner
+        analyses = {
+            str(layer): analyze_layer(
+                lib,
+                helper,
+                fixture,
+                config,
+                cfg,
+                layer,
+                inputs,
+                input_values,
+                routes[layer],
+                device=torch.device("cpu"),
+                dtype=dtype,
+                candidate_runner=run_c_stateful_profile,
+            )
+            for layer in layers
+        }
 
         nonexact = sorted(
             int(layer) for layer, value in analyses.items()
@@ -209,11 +221,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         result = {
             "format": "inkling-checked-in-bfloat16-stateful-sparse-profile",
-            "version": 1,
+            "version": 2,
             "positions": len(input_values),
             "inputs_sha256": input_sha256(inputs, dtype),
             "source": source,
             "execution_profile": composed.collect_execution_profile(),
+            "adapter_contract": "explicit_candidate_runner_no_module_rebinding",
             "evidence_outcome": {
                 "classification": (
                     "checked_in_stateful_sparse_profile_exact"
@@ -226,9 +239,17 @@ def main(argv: list[str] | None = None) -> int:
         }
         Path(args.out).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     except (
-        CanonicalOfficialRouteError, CanonicalRouteError, CheckedStatefulError,
-        FixtureError, FixtureReferenceError, LayerParityError, RuntimeError,
-        OSError, ValueError, KeyError,
+        CanonicalOfficialRouteError,
+        CanonicalRouteError,
+        CheckedStatefulAnalysisError,
+        CheckedStatefulError,
+        FixtureError,
+        FixtureReferenceError,
+        LayerParityError,
+        RuntimeError,
+        OSError,
+        ValueError,
+        KeyError,
     ) as exc:
         parser.error(str(exc))
         return 2

@@ -1,15 +1,15 @@
-From 64e1dba7ed525fd8987cece9ea43b5ce9c01c218 Mon Sep 17 00:00:00 2001
+From 50fa3ed6b3ca412f552675eb01e992db597c405d Mon Sep 17 00:00:00 2001
 From: WASTE Inkling integration <inkling@waste.invalid>
 Date: Sun, 2 Aug 2026 00:00:00 +0000
 Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
 
 ---
- Makefile                              |  21 +-
+ Makefile                              |  25 +-
  PATCH18-HANDOFF.md                    |  59 ++
  TEST-RESULTS-P18.txt                  |  68 ++
- docs/INKLING.md                       | 499 ++++++++++++++
- src/arch.c                            |  23 +
- src/arch.h                            |  25 +
+ docs/INKLING.md                       | 507 ++++++++++++++
+ src/arch.c                            |  37 +
+ src/arch.h                            |  38 ++
  src/inkling.c                         | 264 ++++++++
  src/inkling.h                         |  75 +++
  src/inkling_attention.c               | 210 ++++++
@@ -18,14 +18,18 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  src/inkling_bind.h                    |  56 ++
  src/inkling_config.c                  | 190 ++++++
  src/inkling_config.h                  | 134 ++++
+ src/inkling_container.c               | 443 ++++++++++++
+ src/inkling_container.h               |  89 +++
  src/inkling_layer.c                   | 543 +++++++++++++++
  src/inkling_layer.h                   | 195 ++++++
+ src/inkling_manifest.c                | 128 ++++
+ src/inkling_manifest.h                |  38 ++
  src/inkling_model.c                   | 282 ++++++++
  src/inkling_model.h                   | 110 +++
  src/inkling_numeric.h                 |  43 ++
  src/inkling_private.c                 | 791 ++++++++++++++++++++++
  src/inkling_private.h                 |  70 ++
- src/inkling_public.c                  | 251 +++++++
+ src/inkling_public.c                  | 141 ++++
  src/inkling_public.h                  |  34 +
  src/inkling_qtensor.c                 | 143 ++++
  src/inkling_qtensor.h                 |  39 ++
@@ -33,11 +37,12 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  src/inkling_stage_reader.h            |  59 ++
  src/inkling_wexp.c                    | 369 ++++++++++
  src/inkling_wexp.h                    |  59 ++
- src/model.c                           |  18 +
- src/waste.c                           |  25 +-
+ src/model.c                           |  96 ++-
+ src/model.h                           |   6 +
+ src/waste.c                           |  51 +-
  tests/data/inkling-small-config.json  |  69 ++
  tests/data/inkling-small-release.json |  10 +
- tests/run.sh                          |  81 +++
+ tests/run.sh                          | 129 ++++
  tests/test_convert_inkling.py         | 230 +++++++
  tests/test_inkling.c                  | 179 +++++
  tests/test_inkling_attention_c.py     | 252 +++++++
@@ -46,6 +51,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tests/test_inkling_cache_bench.py     | 243 +++++++
  tests/test_inkling_cache_trace.py     | 214 ++++++
  tests/test_inkling_config_c.py        | 259 +++++++
+ tests/test_inkling_container.c        | 326 +++++++++
  tests/test_inkling_expert_bench.py    | 116 ++++
  tests/test_inkling_fixture.py         | 401 +++++++++++
  tests/test_inkling_io.c               | 256 +++++++
@@ -90,7 +96,8 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/inkling_vq.py                   | 927 ++++++++++++++++++++++++++
  tools/inkling_weights.py              | 369 ++++++++++
  tools/inspect_inkling.py              | 799 ++++++++++++++++++++++
- 86 files changed, 21887 insertions(+), 7 deletions(-)
+ tools/make_inkling_container.py       | 322 +++++++++
+ 93 files changed, 23319 insertions(+), 8 deletions(-)
  create mode 100644 PATCH18-HANDOFF.md
  create mode 100644 TEST-RESULTS-P18.txt
  create mode 100644 docs/INKLING.md
@@ -104,8 +111,12 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100644 src/inkling_bind.h
  create mode 100644 src/inkling_config.c
  create mode 100644 src/inkling_config.h
+ create mode 100644 src/inkling_container.c
+ create mode 100644 src/inkling_container.h
  create mode 100644 src/inkling_layer.c
  create mode 100644 src/inkling_layer.h
+ create mode 100644 src/inkling_manifest.c
+ create mode 100644 src/inkling_manifest.h
  create mode 100644 src/inkling_model.c
  create mode 100644 src/inkling_model.h
  create mode 100644 src/inkling_numeric.h
@@ -129,6 +140,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100644 tests/test_inkling_cache_bench.py
  create mode 100644 tests/test_inkling_cache_trace.py
  create mode 100644 tests/test_inkling_config_c.py
+ create mode 100644 tests/test_inkling_container.c
  create mode 100644 tests/test_inkling_expert_bench.py
  create mode 100644 tests/test_inkling_fixture.py
  create mode 100644 tests/test_inkling_io.c
@@ -172,12 +184,13 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100755 tools/inkling_vq.py
  create mode 100644 tools/inkling_weights.py
  create mode 100755 tools/inspect_inkling.py
+ create mode 100644 tools/make_inkling_container.py
 
 diff --git a/Makefile b/Makefile
-index 34a282c..0a937b4 100644
+index 34a282c..ed28335 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -100,9 +100,12 @@ CFLAGS  += -DVQ_SUPER=$(VQ_SUPER)
+@@ -100,9 +100,13 @@ CFLAGS  += -DVQ_SUPER=$(VQ_SUPER)
  # and then corrupts memory at run time.
  CFLAGS  += -MMD -MP
  
@@ -187,21 +200,21 @@ index 34a282c..0a937b4 100644
 +SRC := src/model.c src/arch.c src/inkling.c src/inkling_config.c \
 +       src/inkling_attention.c src/inkling_layer.c src/inkling_model.c \
 +       src/inkling_bind.c src/inkling_stage_reader.c src/inkling_wexp.c \
-+       src/inkling_qtensor.c src/inkling_private.c src/inkling_public.c src/kda.c src/backend.c \
++       src/inkling_qtensor.c src/inkling_private.c src/inkling_manifest.c \
++       src/inkling_public.c src/inkling_container.c src/kda.c src/backend.c \
 +       src/ecache.c src/version.c src/tokenizer.c src/waste.c src/vq.c \
 +       src/vision.c src/image.c src/crc32.c src/memory.c
  # Match what backend.c tests for. Linux/aarch64 reports "aarch64", which
  # does not contain "arm" — the old findstring left kda_neon.c out of the
  # build while backend.c still emitted the call to it, so the link failed
-@@ -227,12 +230,20 @@ waste$(EXE): cli/main.o libwaste.a
+@@ -227,12 +231,25 @@ waste$(EXE): cli/main.o libwaste.a
  # One list, used by both `test` and `clean`. A stale test binary is one of
  # the two failures tests/run.sh was written to catch, so a binary that
  # `test` builds and `clean` forgets defeats the check meant to notice it.
 -TESTNAMES := test_kda test_container test_forward test_tokenizer test_k3parts \
--             test_state test_vision test_image test_memory test_cpus sweep
-+TESTNAMES := test_inkling test_inkling_io test_kda test_container test_forward \
-+             test_tokenizer test_k3parts test_state test_vision test_image \
-+             test_memory test_cpus sweep
++TESTNAMES := test_inkling test_inkling_io test_inkling_container test_kda \
++             test_container test_forward test_tokenizer test_k3parts \
+              test_state test_vision test_image test_memory test_cpus sweep
  TESTBINS  := $(addsuffix $(EXE),$(TESTNAMES))
  
  test: $(TESTBINS)
@@ -212,6 +225,11 @@ index 34a282c..0a937b4 100644
 +# only test that a Windows cross-build can run, and therefore the only thing
 +# that ever executes inkling_stage_reader.c's ReadFile/OVERLAPPED branch.
 +test_inkling_io$(EXE): tests/test_inkling_io.o libwaste.a
++	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
++# The public loader against real containers on disk. Needs the whole library
++# rather than a handful of translation units, because what it is testing is
++# that waste_model_load dispatches at all.
++test_inkling_container$(EXE): tests/test_inkling_container.o libwaste.a
 +	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
  test_kda$(EXE): tests/test_kda.o libwaste.a
  	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
@@ -357,10 +375,10 @@ index 0000000..f1a2862
 +cli/main.c; the strict Inkling selection is warning-free.
 diff --git a/docs/INKLING.md b/docs/INKLING.md
 new file mode 100644
-index 0000000..48efd2f
+index 0000000..5471bc7
 --- /dev/null
 +++ b/docs/INKLING.md
-@@ -0,0 +1,499 @@
+@@ -0,0 +1,507 @@
 +# Inkling-Small support in WASTE
 +
 +Status: **the official Inkling-Small release is identified exactly; source
@@ -658,12 +676,20 @@ index 0000000..48efd2f
 +
 +### Public WASTE integration
 +
-+Only after parity:
-+
-+- define the final Inkling manifest/schema extension;
-+- route `waste_plan_memory()` through the tested Inkling contract;
-+- connect the public expert cache to the Inkling callback;
-+- route `waste_open`, step, reset, statistics, and errors to the Inkling model;
++- ✅ define the final Inkling manifest/schema extension — no new top-level
++  shape, canonical `inkling.*` names, empty `tensor_prefix`; recorded in
++  `docs/INKLING-CONTAINER.md` and written by
++  `tools/make_inkling_container.py`;
++- ✅ route `waste_plan_memory()` through the tested Inkling contract
++  (`inkling_public.c`);
++- ✅ route `waste_open` through the Inkling config build and tensor binding
++  (`inkling_container.c`) — quantized matrices stay in their stored width and
++  reach the arithmetic through `waste_matmul_t`; the two vocabulary tables
++  stay on disk and are read a row at a time;
++- connect the public expert cache to the Inkling callback — the bank metadata
++  is validated and recorded, and no descriptor is opened yet;
++- route step, reset, statistics, and errors to the Inkling model; until then
++  every execution entry refuses and the suite asserts it;
 +- publish `manifest.json` last;
 +- retain fail-closed handling for unsupported variants.
 +
@@ -862,16 +888,17 @@ index 0000000..48efd2f
 +its depth.
 diff --git a/src/arch.c b/src/arch.c
 new file mode 100644
-index 0000000..44928ed
+index 0000000..86b4c02
 --- /dev/null
 +++ b/src/arch.c
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,37 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
 +#include "arch.h"
 +
 +#include <stddef.h>
++#include <string.h>
 +
 +static unsigned char ascii_lower(unsigned char c)
 +{
@@ -889,12 +916,25 @@ index 0000000..44928ed
 +    }
 +    return WASTE_ARCH_INKLING;
 +}
++
++int waste_arch_row_backed(const char *name)
++{
++    static const char *tails[] = { ".embed", ".unembed",
++                                   "embed_tokens.weight", "unembed.weight" };
++    if (!name) return 0;
++    const size_t n = strlen(name);
++    for (size_t i = 0; i < sizeof tails / sizeof tails[0]; i++) {
++        const size_t t = strlen(tails[i]);
++        if (n >= t && memcmp(name + n - t, tails[i], t) == 0) return 1;
++    }
++    return 0;
++}
 diff --git a/src/arch.h b/src/arch.h
 new file mode 100644
-index 0000000..ce387d5
+index 0000000..bb9e85f
 --- /dev/null
 +++ b/src/arch.h
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,38 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -915,6 +955,19 @@ index 0000000..ce387d5
 + * feeding its manifest into Kimi memory formulas or forward dispatch can
 + * produce plausible but invalid plans before tensor validation runs. */
 +waste_arch_kind waste_arch_classify(const char *arch);
++
++/* Is this canonical tensor name one of the two vocabulary tables the engine
++ * reads a single row of per token?
++ *
++ * Three places have to agree about that set or they disagree about memory:
++ * the planner leaves these out of the resident floor, the loader leaves them
++ * on disk, and the parameter report counts them as stored but not active. It
++ * lives on the seam because a second copy of the rule is how the plan and the
++ * load start describing different containers.
++ *
++ * Inkling keeps the embedding and the unembedding independent, so unlike the
++ * Kimi path there are two of them. */
++int waste_arch_row_backed(const char *name);
 +
 +#ifdef __cplusplus
 +}
@@ -2111,6 +2164,550 @@ index 0000000..7af4eca
 +}
 +#endif
 +#endif
+diff --git a/src/inkling_container.c b/src/inkling_container.c
+new file mode 100644
+index 0000000..a6178ff
+--- /dev/null
++++ b/src/inkling_container.c
+@@ -0,0 +1,443 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++/*
++ * inkling_container.c — a public Inkling container, placed in memory.
++ *
++ * The planner was promoted first because a plan is geometry: the worst a
++ * bug in it produces is a wrong byte count, which the caller finds out
++ * about at once. Loading sits one step further along the same argument. It
++ * decides where bytes live and which name refers to which matrix; it does
++ * not decide what a token is. So it can be promoted while the forward path
++ * is still refused, and the refusal moves from "Inkling is not supported"
++ * to the one claim this port has not yet earned — that these weights
++ * produce these tokens.
++ *
++ * Three properties are worth stating because they are what makes this a
++ * branch rather than a second engine:
++ *
++ *   - The trunk is read by upstream's own loader. `trunk.bin` is one
++ *     format with one set of offsets, scale tables and packed widths, and
++ *     a second reader for it is how two readers come to disagree.
++ *   - Quantized matrices are never materialized. They bind as non-resident
++ *     and reach the arithmetic through waste_matmul_t, which is WASTE's
++ *     optimized kernel with its thread pool, not the scalar path.
++ *   - Nothing defaults. A missing dimension, a tensor that was skipped, a
++ *     bank that does not divide into records — each is an error, because a
++ *     model that loads with a hole in it is worse than one that does not
++ *     load.
++ *
++ * Experts are deliberately absent. The bank metadata is validated and
++ * recorded, which is what the cache promotion needs, but no descriptor is
++ * opened and no codebook is read: that is the next step, and it is the one
++ * that makes a routed layer computable.
++ */
++
++#include "inkling_container.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "arch.h"
++#include "inkling_bind.h"
++#include "inkling_manifest.h"
++
++#define IK_MAT_COUNT (WASTE_IK_MAT_SHARED_DOWN + 1)
++
++typedef struct {
++    waste_model *m;
++    const waste_tensor *t;
++} inkling_row_ctx;
++
++typedef struct {
++    waste_inkling_config cfg;
++    waste_inkling_bound_weights bound;
++    waste_inkling_tensor_view *views;
++    size_t nviews;
++    /* Resolved once at load: the backend runs per matrix per token and has
++     * no business doing string work there. NULL entries are matrices this
++     * layer does not have, or ones that stayed resident F32 and are read
++     * through their pointer without consulting a backend at all. */
++    const waste_tensor *matrix[WASTE_INKLING_MAX_LAYERS][IK_MAT_COUNT];
++    waste_inkling_matrix_backend backend[WASTE_INKLING_MAX_LAYERS];
++    inkling_row_ctx embed, unembed;
++    waste_model *m;
++} waste_inkling_container;
++
++static int fail(const char *what)
++{
++    fprintf(stderr, "waste: Inkling container: %s\n", what);
++    return -2;
++}
++
++/* ---- canonical names ---------------------------------------------------- */
++
++/* The public container names its tensors exactly as the private runtime
++ * index does. That is not a coincidence to be tidied away later: the index
++ * was always a rehearsal of the manifest, and one name set means
++ * inkling_bind.c binds both without a translation table in between. */
++static const char *matrix_role(waste_inkling_matrix_kind kind)
++{
++    switch (kind) {
++    case WASTE_IK_MAT_Q: return "q";
++    case WASTE_IK_MAT_K: return "k";
++    case WASTE_IK_MAT_V: return "v";
++    case WASTE_IK_MAT_R: return "r";
++    case WASTE_IK_MAT_O: return "o";
++    case WASTE_IK_MAT_DENSE_GATE: return "mlp.gate";
++    case WASTE_IK_MAT_DENSE_UP: return "mlp.up";
++    case WASTE_IK_MAT_DENSE_DOWN: return "mlp.down";
++    case WASTE_IK_MAT_ROUTER: return "router.weight";
++    case WASTE_IK_MAT_SHARED_GATE: return "shared.gate";
++    case WASTE_IK_MAT_SHARED_UP: return "shared.up";
++    case WASTE_IK_MAT_SHARED_DOWN: return "shared.down";
++    /* Routed experts are not trunk matrices in G6 step 2. Their bank
++     * metadata is validated above, but record opening/cache dispatch is a
++     * later promotion. Keep these enum values explicit so a future matrix
++     * kind still trips -Wswitch instead of disappearing behind a default. */
++    case WASTE_IK_MAT_ROUTED_GATE:
++    case WASTE_IK_MAT_ROUTED_UP:
++    case WASTE_IK_MAT_ROUTED_DOWN:
++        return NULL;
++    }
++    return NULL;
++}
++
++static int matrix_name(char *out, size_t cap, int layer,
++                       waste_inkling_matrix_kind kind)
++{
++    const char *role = matrix_role(kind);
++    if (!role) return -1;
++    const int n = snprintf(out, cap, "inkling.layer.%d.%s", layer, role);
++    return n < 0 || (size_t)n >= cap ? -1 : 0;
++}
++
++static int shared_kind(waste_inkling_matrix_kind kind)
++{
++    return kind == WASTE_IK_MAT_SHARED_GATE ||
++           kind == WASTE_IK_MAT_SHARED_UP ||
++           kind == WASTE_IK_MAT_SHARED_DOWN;
++}
++
++/* ---- runtime callbacks -------------------------------------------------- */
++
++static int container_row_get(void *ctx, int row, int cols, float *out)
++{
++    inkling_row_ctx *r = (inkling_row_ctx *)ctx;
++    if (!r || !r->m || !r->t) return -1;
++    return waste_trunk_row_f32(r->m, r->t, row, cols, out);
++}
++
++/* One matrix-vector product against a trunk tensor that was left in its
++ * stored width. The shared-expert matrices are one tensor of `n_shared`
++ * stacked blocks, so `index` selects a block by advancing the payload and
++ * its scale rows together — which is the same row arithmetic every other
++ * reader of this tensor does, done once instead of materializing a copy. */
++static int container_matvec(void *ctx, int layer,
++                            waste_inkling_matrix_kind kind, int index,
++                            const float *x, float *out, int rows, int cols)
++{
++    waste_inkling_container *c = (waste_inkling_container *)ctx;
++    if (!c || !x || !out || rows < 1 || cols < 1) return -1;
++    if (layer < 0 || layer >= c->cfg.n_layers) return -1;
++    if ((int)kind < 0 || (int)kind >= IK_MAT_COUNT) return -1;
++
++    const waste_tensor *t = c->matrix[layer][kind];
++    if (!t || t->on_disk || (!t->data && !t->q)) return -1;
++    if (t->shape[t->ndim - 1] != cols) return -1;
++
++    int blocks = 1;
++    if (shared_kind(kind)) {
++        if (t->ndim != 3 || t->shape[1] != rows) return -1;
++        blocks = t->shape[0];
++    } else {
++        if (t->ndim != 2 || t->shape[0] != rows) return -1;
++    }
++    if (index < 0 || index >= blocks) return -1;
++
++    waste_tensor sub = *t;
++    const size_t r0 = (size_t)index * (size_t)rows;
++    sub.ndim = 2;
++    sub.shape[0] = rows;
++    sub.shape[1] = cols;
++    sub.shape[2] = sub.shape[3] = 0;
++    sub.n = (size_t)rows * (size_t)cols;
++    if (t->data) sub.data = t->data + r0 * (size_t)cols;
++    if (t->q) {
++        const int ng = (cols + t->group - 1) / t->group;
++        sub.q = t->q + r0 * t->rowbytes;
++        sub.qs = t->qs + r0 * (size_t)ng;
++    }
++    waste_matmul_t(c->m, out, &sub, x, rows, cols, 1);
++    return 0;
++}
++
++/* ---- load --------------------------------------------------------------- */
++
++static const waste_tensor *find_unique(const waste_model *m, const char *name)
++{
++    const waste_tensor *found = NULL;
++    for (int i = 0; i < m->n_tensors; i++) {
++        if (strcmp(m->t[i].name, name)) continue;
++        if (found) return NULL;             /* duplicate is always invalid */
++        found = &m->t[i];
++    }
++    return found;
++}
++
++/* Mirror the geometry into the Kimi-shaped config the generic parts of the
++ * engine read — `waste info`, the parameter report, the quantization
++ * summary. These are descriptions of the container, not inputs to a Kimi
++ * forward path, which is never reached: what would select it is refused
++ * before this runs. */
++static void mirror_config(waste_model *m, const js_doc *d, int cfg_tok,
++                          const waste_inkling_config *c)
++{
++    waste_config *k = &m->cfg;
++    k->n_layers = c->n_layers;
++    k->hidden = c->hidden;
++    k->vocab = c->vocab;
++    k->n_experts = c->n_routed_experts;
++    k->top_k = c->top_k;
++    k->moe_inter = c->moe_intermediate;
++    k->dense_inter = c->dense_intermediate;
++    k->n_shared = c->n_shared_experts;
++    k->first_dense = c->dense_layers;
++    k->n_heads = c->global_heads;
++    k->conv_k = c->conv_kernel;
++    k->eps = c->rms_eps;
++    k->routed_scale = c->route_scale;
++    k->eos_token_id = (int)js_int(d, js_get(d, cfg_tok, "eos_token_id"), 0);
++    js_str(d, js_get(d, 0, "arch"), k->arch, sizeof k->arch);
++}
++
++/* expert_quant, read under the same bounds the Kimi loader applies. Nothing
++ * here consumes a codebook yet; recording the format is what lets the next
++ * promotion open the banks without re-reading the manifest, and what lets
++ * `waste info` name the quantization it is holding. */
++static int load_expert_quant(waste_model *m, const js_doc *d)
++{
++    const int eq = js_get(d, 0, "expert_quant");
++    m->stages = (int)js_int(d, js_get(d, eq, "stages"), 3);
++    m->vec_dim = (int)js_int(d, js_get(d, eq, "vec_dim"), 8);
++    m->cb_entries = (int)js_int(d, js_get(d, eq, "entries"), 256);
++    m->index_bits = (int)js_int(d, js_get(d, eq, "index_bits"), 8);
++    if (m->stages < 1 || m->stages > 8 || m->vec_dim < 1 || m->vec_dim > 64 ||
++        m->cb_entries < 1 || m->cb_entries > 256)
++        return fail("expert_quant is out of range");
++    if (m->index_bits != 8 &&
++        (m->index_bits != 6 || m->stages != 4 || m->cb_entries != 64))
++        return fail("expert_quant index_bits is unsupported");
++    return 0;
++}
++
++/* Bank metadata for every sparse layer, validated and recorded without
++ * opening a descriptor. The expert path is the next promotion; what this
++ * has to guarantee now is that a container missing its experts, or
++ * declaring a record size that does not divide, fails at open rather than
++ * at the first routed token. */
++static int safe_bank_file(const char *name)
++{
++    return name[0] && !strchr(name, '/') && !strchr(name, '\\') &&
++           strcmp(name, ".") && strcmp(name, "..");
++}
++
++static int load_bank_meta(waste_model *m, const js_doc *d,
++                          const waste_inkling_config *c)
++{
++    /* An array, one entry per sparse layer, ascending — the shape the
++     * planner already reads the first record size out of. The Kimi path
++     * keys an object by layer number; Inkling does not need that freedom
++     * and it costs a way for a container to be missing a layer without
++     * saying so, because a short array is short and a sparse object is
++     * merely quiet. */
++    const int layers = js_get(d, 0, "layers");
++    const int n = js_size(d, layers);
++    const int want = c->n_layers - c->dense_layers;
++    if (js_at(d, layers, 0) < 0 && n > 0)
++        return fail("`layers` is not an array");
++    if (n != want)
++        return fail("`layers` does not carry one bank per sparse layer");
++    for (int i = 0; i < n; i++) {
++        const int L = c->dense_layers + i;
++        const int e = js_at(d, layers, i);
++        char file[128];
++        const int64_t experts = js_int(d, js_get(d, e, "experts"), 0);
++        const int64_t bytes = js_int(d, js_get(d, e, "bytes"), 0);
++        const int64_t base = js_int(d, js_get(d, e, "codebook_base"), 0);
++        const int lt = js_get(d, e, "layer");
++        js_str(d, js_get(d, e, "file"), file, sizeof file);
++        if (lt >= 0 && js_int(d, lt, -1) != L)
++            return fail("expert banks are not in ascending sparse-layer order");
++        if (!safe_bank_file(file))
++            return fail("an expert bank names no file, or names one outside the container");
++        if (experts != c->n_routed_experts || bytes <= 0 ||
++            bytes % experts != 0 || base < 0 || base > (1 << 24))
++            return fail("expert bank geometry does not match the config");
++        m->bank[L].n_experts = (int)experts;
++        m->bank[L].cb_base = (int)base;
++        m->bank[L].rec_bytes = bytes / experts;
++    }
++    return 0;
++}
++
++/* One row of scratch for whichever tensors stayed on disk, sized from the
++ * widest of them. The Kimi tail does the same thing further down its own
++ * load; this path does not run that tail, and without the buffers the two
++ * vocabulary tables have nowhere to land. */
++static int alloc_row_scratch(waste_model *m)
++{
++    size_t rb = 0, sb = 0;
++    for (int i = 0; i < m->n_tensors; i++) {
++        const waste_tensor *t = &m->t[i];
++        if (!t->on_disk || !t->group) continue;
++        const int ng = (t->shape[t->ndim - 1] + t->group - 1) / t->group;
++        if (t->rowbytes > rb) rb = t->rowbytes;
++        if ((size_t)ng > sb) sb = (size_t)ng;
++    }
++    if (!rb) return 0;
++    m->embrow = (int8_t *)malloc(rb);
++    m->embsc = (uint16_t *)malloc(sb * sizeof(uint16_t));
++    return m->embrow && m->embsc ? 0 : -1;
++}
++
++int waste_inkling_container_load(waste_model *m, const char *dir,
++                                 const js_doc *d, int ctx_tokens)
++{
++    waste_inkling_container *c;
++    int rc;
++
++    if (!m || !dir || !d) return -2;
++    waste_inkling_container_free(m);
++
++    {   /* Canonical names carry no prefix. A container that declares one
++         * is describing tensors this binding would not find, and a lookup
++         * silently one prefix short is exactly the failure the Kimi loader
++         * documents having had. */
++        char prefix[64];
++        js_str(d, js_get(d, 0, "tensor_prefix"), prefix, sizeof prefix);
++        if (prefix[0])
++            return fail("tensor_prefix is set; Inkling tensor names are canonical");
++    }
++
++    c = (waste_inkling_container *)calloc(1, sizeof *c);
++    if (!c) return -1;
++    c->m = m;
++    m->inkling = c;
++
++    {
++        const int cfg_tok = waste_inkling_manifest_config_token(d);
++        if (cfg_tok < 0 || waste_inkling_manifest_config(d, cfg_tok, &c->cfg))
++            return fail("config is missing a required dimension or out of range");
++        if (ctx_tokens < 1 || ctx_tokens > c->cfg.max_context)
++            return fail("requested context exceeds the model maximum");
++        mirror_config(m, d, cfg_tok, &c->cfg);
++    }
++
++    if ((rc = load_expert_quant(m, d))) return rc;
++    if ((rc = load_bank_meta(m, d, &c->cfg))) return rc;
++
++    if (waste_trunk_load(m, dir, d, js_get(d, 0, "trunk")) < 0) return -1;
++    if (m->n_tensors < 1) return fail("the trunk declares no tensors");
++    if (alloc_row_scratch(m)) return -1;
++
++    /* Views over what the trunk loader produced. A quantized matrix has no
++     * float pointer and binds non-resident; everything else must be
++     * resident F32 and the binding says so by name if it is not. */
++    c->views = (waste_inkling_tensor_view *)calloc((size_t)m->n_tensors,
++                                                   sizeof *c->views);
++    if (!c->views) return -1;
++    c->nviews = (size_t)m->n_tensors;
++    for (int i = 0; i < m->n_tensors; i++) {
++        const waste_tensor *t = &m->t[i];
++        c->views[i].name = t->name;
++        c->views[i].ndim = t->ndim;
++        for (int k = 0; k < 4; k++) c->views[i].shape[k] = t->shape[k];
++        c->views[i].data = t->on_disk ? NULL : t->data;
++    }
++
++    {   /* The two vocabulary tables, read one row per token. Either width
++         * is accepted — quantized and left on disk, which is what a real
++         * container stores, or F32 and resident, which is what a small one
++         * does — and the planner excludes them from the resident floor
++         * under exactly the same condition. */
++        const waste_tensor *embed = find_unique(m, "inkling.embed");
++        const waste_tensor *unembed = find_unique(m, "inkling.unembed");
++        if (!embed || !unembed)
++            return fail("the embedding or unembedding table is missing or duplicated");
++        c->embed.m = c->unembed.m = m;
++        c->embed.t = embed;
++        c->unembed.t = unembed;
++        if (waste_inkling_bind_weights_ex_backend(
++                &c->bound, &c->cfg, c->views, c->nviews,
++                embed->data && !embed->on_disk ? NULL : container_row_get, &c->embed,
++                unembed->data && !unembed->on_disk ? NULL : container_row_get, &c->unembed,
++                1))
++            return fail("canonical tensors do not bind to the Inkling model");
++    }
++
++    /* Resolve every matrix the backend may be asked for. Binding accepted a
++     * NULL data pointer for these; this is where that permission is paid
++     * for, by proving the bytes are actually here and reachable. A tensor
++     * the trunk loader skipped would otherwise reach waste_matmul_t, which
++     * answers a missing tensor with a vector of zeros — a wrong token
++     * rather than an error, which is the whole failure mode this port
++     * exists to refuse. */
++    for (int L = 0; L < c->cfg.n_layers; L++) {
++        const int sparse = L >= c->cfg.dense_layers;
++        for (int k = 0; k < IK_MAT_COUNT; k++) {
++            const waste_inkling_matrix_kind kind = (waste_inkling_matrix_kind)k;
++            const int dense_only = kind == WASTE_IK_MAT_DENSE_GATE ||
++                                   kind == WASTE_IK_MAT_DENSE_UP ||
++                                   kind == WASTE_IK_MAT_DENSE_DOWN;
++            const int sparse_only = kind == WASTE_IK_MAT_ROUTER || shared_kind(kind);
++            if ((dense_only && sparse) || (sparse_only && !sparse)) continue;
++            char name[128];
++            if (matrix_name(name, sizeof name, L, kind)) return -1;
++            const waste_tensor *t = find_unique(m, name);
++            if (!t || t->on_disk || (!t->data && !t->q))
++                return fail("a layer matrix is missing, duplicated, or was not loaded");
++            c->matrix[L][k] = t;
++        }
++        c->backend[L].matvec = container_matvec;
++        c->backend[L].ctx = c;
++    }
++
++    return 0;
++}
++
++void waste_inkling_container_free(waste_model *m)
++{
++    waste_inkling_container *c;
++    if (!m || !m->inkling) return;
++    c = (waste_inkling_container *)m->inkling;
++    free(c->views);
++    free(c);
++    m->inkling = NULL;
++}
++
++int waste_inkling_container_present(const waste_model *m)
++{
++    return m && m->inkling ? 1 : 0;
++}
++
++const waste_inkling_config *waste_inkling_container_config(const waste_model *m)
++{
++    return m && m->inkling
++         ? &((const waste_inkling_container *)m->inkling)->cfg : NULL;
++}
++
++const waste_inkling_bound_weights *waste_inkling_container_weights(
++    const waste_model *m)
++{
++    return m && m->inkling
++         ? &((const waste_inkling_container *)m->inkling)->bound : NULL;
++}
++
++const waste_inkling_matrix_backend *waste_inkling_container_backends(
++    const waste_model *m)
++{
++    return m && m->inkling
++         ? ((const waste_inkling_container *)m->inkling)->backend : NULL;
++}
+diff --git a/src/inkling_container.h b/src/inkling_container.h
+new file mode 100644
+index 0000000..d7c130c
+--- /dev/null
++++ b/src/inkling_container.h
+@@ -0,0 +1,89 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++#ifndef WASTE_INKLING_CONTAINER_H
++#define WASTE_INKLING_CONTAINER_H
++
++#include "inkling_bind.h"
++#include "inkling_config.h"
++#include "json.h"
++#include "model.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Open a public Inkling container into `m`.
++ *
++ * This is the loader half of the promotion the planner started: the guard in
++ * waste_model_load() becomes a branch, and an Inkling manifest reaches an
++ * Inkling config build and an Inkling tensor binding instead of a refusal.
++ * What it does NOT do is execute — the expert cache and the forward path are
++ * separate promotions and stay refused, so a model this returns is one that
++ * has been placed in memory, not one that has produced a token.
++ *
++ * The container is the ordinary WASTE one: manifest.json for geometry,
++ * trunk.bin for the named tensors at their declared offsets and widths, and
++ * one expert bank per sparse layer. Nothing is read that format v0 does not
++ * already define. `d` is the already-parsed manifest, `dir` the directory it
++ * came from, `ctx_tokens` the context the caller asked for.
++ *
++ * Returns 0, -1 for an I/O failure, or -2 for a manifest this build cannot
++ * read. On failure the model is left for waste_model_free() to clean up,
++ * which is upstream's convention here and not an oversight: the load
++ * allocates tensors before it can discover the manifest is wrong, and
++ * freeing only the caller's struct is how a bad manifest used to cost tens
++ * of gigabytes. Nothing bound is usable — waste_inkling_container_weights()
++ * returns a zeroed table until the whole load has succeeded.
++ */
++int waste_inkling_container_load(waste_model *m, const char *dir,
++                                 const js_doc *d, int ctx_tokens);
++
++/* Release whatever the load attached. Safe on a Kimi model, on a partially
++ * built one, and twice. */
++void waste_inkling_container_free(waste_model *m);
++
++/* Nonzero when `m` holds an Inkling container. The forward path tests this
++ * to refuse; nothing else should need it. */
++int waste_inkling_container_present(const waste_model *m);
++
++/* The bound geometry, or NULL. */
++const waste_inkling_config *waste_inkling_container_config(const waste_model *m);
++
++/* What the load produced: the weight table the model step takes, and one
++ * matrix backend per layer for the matrices that stayed in their stored
++ * width. These are the two arguments waste_inkling_model_step_backend()
++ * wants, which is why they are exposed in this shape rather than a shape
++ * convenient for anything else — the promotion that runs a token consumes
++ * them unchanged, and until then the suite drives them directly so the
++ * row reader and the quantized matvec are exercised rather than merely
++ * compiled. NULL when `m` holds no Inkling container. */
++const waste_inkling_bound_weights *waste_inkling_container_weights(
++    const waste_model *m);
++const waste_inkling_matrix_backend *waste_inkling_container_backends(
++    const waste_model *m);
++
++/* --- defined by src/model.c, declared here because this is who they are for.
++ *
++ * Both are the loader's own machinery, exposed rather than copied. trunk.bin
++ * is one format with one set of offsets, scale tables and packed widths; a
++ * second reader for it in Inkling code would be a second thing to keep in
++ * step with the converter, and the first divergence would show up as wrong
++ * numbers rather than as a build failure. */
++
++/* Read the manifest's `trunk` array into m->t, exactly as the Kimi path
++ * does. Returns 0 or -1. */
++int waste_trunk_load(waste_model *m, const char *dir, const js_doc *d,
++                     int trunk);
++
++/* One row of any trunk tensor as f32 — resident or left on disk, at
++ * whatever width it is stored. waste_embed_row is this operation bound to
++ * Kimi's embedding name; Inkling's two tables are named differently and
++ * there is no reason for a second unpacker. Returns 0 or -1. */
++int waste_trunk_row_f32(waste_model *m, const waste_tensor *t, long row,
++                        int cols, float *dst);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
 diff --git a/src/inkling_layer.c b/src/inkling_layer.c
 new file mode 100644
 index 0000000..29aca44
@@ -2863,6 +3460,184 @@ index 0000000..8a48fef
 +#endif
 +#endif
 \ No newline at end of file
+diff --git a/src/inkling_manifest.c b/src/inkling_manifest.c
+new file mode 100644
+index 0000000..d3e4345
+--- /dev/null
++++ b/src/inkling_manifest.c
+@@ -0,0 +1,128 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++/*
++ * inkling_manifest.c — the manifest's `config` object, read once.
++ *
++ * This used to live inside the planner, which was fine while planning was
++ * the only public capability Inkling had. It is not any more: the loader
++ * builds the same geometry from the same object, and two readers of one
++ * schema is how a container gets planned as one model and opened as
++ * another. So the reader moved to the seam between them and neither owns
++ * it.
++ *
++ * No manifest schema is invented here. Every field read below already
++ * exists in format v0.
++ */
++
++#include "inkling_manifest.h"
++
++#include <string.h>
++
++/* Read an integer that must be present and positive. */
++static int req_int(const js_doc *d, int obj, const char *key, int *out)
++{
++    const int tok = js_get(d, obj, key);
++    if (tok < 0) return -1;
++    const int64_t v = js_int(d, tok, 0);
++    if (v <= 0 || v > 0x7fffffff) return -1;
++    *out = (int)v;
++    return 0;
++}
++
++/* Read an integer that may be absent, in which case the default stands. */
++static void opt_int(const js_doc *d, int obj, const char *key, int *out)
++{
++    const int tok = js_get(d, obj, key);
++    if (tok >= 0) {
++        const int64_t v = js_int(d, tok, *out);
++        if (v >= 0 && v <= 0x7fffffff) *out = (int)v;
++    }
++}
++
++static int req_num(const js_doc *d, int obj, const char *key, float *out)
++{
++    const int tok = js_get(d, obj, key);
++    if (tok < 0) return -1;
++    const double v = js_num(d, tok, 0.0);
++    if (!(v > 0.0) || v > 1e30) return -1;
++    *out = (float)v;
++    return 0;
++}
++
++int waste_inkling_manifest_config_token(const js_doc *d)
++{
++    if (!d) return -1;
++    const int cfg = js_get(d, 0, "config");
++    const int nested = js_get(d, cfg, "text_config");
++    return nested >= 0 ? nested : cfg;
++}
++
++int waste_inkling_manifest_config(const js_doc *d, int cfg,
++                                  waste_inkling_config *out)
++{
++    waste_inkling_config_args a;
++    int local_ids[WASTE_INKLING_MAX_LAYERS];
++    int n_local = 0;
++
++    if (!d || cfg < 0 || !out) return -1;
++    memset(&a, 0, sizeof a);
++    if (req_int(d, cfg, "num_hidden_layers", &a.n_layers) ||
++        req_int(d, cfg, "hidden_size", &a.hidden) ||
++        req_int(d, cfg, "vocab_size", &a.vocab) ||
++        req_int(d, cfg, "model_max_length", &a.max_context) ||
++        req_int(d, cfg, "num_attention_heads", &a.global_heads) ||
++        req_int(d, cfg, "num_key_value_heads", &a.global_kv_heads) ||
++        req_int(d, cfg, "head_dim", &a.global_head_dim) ||
++        req_int(d, cfg, "sliding_window_size", &a.sliding_window) ||
++        req_int(d, cfg, "d_rel", &a.d_rel) ||
++        req_int(d, cfg, "rel_extent", &a.rel_extent) ||
++        req_int(d, cfg, "sconv_kernel_size", &a.conv_kernel) ||
++        req_int(d, cfg, "dense_intermediate_size", &a.dense_intermediate) ||
++        req_int(d, cfg, "intermediate_size", &a.moe_intermediate) ||
++        req_int(d, cfg, "n_routed_experts", &a.n_routed_experts) ||
++        req_int(d, cfg, "num_experts_per_tok", &a.top_k) ||
++        req_int(d, cfg, "n_shared_experts", &a.n_shared_experts) ||
++        req_num(d, cfg, "rms_norm_eps", &a.rms_eps) ||
++        req_num(d, cfg, "route_scale", &a.route_scale) ||
++        req_num(d, cfg, "logits_mup_width_multiplier", &a.logits_width_multiplier))
++        return -1;
++
++    /* The sliding-window tower may restate the head geometry; when it does
++     * not, it shares the global values. Absent is not the same as zero, so
++     * these are seeded before the optional read. */
++    a.local_heads = a.global_heads;
++    a.local_kv_heads = a.global_kv_heads;
++    a.local_head_dim = a.global_head_dim;
++    opt_int(d, cfg, "swa_num_attention_heads", &a.local_heads);
++    opt_int(d, cfg, "swa_num_key_value_heads", &a.local_kv_heads);
++    opt_int(d, cfg, "swa_head_dim", &a.local_head_dim);
++
++    a.unpadded_vocab = a.vocab;
++    opt_int(d, cfg, "unpadded_vocab_size", &a.unpadded_vocab);
++    opt_int(d, cfg, "dense_mlp_idx", &a.dense_layers);
++    opt_int(d, cfg, "log_scaling_n_floor", &a.log_scaling_n_floor);
++    {
++        const int tok = js_get(d, cfg, "log_scaling_alpha");
++        if (tok >= 0) {
++            const double v = js_num(d, tok, 0.0);
++            if (v < 0.0 || v > 1e30) return -1;
++            a.log_scaling_alpha = (float)v;
++        }
++    }
++
++    {
++        const int arr = js_get(d, cfg, "local_layer_ids");
++        const int n = js_size(d, arr);
++        if (n > WASTE_INKLING_MAX_LAYERS) return -1;
++        for (int i = 0; i < n; i++) {
++            const int64_t v = js_int(d, js_at(d, arr, i), -1);
++            if (v < 0 || v >= a.n_layers) return -1;
++            local_ids[n_local++] = (int)v;
++        }
++    }
++    a.local_layer_ids = local_ids;
++    a.n_local_layers = n_local;
++
++    return waste_inkling_config_build(out, &a) ? -1 : 0;
++}
+diff --git a/src/inkling_manifest.h b/src/inkling_manifest.h
+new file mode 100644
+index 0000000..96f8ac5
+--- /dev/null
++++ b/src/inkling_manifest.h
+@@ -0,0 +1,38 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++#ifndef WASTE_INKLING_MANIFEST_H
++#define WASTE_INKLING_MANIFEST_H
++
++#include "inkling_config.h"
++#include "json.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* The `config` object of a WASTE container manifest, or -1.
++ *
++ * The converter flattens the release's text config into `config` and keeps
++ * the multimodal wrapper under `_outer`, exactly as the K3 path does; a raw
++ * release config with a nested `text_config` is also accepted. Both the
++ * planner and the loader have to resolve it the same way, or one of them
++ * plans a different model from the one the other opens.
++ */
++int waste_inkling_manifest_config_token(const js_doc *d);
++
++/* Build the geometry contract from that object.
++ *
++ * Every dimension is required and no default stands in for a missing one:
++ * a config this build cannot read has to be an error rather than a plausible
++ * model. Validation — divisibility, bounds, duplicate local-layer ids, top_k
++ * against the routed count — belongs to waste_inkling_config_build(), and
++ * nothing here second-guesses it. Returns 0, or -1.
++ */
++int waste_inkling_manifest_config(const js_doc *d, int cfg_tok,
++                                  waste_inkling_config *out);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
 diff --git a/src/inkling_model.c b/src/inkling_model.c
 new file mode 100644
 index 0000000..98a13a1
@@ -4191,10 +4966,10 @@ index 0000000..1cddb62
 +#endif
 diff --git a/src/inkling_public.c b/src/inkling_public.c
 new file mode 100644
-index 0000000..05a97c6
+index 0000000..d118be1
 --- /dev/null
 +++ b/src/inkling_public.c
-@@ -0,0 +1,251 @@
+@@ -0,0 +1,141 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -4221,39 +4996,10 @@ index 0000000..05a97c6
 +
 +#include <string.h>
 +
++#include "arch.h"
 +#include "inkling_config.h"
++#include "inkling_manifest.h"
 +#include "json.h"
-+
-+/* Read an integer that must be present and positive. */
-+static int req_int(const js_doc *d, int obj, const char *key, int *out)
-+{
-+    const int tok = js_get(d, obj, key);
-+    if (tok < 0) return -1;
-+    const int64_t v = js_int(d, tok, 0);
-+    if (v <= 0 || v > 0x7fffffff) return -1;
-+    *out = (int)v;
-+    return 0;
-+}
-+
-+/* Read an integer that may be absent, in which case the default stands. */
-+static void opt_int(const js_doc *d, int obj, const char *key, int *out)
-+{
-+    const int tok = js_get(d, obj, key);
-+    if (tok >= 0) {
-+        const int64_t v = js_int(d, tok, *out);
-+        if (v >= 0 && v <= 0x7fffffff) *out = (int)v;
-+    }
-+}
-+
-+static int req_num(const js_doc *d, int obj, const char *key, float *out)
-+{
-+    const int tok = js_get(d, obj, key);
-+    if (tok < 0) return -1;
-+    const double v = js_num(d, tok, 0.0);
-+    if (!(v > 0.0) || v > 1e30) return -1;
-+    *out = (float)v;
-+    return 0;
-+}
 +
 +static int add64(uint64_t *dst, uint64_t v)
 +{
@@ -4269,93 +5015,6 @@ index 0000000..05a97c6
 +    return 0;
 +}
 +
-+/* The vocabulary tables stay on disk and are read one row per token, so they
-+ * are not part of the resident floor. Inkling keeps *both* of them row-backed
-+ * — the embedding and the independent unembedding — which is one table more
-+ * than the Kimi path leaves out. */
-+static int row_backed(const char *name)
-+{
-+    const size_t n = strlen(name);
-+    static const char *tails[] = { ".embed", ".unembed",
-+                                   "embed_tokens.weight", "unembed.weight" };
-+    for (size_t i = 0; i < sizeof tails / sizeof tails[0]; i++) {
-+        const size_t t = strlen(tails[i]);
-+        if (n >= t && memcmp(name + n - t, tails[i], t) == 0) return 1;
-+    }
-+    return 0;
-+}
-+
-+static waste_status plan_config(const js_doc *d, int cfg,
-+                                waste_inkling_config *out)
-+{
-+    waste_inkling_config_args a;
-+    int local_ids[WASTE_INKLING_MAX_LAYERS];
-+    int n_local = 0;
-+
-+    memset(&a, 0, sizeof a);
-+    if (req_int(d, cfg, "num_hidden_layers", &a.n_layers) ||
-+        req_int(d, cfg, "hidden_size", &a.hidden) ||
-+        req_int(d, cfg, "vocab_size", &a.vocab) ||
-+        req_int(d, cfg, "model_max_length", &a.max_context) ||
-+        req_int(d, cfg, "num_attention_heads", &a.global_heads) ||
-+        req_int(d, cfg, "num_key_value_heads", &a.global_kv_heads) ||
-+        req_int(d, cfg, "head_dim", &a.global_head_dim) ||
-+        req_int(d, cfg, "sliding_window_size", &a.sliding_window) ||
-+        req_int(d, cfg, "d_rel", &a.d_rel) ||
-+        req_int(d, cfg, "rel_extent", &a.rel_extent) ||
-+        req_int(d, cfg, "sconv_kernel_size", &a.conv_kernel) ||
-+        req_int(d, cfg, "dense_intermediate_size", &a.dense_intermediate) ||
-+        req_int(d, cfg, "intermediate_size", &a.moe_intermediate) ||
-+        req_int(d, cfg, "n_routed_experts", &a.n_routed_experts) ||
-+        req_int(d, cfg, "num_experts_per_tok", &a.top_k) ||
-+        req_int(d, cfg, "n_shared_experts", &a.n_shared_experts) ||
-+        req_num(d, cfg, "rms_norm_eps", &a.rms_eps) ||
-+        req_num(d, cfg, "route_scale", &a.route_scale) ||
-+        req_num(d, cfg, "logits_mup_width_multiplier", &a.logits_width_multiplier))
-+        return WASTE_E_FORMAT;
-+
-+    /* The sliding-window tower may restate the head geometry; when it does
-+     * not, it shares the global values. Absent is not the same as zero, so
-+     * these are seeded before the optional read. */
-+    a.local_heads = a.global_heads;
-+    a.local_kv_heads = a.global_kv_heads;
-+    a.local_head_dim = a.global_head_dim;
-+    opt_int(d, cfg, "swa_num_attention_heads", &a.local_heads);
-+    opt_int(d, cfg, "swa_num_key_value_heads", &a.local_kv_heads);
-+    opt_int(d, cfg, "swa_head_dim", &a.local_head_dim);
-+
-+    a.unpadded_vocab = a.vocab;
-+    opt_int(d, cfg, "unpadded_vocab_size", &a.unpadded_vocab);
-+    opt_int(d, cfg, "dense_mlp_idx", &a.dense_layers);
-+    opt_int(d, cfg, "log_scaling_n_floor", &a.log_scaling_n_floor);
-+    {
-+        const int tok = js_get(d, cfg, "log_scaling_alpha");
-+        if (tok >= 0) {
-+            const double v = js_num(d, tok, 0.0);
-+            if (v < 0.0 || v > 1e30) return WASTE_E_FORMAT;
-+            a.log_scaling_alpha = (float)v;
-+        }
-+    }
-+
-+    {
-+        const int arr = js_get(d, cfg, "local_layer_ids");
-+        const int n = js_size(d, arr);
-+        if (n > WASTE_INKLING_MAX_LAYERS) return WASTE_E_FORMAT;
-+        for (int i = 0; i < n; i++) {
-+            const int64_t v = js_int(d, js_at(d, arr, i), -1);
-+            if (v < 0 || v >= a.n_layers) return WASTE_E_FORMAT;
-+            local_ids[n_local++] = (int)v;
-+        }
-+    }
-+    a.local_layer_ids = local_ids;
-+    a.n_local_layers = n_local;
-+
-+    /* The builder is the validator: divisibility, bounds, duplicate local
-+     * ids, top_k against the routed count. Nothing here second-guesses it. */
-+    if (waste_inkling_config_build(out, &a)) return WASTE_E_FORMAT;
-+    return WASTE_OK;
-+}
-+
 +waste_status waste_inkling_plan_memory_json(const char *manifest_json,
 +                                            uint32_t ctx_tokens,
 +                                            waste_memplan *out)
@@ -4363,21 +5022,18 @@ index 0000000..05a97c6
 +    js_doc d;
 +    waste_inkling_config cfg;
 +    waste_inkling_memory mem;
-+    waste_status st;
 +
 +    if (!manifest_json || !out || ctx_tokens == 0) return WASTE_E_ARG;
 +    if (js_parse(&d, manifest_json) < 0) return WASTE_E_FORMAT;
 +
 +    {
-+        /* The converter flattens the release's text config into `config`,
-+         * with the multimodal wrapper kept under `_outer`, exactly as K3
-+         * does. A nested text_config is accepted for a raw release config. */
-+        int cfg_tok = js_get(&d, 0, "config");
-+        const int nested = js_get(&d, cfg_tok, "text_config");
-+        if (nested >= 0) cfg_tok = nested;
-+        if (cfg_tok < 0) { js_free(&d); return WASTE_E_FORMAT; }
-+        st = plan_config(&d, cfg_tok, &cfg);
-+        if (st != WASTE_OK) { js_free(&d); return st; }
++        /* The same reader the loader uses, so a container cannot be planned
++         * as one model and opened as another. */
++        const int cfg_tok = waste_inkling_manifest_config_token(&d);
++        if (cfg_tok < 0 || waste_inkling_manifest_config(&d, cfg_tok, &cfg)) {
++            js_free(&d);
++            return WASTE_E_FORMAT;
++        }
 +    }
 +
 +    if (ctx_tokens > (uint32_t)cfg.max_context) { js_free(&d); return WASTE_E_ARG; }
@@ -4391,14 +5047,23 @@ index 0000000..05a97c6
 +    out->scratch_bytes = mem.decode_scratch_bytes;
 +
 +    {   /* Resident trunk: every stored tensor except the two the engine
-+         * reads one row at a time. */
++         * reads one row at a time.
++         *
++         * "Reads one row at a time" is a property of the loader, not of the
++         * name alone: it leaves a vocabulary table on disk when the table is
++         * quantized, which is what a real container stores, and materializes
++         * an F32 one because there is no row unpacker for F32 on disk. The
++         * exclusion carries the same condition, so the floor this reports is
++         * the resident set the load actually produces rather than the one a
++         * naming convention implies. */
 +        const int trunk = js_get(&d, 0, "trunk");
 +        const int n = js_size(&d, trunk);
 +        for (int i = 0; i < n; i++) {
 +            const int e = js_at(&d, trunk, i);
 +            char name[160];
 +            js_str(&d, js_get(&d, e, "name"), name, sizeof name);
-+            if (row_backed(name)) continue;
++            const int64_t fmt = js_int(&d, js_get(&d, e, "fmt"), 0);
++            if (fmt != 0 && waste_arch_row_backed(name)) continue;
 +            const int64_t bytes = js_int(&d, js_get(&d, e, "bytes"), 0);
 +            if (bytes < 0 || add64(&out->trunk_bytes, (uint64_t)bytes)) {
 +                js_free(&d);
@@ -5584,55 +6249,187 @@ index 0000000..715830e
 +#endif
 +#endif
 diff --git a/src/model.c b/src/model.c
-index 51ef35b..05b7e53 100644
+index 51ef35b..73efeae 100644
 --- a/src/model.c
 +++ b/src/model.c
-@@ -22,6 +22,7 @@
+@@ -22,7 +22,9 @@
  #include <fcntl.h>
  #include <unistd.h>          /* MinGW ships one too: open/close/lseek */
  
 +#include "arch.h"
  #include "crc32.h"
++#include "inkling_container.h"
  #include "ecache.h"
  #include "json.h"
-@@ -1013,6 +1014,23 @@ int waste_model_load(waste_model *m, const char *dir, int kv_cap,
+ #include "platform.h"
+@@ -613,7 +615,16 @@ static int load_trunk(waste_model *m, const char *dir, const js_doc *d, int trun
+              * row is read per token. Keeping 1.11 GB resident to touch 7 KB
+              * of it is a bad trade against the expert cache, so leave it on
+              * disk and pread the row. */
+-            if (strstr(t->name, "embed_tokens.weight")) {
++            /* Inkling names its two vocabulary tables differently and has
++             * two of them, the embedding and an independent unembedding.
++             * Same trade either way: one row per token is read out of a
++             * table that would otherwise be the largest resident tensor in
++             * the container. The architecture test keeps the wider name
++             * rule off the Kimi path entirely, and waste_inkling_plan_
++             * memory_json leaves out exactly what this leaves on disk. */
++            if (strstr(t->name, "embed_tokens.weight") ||
++                (waste_arch_classify(m->cfg.arch) == WASTE_ARCH_INKLING &&
++                 waste_arch_row_backed(t->name))) {
+                 t->on_disk = 1;
+                 t->file_off = off;
+                 t->file_scale_off = soff;
+@@ -668,6 +679,65 @@ static int load_trunk(waste_model *m, const char *dir, const js_doc *d, int trun
+     return 0;
+ }
+ 
++/* The one claim this build has not earned.
++ *
++ * An Inkling container now loads: its geometry is built, its tensors are
++ * bound, and the byte counts the planner reported are the ones the load
++ * produced. None of that is a claim about what a token is. The forward
++ * pass further down is Kimi's, and running an Inkling model through it
++ * would produce output — which is the failure mode worth refusing, because
++ * wrong tokens look exactly like right ones. */
++static int inkling_refuses(const waste_model *m, const char *what)
++{
++    if (!waste_inkling_container_present(m)) return 0;
++    fprintf(stderr,
++            "waste: Inkling container loaded, but %s is not integrated in "
++            "this build\n", what);
++    return 1;
++}
++
++/* The Inkling container reads the same trunk.bin — same offsets, same scale
++ * tables, same packed widths — so it reads it through the same function.
++ * Declared in inkling_container.h, which is who it is for. */
++int waste_trunk_load(waste_model *m, const char *dir, const js_doc *d,
++                     int trunk)
++{
++    return load_trunk(m, dir, d, trunk);
++}
++
++/* One row of any trunk tensor as f32. waste_embed_row is this bound to
++ * Kimi's embedding name and its token clamp; Inkling has two tables under
++ * other names, and a second unpacker for the same bytes is a second thing
++ * to get wrong. Out-of-range rows are refused rather than clamped: the
++ * caller here is a bound weight table, not a user-supplied token. */
++int waste_trunk_row_f32(waste_model *m, const waste_tensor *t, long row,
++                        int cols, float *dst)
++{
++    if (!m || !t || !dst || cols < 1 || row < 0 || t->ndim < 2) return -1;
++    if (t->shape[t->ndim - 1] != cols) return -1;
++    if ((size_t)row >= t->n / (size_t)cols) return -1;
++    if (!t->on_disk) {
++        if (!t->data && !t->q) return -1;
++        waste_deq_row(t, row, cols, dst);
++        return 0;
++    }
++    if (!t->group || !m->embrow || !m->embsc) return -1;
++    {   /* trunk_row lands the row in the model's scratch; deq_row unpacks
++         * whatever width it is at. Reading it as a one-row tensor keeps
++         * the unpacking in one place rather than repeating the bit
++         * arithmetic for a third time. */
++        const int8_t *q; const uint16_t *sc;
++        waste_tensor one = *t;
++        trunk_row(m, t, row, &q, &sc);
++        one.data = NULL;
++        one.q = (int8_t *)q;
++        one.qs = (uint16_t *)sc;
++        one.on_disk = 0;
++        waste_deq_row(&one, 0, cols, dst);
++    }
++    return 0;
++}
++
+ static int tensor_matrix_ok(const waste_model *m, const char *name, int rows, int cols)
+ {
+     const waste_tensor *t = waste_find(m, name);
+@@ -1013,6 +1083,26 @@ int waste_model_load(waste_model *m, const char *dir, int kv_cap,
          }
      }
  
-+    /* The public loader is still Kimi-specific. Recognize Inkling before
-+     * Kimi config parsing or tensor binding so a plausible set of dimensions
-+     * cannot select the wrong forward path. The private Inkling runtime is
-+     * promoted only after official-weight parity and public schema review. */
++    /* Recognize Inkling before Kimi config parsing or tensor binding, so a
++     * plausible set of dimensions cannot select the wrong forward path.
++     *
++     * This used to be the refusal. It is now the branch: the Inkling side
++     * builds its own geometry contract and binds its own tensors, and
++     * everything below — Kimi's config, its expert banks, its scratch — is
++     * skipped rather than fed a container it would misread. What has not
++     * been promoted is execution, and that refusal moved to where it
++     * belongs, at the step. */
 +    {
 +        char arch[64];
 +        js_str(&d, js_get(&d, 0, "arch"), arch, sizeof arch);
 +        if (waste_arch_classify(arch) == WASTE_ARCH_INKLING) {
-+            fprintf(stderr,
-+                    "waste: Inkling container recognized, but this build "
-+                    "has no integrated public Inkling forward path\n");
++            const int rc = waste_inkling_container_load(m, dir, &d, kv_cap);
 +            js_free(&d);
 +            free(src);
-+            return -3;                       /* -> WASTE_E_UNSUPPORTED */
++            return rc;
 +        }
 +    }
 +
      {
          int cfg = js_get(&d, 0, "config");
          /* The converter flattens K3's nested text_config into `config` and
+@@ -1402,6 +1492,8 @@ void waste_model_free(waste_model *m)
+      * clean shutdown and a read on a descriptor that has been closed and
+      * possibly reused. */
+     waste_ecache_io_stop(&m->cache);
++    /* Before the tensors: the container holds views into them. */
++    waste_inkling_container_free(m);
+ 
+     /* Reachable on a partially-built model now that waste_open frees what
+      * a failed load left behind, so nothing here may assume the load got
+@@ -3556,6 +3648,7 @@ const float *waste_model_prefill(waste_model *m, const int *tokens, int n,
+ {
+     const waste_config *c = &m->cfg;
+     const int hid = c->hidden;
++    if (inkling_refuses(m, "the Inkling forward path")) return NULL;
+     if (n <= 0) return m->logits;
+     if (n == 1) return waste_model_step(m, tokens[0], pos0, NULL);
+     dump_pos0 = pos0;
+@@ -3698,6 +3791,7 @@ const float *waste_model_prefill(waste_model *m, const int *tokens, int n,
+ 
+ const float *waste_model_step(waste_model *m, int token, int pos, int *routed)
+ {
++    if (inkling_refuses(m, "the Inkling forward path")) return NULL;
+     dump_pos0 = pos;
+     const waste_config *c = &m->cfg;
+     const int hid = c->hidden;
+diff --git a/src/model.h b/src/model.h
+index 13352a4..60605ba 100644
+--- a/src/model.h
++++ b/src/model.h
+@@ -199,6 +199,12 @@ typedef struct {
+      * counter are the only things it writes. Everything else it touches —
+      * the bank table, the expert shapes, `verify` — is fixed at load. */
+     pthread_mutex_t fetch_mu;
++    /* An Inkling container's config, bound weights and matrix backends.
++     * Opaque here — src/inkling_container.c owns the layout, and every
++     * Inkling-specific branch in this file is `if (m->inkling)`. NULL on a
++     * Kimi-family container, which is every container the forward pass
++     * below knows how to run. */
++    void *inkling;
+ } waste_model;
+ 
+ /* Everything the load needs that is not in the container. These are
 diff --git a/src/waste.c b/src/waste.c
-index b59cbf6..c7e7845 100644
+index b59cbf6..5b95029 100644
 --- a/src/waste.c
 +++ b/src/waste.c
-@@ -22,6 +22,8 @@
+@@ -22,6 +22,9 @@
  #endif
  #include <time.h>
  
 +#include "arch.h"
++#include "inkling_container.h"
 +#include "inkling_public.h"
  #include "json.h"
  #include "memory.h"
  #include "model.h"
-@@ -175,6 +177,26 @@ waste_status waste_plan_memory(const char *model_path, uint32_t ctx_tokens,
+@@ -175,6 +178,26 @@ waste_status waste_plan_memory(const char *model_path, uint32_t ctx_tokens,
      js_doc d;
      if (js_parse(&d, src) < 0) { free(src); return WASTE_E_FORMAT; }
  
@@ -5659,7 +6456,7 @@ index b59cbf6..c7e7845 100644
      memset(out, 0, sizeof *out);
  
      /* trunk: sum the tensor payloads as they are stored, minus the ones the
-@@ -496,7 +518,8 @@ waste_status waste_open(const char *model_path, const waste_cfg *cfg_in,
+@@ -496,7 +519,8 @@ waste_status waste_open(const char *model_path, const waste_cfg *cfg_in,
               * on K3 that is tens of gigabytes lost to one bad manifest. */
              waste_model_free(&c->m);
              free(c);
@@ -5669,6 +6466,56 @@ index b59cbf6..c7e7845 100644
          }
      }
      /* Before the warm, which reads records too. The load already applied
+@@ -746,10 +770,26 @@ const char *waste_error_detail(const waste_ctx *c)
+     return (c && c->detail[0]) ? c->detail : NULL;
+ }
+ 
++/* An Inkling container opens — the plan is real, the tensors are bound, and
++ * `info` describes what is actually held. It does not run: the forward pass
++ * is Kimi's, and a promotion that let it produce tokens from these weights
++ * would be a claim no measurement in this repository supports yet. The
++ * model layer refuses too; this is the same refusal with the status code
++ * the caller can act on, and a detail line saying which half is missing. */
++static int inkling_unsupported(waste_ctx *c)
++{
++    if (!waste_inkling_container_present(&c->m)) return 0;
++    snprintf(c->detail, sizeof c->detail,
++             "Inkling container loaded; the public forward path is not "
++             "integrated in this build");
++    return 1;
++}
++
+ waste_status waste_eval(waste_ctx *c, const int32_t *tokens, size_t n,
+                         const float **logits_out, size_t *vocab_out)
+ {
+     if (!c || !tokens || !n) return WASTE_E_ARG;
++    if (inkling_unsupported(c)) return WASTE_E_UNSUPPORTED;
+     { const waste_status st = check_ids(c, tokens, n); if (st) return st; }
+     /* Refused before anything is written, so a prompt that does not fit
+      * leaves the conversation as it was rather than half-prefilled. */
+@@ -875,6 +915,7 @@ waste_status waste_generate(waste_ctx *c, const int32_t *prompt, size_t n,
+                             waste_token_cb cb, void *user)
+ {
+     if (!c || !prompt || !n) return WASTE_E_ARG;
++    if (inkling_unsupported(c)) return WASTE_E_UNSUPPORTED;
+     { const waste_status st = check_ids(c, prompt, n); if (st) return st; }
+     /* The prompt has to fit before a single expert is read for it. One
+      * position is kept back so there is somewhere to put the first
+@@ -1028,7 +1069,13 @@ waste_status waste_model_get_info(const waste_ctx *c, waste_model_info *out)
+         const waste_tensor *t = &c->m.t[i];
+         if (plen && strncmp(t->name, cf->prefix, plen) != 0) continue;
+         trunk += (uint64_t)t->n;
+-        if (!strstr(t->name, "embed_tokens.weight")) trunk_active += (uint64_t)t->n;
++        /* Inkling has two of these and calls them something else. Counting
++         * them as active reports 1.6 billion parameters a token never
++         * touches, on a model whose whole claim is 12 billion of them. */
++        if (!strstr(t->name, "embed_tokens.weight") &&
++            !(waste_inkling_container_present(&c->m) &&
++              waste_arch_row_backed(t->name)))
++            trunk_active += (uint64_t)t->n;
+     }
+ 
+     out->params_total  = pe * (uint64_t)cf->n_experts * moe_layers + trunk;
 diff --git a/tests/data/inkling-small-config.json b/tests/data/inkling-small-config.json
 new file mode 100644
 index 0000000..9022854
@@ -5761,7 +6608,7 @@ index 0000000..062dd86
 +  "source": "official Hugging Face release, verified 2026-08-01"
 +}
 diff --git a/tests/run.sh b/tests/run.sh
-index cf35765..1d9b77d 100755
+index cf35765..8954dd4 100755
 --- a/tests/run.sh
 +++ b/tests/run.sh
 @@ -53,6 +53,20 @@ else
@@ -5785,7 +6632,7 @@ index cf35765..1d9b77d 100755
  # ---------------------------------------------------------------- unit ----
  head_ "kernels vs the reference implementations"
  
-@@ -790,6 +804,73 @@ PYFV
+@@ -790,6 +804,121 @@ PYFV
          no "format_version not enforced (rc=$rc rc2=$rc2)"
      fi
  
@@ -5807,15 +6654,17 @@ index cf35765..1d9b77d 100755
 +    # defaulting its way to a number, so `plan` prints no FLOOR line.
 +    if [ "$plan_rc" -ne 0 ] && [ "$info_rc" -ne 0 ] && [ "$load_rc" -ne 0 ] &&
 +       ! printf '%s' "$plan_out" | grep -q "FLOOR" &&
-+       printf '%s' "$load_out" | grep -q "no integrated public Inkling"; then
++       printf '%s' "$load_out" | grep -q "Inkling container: config"; then
 +        ok "a Kimi container relabelled Inkling is refused by every path"
 +    else
 +        no "Inkling seam on a mislabelled container (plan=$plan_rc info=$info_rc load=$load_rc)"
 +    fi
 +
 +    # A real Inkling manifest plans, because planning is arithmetic over
-+    # declared geometry. It still must not open: a forward path that has
-+    # never run the official weights has not earned a token.
++    # declared geometry. It still must not open — not because Inkling is
++    # refused any more, but because this manifest describes a container
++    # whose bytes are not there: three trunk entries for a 42-layer model
++    # and one expert bank for forty sparse layers.
 +    IB=$(mktemp -d)
 +    python3 - "$IB/manifest.json" <<'PYIB'
 +import json, sys
@@ -5850,10 +6699,56 @@ index cf35765..1d9b77d 100755
 +    rm -rf "$IB"
 +    if [ "$iplan_rc" -eq 0 ] && [ "$ipart_rc" -ne 0 ] && [ "$iload_rc" -ne 0 ] &&
 +       printf '%s' "$iplan_out" | grep -q "FLOOR" &&
-+       printf '%s' "$iload_out" | grep -q "no integrated public Inkling"; then
-+        ok "an Inkling container plans, fails closed on a missing field, and still refuses to load"
++       printf '%s' "$iload_out" | grep -q "one bank per sparse layer"; then
++        ok "an Inkling container plans, fails closed on a missing field, and refuses an incomplete container"
 +    else
 +        no "Inkling planning (plan=$iplan_rc partial=$ipart_rc load=$iload_rc)"
++    fi
++
++    # And a complete one loads. Two containers, one seed, two stored widths:
++    # the f32 side is the oracle, the quantized side exercises the path this
++    # promotion added — matrices that are never materialized and vocabulary
++    # tables that stay on disk. Neither may produce a token.
++    IC=$(mktemp -d)
++    ic_rc=0
++    python3 tools/make_inkling_container.py --out "$IC/f32" --trunk-bits 32 \
++        >/dev/null 2>&1 || ic_rc=1
++    python3 tools/make_inkling_container.py --out "$IC/q8" --trunk-bits 8 \
++        >/dev/null 2>&1 || ic_rc=1
++    python3 tools/make_inkling_container.py --out "$IC/q4" --trunk-bits 4 \
++        >/dev/null 2>&1 || ic_rc=1
++    if [ "$ic_rc" -eq 0 ]; then
++        # Tolerances are relative and stated per stored width: eight bits
++        # agrees to a few thousandths, four to a few hundredths, and a
++        # tolerance that covered both would stop distinguishing rounding
++        # from reading the wrong row.
++        ic_out=$(./test_inkling_container "$IC/f32" "$IC/q8" 0.02 0.03 2>&1); ic_rc=$?
++        ic4_out=$(./test_inkling_container "$IC/f32" "$IC/q4" 0.15 0.25 2>&1); ic4_rc=$?
++        # WASTE_Q8=0 dequantizes the trunk at load, so the same container
++        # binds every matrix resident and the backend is never consulted.
++        # Same answers either way, or one of the two paths is wrong.
++        icq8_out=$(WASTE_Q8=0 ./test_inkling_container "$IC/f32" "$IC/q8" 0.02 0.03 2>&1)
++        icq8_rc=$?
++        icinfo=$(./waste info "$IC/q8" 2>&1); icinfo_rc=$?
++        # A tensor removed from the manifest must fail the binding by name
++        # rather than bind a model with a hole in it.
++        python3 - "$IC/q8/manifest.json" <<'PYID'
++import json, sys
++m = json.load(open(sys.argv[1]))
++m["trunk"] = [t for t in m["trunk"] if t["name"] != "inkling.layer.0.k_sconv"]
++json.dump(m, open(sys.argv[1], "w"))
++PYID
++        icmiss_rc=0; ./waste info "$IC/q8" >/dev/null 2>&1 || icmiss_rc=$?
++    else
++        ic4_rc=1; icq8_rc=1; icinfo_rc=1; icmiss_rc=0; ic_out="generator failed"
++    fi
++    rm -rf "$IC"
++    if [ "$ic_rc" -eq 0 ] && [ "$ic4_rc" -eq 0 ] && [ "$icq8_rc" -eq 0 ] &&
++       [ "$icinfo_rc" -eq 0 ] && [ "$icmiss_rc" -ne 0 ] &&
++       printf '%s' "$icinfo" | grep -q "inkling"; then
++        ok "an Inkling container loads, binds, plans to the byte, and refuses to step"
++    else
++        no "Inkling load (q8=$ic_rc q4=$ic4_rc deq=$icq8_rc info=$icinfo_rc missing=$icmiss_rc) $ic_out"
 +    fi
 +
      if [ -n "${WASTE_SANITIZED:-}" ]; then
@@ -7503,6 +8398,338 @@ index 0000000..de92094
 +
 +if __name__ == "__main__":
 +    unittest.main()
+diff --git a/tests/test_inkling_container.c b/tests/test_inkling_container.c
+new file mode 100644
+index 0000000..b51eff6
+--- /dev/null
++++ b/tests/test_inkling_container.c
+@@ -0,0 +1,326 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++/*
++ * test_inkling_container.c — the public loader, against two containers that
++ * hold the same weights at two widths.
++ *
++ *   ./test_inkling_container <f32-container> <quantized> [row-tol] [matvec-tol]
++ *
++ * Both are written by tools/make_inkling_container.py from one seed, so the
++ * f32 one is the oracle and the quantized one is the thing under test. That
++ * shape is deliberate: what this promotion added is a path where a matrix is
++ * never materialized — it binds with a NULL pointer and reaches the
++ * arithmetic through waste_matmul_t — and the only way to know that path
++ * computes anything is to compare it against the same weights read the
++ * ordinary way.
++ *
++ * It also drives the two vocabulary tables through the row callback the
++ * binding installed. Those are left on disk when quantized, so the f32
++ * container answers from memory and the quantized one from a pread and an
++ * unpack, and they have to agree.
++ *
++ * What it does not do is run a token. That is the next promotion; here the
++ * point is that asking for one is refused.
++ */
++
++#include <math.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "../src/inkling_container.h"
++#include "../src/model.h"
++#include "../src/waste.h"
++
++static int fails;
++
++static void check(int ok, const char *what)
++{
++    if (!ok) {
++        fprintf(stderr, "INKLING CONTAINER: %s\n", what);
++        fails++;
++    }
++}
++
++/* One row of a bound vocabulary table, however it is stored: through the
++ * callback when the load installed one, straight out of the resident table
++ * when it did not. */
++static int vocab_row(const waste_inkling_model_weights *w, int table, int row,
++                     int cols, float *dst)
++{
++    const float *resident = table ? w->unembedding : w->embedding;
++    waste_inkling_row_get_fn get = table ? w->unembedding_get : w->embedding_get;
++    void *ctx = table ? w->unembedding_ctx : w->embedding_ctx;
++    if (get) return get(ctx, row, cols, dst);
++    if (!resident) return -1;
++    memcpy(dst, resident + (size_t)row * cols, (size_t)cols * sizeof(float));
++    return 0;
++}
++
++static float maxdiff(const float *a, const float *b, int n)
++{
++    float worst = 0;
++    for (int i = 0; i < n; i++) {
++        const float d = fabsf(a[i] - b[i]);
++        if (d > worst) worst = d;
++    }
++    return worst;
++}
++
++/* Agreement measured against the reference's own scale.
++ *
++ * An absolute tolerance would have to be rewritten for every stored width —
++ * a four-bit group scale is eighteen times coarser than an eight-bit one —
++ * and a tolerance loose enough for four bits stops telling a rounding
++ * difference from a wrong row. Relative to the reference, rounding stays
++ * around the width's own step while reading the wrong row or the wrong
++ * shared-expert block lands near 1, which is the distinction that matters. */
++static float reldiff(const float *a, const float *b, int n)
++{
++    float scale = 1e-6f;
++    for (int i = 0; i < n; i++) if (fabsf(a[i]) > scale) scale = fabsf(a[i]);
++    return maxdiff(a, b, n) / scale;
++}
++
++static float worst_row, worst_mv;
++
++static void track(float *slot, float v)
++{
++    if (v > *slot) *slot = v;
++}
++
++int main(int argc, char **argv)
++{
++    waste_model ref, cand;
++    waste_load_opts opt;
++
++    if (argc < 3) {
++        fprintf(stderr, "usage: %s <f32-container> <quantized-container> "
++                        "[row-tol] [matvec-tol]\n", argv[0]);
++        return 2;
++    }
++    /* Relative, and the caller's to set, because it is a property of the
++     * stored width rather than of the code under test. */
++    const float row_tol = argc > 3 ? (float)atof(argv[3]) : 0.05f;
++    const float mv_tol = argc > 4 ? (float)atof(argv[4]) : 0.15f;
++    memset(&opt, 0, sizeof opt);
++
++    check(waste_model_load(&ref, argv[1], 4096, &opt) == 0, "f32 container did not load");
++    check(waste_model_load(&cand, argv[2], 4096, &opt) == 0, "quantized container did not load");
++    if (fails) return 1;
++
++    check(waste_inkling_container_present(&ref), "f32 model is not an Inkling container");
++    check(waste_inkling_container_present(&cand), "quantized model is not an Inkling container");
++
++    const waste_inkling_config *rc = waste_inkling_container_config(&ref);
++    const waste_inkling_config *cc = waste_inkling_container_config(&cand);
++    check(rc && cc, "no bound config");
++    if (!rc || !cc) return 1;
++    /* Same source config, so the geometry has to survive both widths
++     * identically — a container whose stored width changed its shape would
++     * mean the loader read a dimension out of the payload. */
++    check(memcmp(rc, cc, sizeof *rc) == 0, "the two containers disagree about geometry");
++    check(rc->n_layers >= 3 && rc->dense_layers >= 1 &&
++          rc->dense_layers < rc->n_layers,
++          "the fixture must carry a dense and a sparse layer");
++
++    const waste_inkling_bound_weights *rw = waste_inkling_container_weights(&ref);
++    const waste_inkling_bound_weights *cw = waste_inkling_container_weights(&cand);
++    const waste_inkling_matrix_backend *rb = waste_inkling_container_backends(&ref);
++    const waste_inkling_matrix_backend *cb = waste_inkling_container_backends(&cand);
++    check(rw && cw && rb && cb, "no bound weights or backends");
++    if (!rw || !cw || !rb || !cb) return 1;
++
++    const int hid = rc->hidden;
++    float *a = (float *)malloc((size_t)hid * sizeof(float));
++    float *b = (float *)malloc((size_t)hid * sizeof(float));
++    check(a && b, "out of memory");
++    if (!a || !b) return 1;
++
++    /* The quantized container leaves both tables on disk; the f32 one keeps
++     * them resident. Neither fact is asserted here — what is asserted is
++     * that the two answers are the same row. */
++    check(cw->model.embedding_get != NULL && cw->model.unembedding_get != NULL,
++          "a quantized vocabulary table was made resident");
++    check(rw->model.embedding != NULL && rw->model.unembedding != NULL,
++          "an f32 vocabulary table was not made resident");
++    for (int t = 0; t < 2; t++) {
++        const int rows = t ? rc->unpadded_vocab : rc->vocab;
++        for (int r = 0; r < rows; r += (rows / 5 > 0 ? rows / 5 : 1)) {
++            check(vocab_row(&rw->model, t, r, hid, a) == 0, "f32 vocabulary row failed");
++            check(vocab_row(&cw->model, t, r, hid, b) == 0, "quantized vocabulary row failed");
++            track(&worst_row, reldiff(a, b, hid));
++            check(reldiff(a, b, hid) < row_tol,
++                  "vocabulary rows disagree beyond quantization");
++        }
++        /* A row past the end of the table is an error, not a clamp: the
++         * caller is a bound weight table, and a silently wrapped row is a
++         * wrong token nobody would ever see reported. */
++        check(vocab_row(&cw->model, t, rows, hid, b) != 0,
++              "a row past the end of a vocabulary table was served");
++    }
++
++    /* Every layer matrix, both widths, against each other — and, on the f32
++     * side, against a plain dot product, so the comparison is anchored to
++     * arithmetic rather than to two backends agreeing with each other. */
++    static const waste_inkling_matrix_kind common[] = {
++        WASTE_IK_MAT_Q, WASTE_IK_MAT_K, WASTE_IK_MAT_V, WASTE_IK_MAT_R,
++    };
++    float *x = (float *)malloc((size_t)hid * sizeof(float));
++    check(x != NULL, "out of memory");
++    if (!x) return 1;
++    for (int i = 0; i < hid; i++) x[i] = (float)((i % 7) - 3) * 0.25f;
++
++    int probed = 0;
++    for (int L = 0; L < rc->n_layers; L++) {
++        const waste_inkling_layer_cfg *lc = &rc->layer[L];
++        for (size_t k = 0; k < sizeof common / sizeof common[0]; k++) {
++            const waste_inkling_matrix_kind kind = common[k];
++            int rows = lc->num_heads * lc->head_dim;
++            if (kind == WASTE_IK_MAT_K || kind == WASTE_IK_MAT_V)
++                rows = lc->num_kv_heads * lc->head_dim;
++            if (kind == WASTE_IK_MAT_R) rows = lc->num_heads * rc->d_rel;
++            float *yr = (float *)calloc((size_t)rows, sizeof(float));
++            float *yc = (float *)calloc((size_t)rows, sizeof(float));
++            check(yr && yc, "out of memory");
++            if (!yr || !yc) return 1;
++            check(rb[L].matvec(rb[L].ctx, L, kind, 0, x, yr, rows, hid) == 0,
++                  "f32 backend refused a matrix it bound");
++            check(cb[L].matvec(cb[L].ctx, L, kind, 0, x, yc, rows, hid) == 0,
++                  "quantized backend refused a matrix it bound");
++            track(&worst_mv, reldiff(yr, yc, rows));
++            check(reldiff(yr, yc, rows) < mv_tol,
++                  "quantized matvec disagrees with the f32 one beyond rounding");
++            {   /* The f32 side against arithmetic written out longhand. */
++                const float *W = kind == WASTE_IK_MAT_Q ? rw->layer[L].wq
++                               : kind == WASTE_IK_MAT_K ? rw->layer[L].wk
++                               : kind == WASTE_IK_MAT_V ? rw->layer[L].wv
++                                                        : rw->layer[L].wr;
++                check(W != NULL, "an f32 layer matrix did not bind resident");
++                if (W) {
++                    float worst = 0;
++                    for (int r = 0; r < rows; r++) {
++                        float acc = 0;
++                        for (int c = 0; c < hid; c++)
++                            acc += W[(size_t)r * hid + c] * x[c];
++                        const float d = fabsf(acc - yr[r]);
++                        if (d > worst) worst = d;
++                    }
++                    check(worst < 1e-4f, "the f32 backend is not a matvec");
++                }
++            }
++            free(yr); free(yc);
++            probed++;
++        }
++        /* Shared experts are one stacked tensor and `index` selects a block.
++         * Getting that offset wrong is silent — it returns another expert's
++         * answer, not an error — so both blocks are compared and required to
++         * differ from each other as well as to match across widths. */
++        if (L >= rc->dense_layers && rc->n_shared_experts > 1) {
++            const int rows = rc->moe_intermediate;
++            float *y0 = (float *)calloc((size_t)rows, sizeof(float));
++            float *y1 = (float *)calloc((size_t)rows, sizeof(float));
++            float *q0 = (float *)calloc((size_t)rows, sizeof(float));
++            check(y0 && y1 && q0, "out of memory");
++            if (!y0 || !y1 || !q0) return 1;
++            check(rb[L].matvec(rb[L].ctx, L, WASTE_IK_MAT_SHARED_GATE, 0, x, y0, rows, hid) == 0 &&
++                  rb[L].matvec(rb[L].ctx, L, WASTE_IK_MAT_SHARED_GATE, 1, x, y1, rows, hid) == 0 &&
++                  cb[L].matvec(cb[L].ctx, L, WASTE_IK_MAT_SHARED_GATE, 1, x, q0, rows, hid) == 0,
++                  "a shared-expert block was refused");
++            /* Self-scaling, so it means the same thing at every stored
++             * width: the two blocks have to be several times further apart
++             * than the width's own rounding, or this comparison could not
++             * have caught a block-offset bug in the first place. */
++            const float agree = reldiff(y1, q0, rows);
++            track(&worst_mv, agree);
++            check(reldiff(y0, y1, rows) > 4.0f * (agree + 1e-3f),
++                  "two shared-expert blocks are not far enough apart to tell "
++                  "a block-offset bug from rounding");
++            check(agree < mv_tol,
++                  "the quantized shared-expert block is not the same block");
++            check(rb[L].matvec(rb[L].ctx, L, WASTE_IK_MAT_SHARED_GATE,
++                               rc->n_shared_experts, x, y0, rows, hid) != 0,
++                  "a shared-expert index past the end was served");
++            free(y0); free(y1); free(q0);
++        }
++        /* A dense layer has no router and a sparse one has no dense MLP.
++         * Asking anyway must be refused rather than answered from whatever
++         * tensor happened to be at that slot. */
++        const waste_inkling_matrix_kind absent =
++            L < rc->dense_layers ? WASTE_IK_MAT_ROUTER : WASTE_IK_MAT_DENSE_GATE;
++        float sink[4];
++        check(cb[L].matvec(cb[L].ctx, L, absent, 0, x, sink, 1, hid) != 0,
++              "a matrix this layer class does not have was served");
++    }
++    check(probed == rc->n_layers * 4, "not every layer was probed");
++
++    /* Out-of-range arguments the caller controls. */
++    float sink[4];
++    check(cb[0].matvec(cb[0].ctx, -1, WASTE_IK_MAT_Q, 0, x, sink, 1, hid) != 0,
++          "a negative layer was served");
++    check(cb[0].matvec(cb[0].ctx, rc->n_layers, WASTE_IK_MAT_Q, 0, x, sink, 1, hid) != 0,
++          "a layer past the end was served");
++    check(cb[0].matvec(cb[0].ctx, 0, WASTE_IK_MAT_Q, 0, x, sink, 1, hid + 1) != 0,
++          "a width the tensor does not have was served");
++
++    /* Plan and load, against each other.
++     *
++     * The planner leaves the two vocabulary tables out of the resident floor
++     * and the loader leaves them on disk, under one shared rule; everything
++     * else it reports is the stored size of a tensor the loader made
++     * resident. That makes the agreement exact rather than approximate, and
++     * exact is worth asserting: a plan that is merely close is how a machine
++     * ends up swapping halfway through a generation.
++     *
++     * WASTE_Q8=0 is the debug switch that dequantizes the whole trunk at
++     * load. It changes the resident set without changing the manifest, so
++     * the equality is not claimed under it. */
++    if (!getenv("WASTE_Q8") || getenv("WASTE_Q8")[0] != '0') {
++        for (int which = 0; which < 2; which++) {
++            const waste_model *m = which ? &cand : &ref;
++            waste_memplan plan;
++            uint64_t resident = 0;
++            check(waste_plan_memory(argv[1 + which], 4096, &plan) == WASTE_OK,
++                  "the planner refused a container the loader accepted");
++            for (int i = 0; i < m->n_tensors; i++) {
++                const waste_tensor *t = &m->t[i];
++                if (t->on_disk) continue;
++                if (t->q) {
++                    const int cols = t->shape[t->ndim - 1];
++                    const uint64_t rows = (uint64_t)(t->n / (size_t)cols);
++                    const uint64_t ng = (uint64_t)((cols + t->group - 1) / t->group);
++                    resident += rows * (uint64_t)t->rowbytes + rows * ng * 2u;
++                } else if (t->data) {
++                    resident += (uint64_t)t->n * 4u;
++                }
++            }
++            check(plan.trunk_bytes == resident,
++                  "the planned resident trunk is not the one the load produced");
++            if (plan.trunk_bytes != resident)
++                fprintf(stderr, "  planned %llu, resident %llu\n",
++                        (unsigned long long)plan.trunk_bytes,
++                        (unsigned long long)resident);
++        }
++    }
++
++    /* The refusal that is the point of this step. */
++    check(waste_model_step(&cand, 0, 0, NULL) == NULL, "an Inkling step produced logits");
++    {
++        const int toks[2] = { 0, 1 };
++        check(waste_model_prefill(&cand, toks, 2, 0) == NULL,
++              "an Inkling prefill produced logits");
++    }
++
++    free(a); free(b); free(x);
++    waste_model_free(&ref);
++    waste_model_free(&cand);
++
++    if (fails) {
++        fprintf(stderr, "INKLING CONTAINER FAIL %d\n", fails);
++        return 1;
++    }
++    printf("INKLING CONTAINER OK worst-row %.4f worst-matvec %.4f "
++           "(tolerances %.3f / %.3f)\n", worst_row, worst_mv, row_tol, mv_tol);
++    return 0;
++}
 diff --git a/tests/test_inkling_expert_bench.py b/tests/test_inkling_expert_bench.py
 new file mode 100644
 index 0000000..521e47e
@@ -22660,3 +23887,331 @@ index 0000000..b73b693
 +
 +if __name__ == "__main__":
 +    raise SystemExit(main())
+diff --git a/tools/make_inkling_container.py b/tools/make_inkling_container.py
+new file mode 100644
+index 0000000..d78c310
+--- /dev/null
++++ b/tools/make_inkling_container.py
+@@ -0,0 +1,322 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 SQLite Cloud, Inc.
++"""Write a synthetic *public* Inkling container.
++
++The converter turns a 495 GiB checkpoint into one of these. That is the right
++way to get a real container and the wrong way to test the loader: nothing in
++CI can spend a datacenter to find out whether an offset was read as the wrong
++width. So this writes a container of the same shape at a geometry that fits in
++a few kilobytes — same manifest schema, same `trunk.bin` layout, same
++canonical tensor names, same quantized widths and scale tables.
++
++It is also the executable half of the format description. If you want to know
++what a public Inkling container is, this file says so in less space than prose
++can, and unlike prose it is checked by the suite that reads what it writes.
++
++The weights are deterministic nonsense. This produces a container that loads,
++plans and binds; it does not produce a model, and nothing downstream should
++read a token out of it.
++
++    python3 tools/make_inkling_container.py --out /tmp/ink --trunk-bits 8
++
++Dependency-free on purpose: it runs in the fast CI tier, where torch does not.
++"""
++
++from __future__ import annotations
++
++import argparse
++import json
++import math
++import struct
++from pathlib import Path
++
++# fmt codes as `trunk[].fmt` records them, matching src/model.c's load_trunk.
++FMT_F32, FMT_Q8G, FMT_Q4G = 0, 2, 3
++
++# The two vocabulary tables the engine reads one row of per token. The loader
++# leaves them on disk when they are quantized and the planner leaves them out
++# of the resident floor under the same condition — see waste_arch_row_backed.
++ROW_BACKED = ("inkling.embed", "inkling.unembed")
++
++# Tensors that must be resident f32 because inkling_bind.c dereferences them
++# directly rather than going through a matrix backend: every norm, bias and
++# scalar, and — less obviously — the short-convolution kernels and the
++# relative-position projection, which are 2-D but are not matmuls.
++def resident_f32(name: str) -> bool:
++    tail = name.rsplit(".", 1)[-1]
++    return tail in (
++        "embed_norm", "final_norm", "input_norm", "post_attention_norm",
++        "q_norm", "k_norm", "rel_proj", "k_sconv", "v_sconv", "attn_sconv",
++        "mlp_sconv", "global_scale", "correction_bias",
++    )
++
++
++class Rng:
++    """A tiny deterministic PRNG, so the container is reproducible byte for
++    byte without pulling in numpy for values nobody interprets."""
++
++    def __init__(self, seed: int) -> None:
++        self.s = seed & 0xFFFFFFFF or 1
++
++    def uniform(self) -> float:
++        self.s = (1103515245 * self.s + 12345) & 0x7FFFFFFF
++        return self.s / 0x7FFFFFFF * 2.0 - 1.0
++
++
++def f32_to_f16_bits(x: float) -> int:
++    """IEEE binary16 with round-to-nearest-even, as the engine's f16_to_f32
++    expects to read back. Group scales are always positive here, so the
++    subnormal and infinity paths exist for completeness rather than use."""
++    if x == 0.0:
++        return 0
++    (bits,) = struct.unpack("<I", struct.pack("<f", x))
++    sign = (bits >> 16) & 0x8000
++    exp = ((bits >> 23) & 0xFF) - 127 + 15
++    man = bits & 0x7FFFFF
++    if exp >= 0x1F:
++        return sign | 0x7C00
++    if exp <= 0:
++        return sign
++    half = sign | (exp << 10) | (man >> 13)
++    if (man & 0x1FFF) > 0x1000 or ((man & 0x1FFF) == 0x1000 and (half & 1)):
++        half += 1
++    return half & 0xFFFF
++
++
++def quantize_rows(values, rows: int, cols: int, group: int, bits: int):
++    """One row-major tensor into the packed payload and its fp16 group scales.
++
++    The layout is the container's, not a convenience: `ng` groups of exactly
++    `group` weights per row, padded past the real width, because that is the
++    stride waste_deq_row indexes with. A tail group holding fewer real values
++    still occupies a whole one.
++    """
++    ng = (cols + group - 1) // group
++    payload = bytearray()
++    scales = bytearray()
++    for r in range(rows):
++        row = values[r * cols:(r + 1) * cols]
++        packed = bytearray()
++        for g in range(ng):
++            chunk = row[g * group:(g + 1) * group]
++            chunk = list(chunk) + [0.0] * (group - len(chunk))
++            peak = max((abs(v) for v in chunk), default=0.0)
++            lim = 127.0 if bits == 8 else 7.0
++            scale = peak / lim if peak > 0 else 1.0
++            scales += struct.pack("<H", f32_to_f16_bits(scale))
++            codes = [max(-int(lim) - (1 if bits == 4 else 0),
++                         min(int(lim), int(round(v / scale)))) for v in chunk]
++            if bits == 8:
++                packed += struct.pack("<%db" % group, *codes)
++            else:
++                # Two weights per byte, low nibble first, stored biased by 8
++                # so the unpacker's `(byte & 0x0F) - 8` recovers the code.
++                for i in range(0, group, 2):
++                    lo = (codes[i] + 8) & 0x0F
++                    hi = (codes[i + 1] + 8) & 0x0F
++                    packed.append(lo | (hi << 4))
++        payload += packed
++    return bytes(payload), bytes(scales), ng
++
++
++class Trunk:
++    """trunk.bin, accumulated tensor by tensor."""
++
++    def __init__(self, group: int) -> None:
++        self.blob = bytearray()
++        self.entries: list[dict] = []
++        self.group = group
++
++    def _place(self, data: bytes) -> int:
++        while len(self.blob) % 64:
++            self.blob.append(0)
++        off = len(self.blob)
++        self.blob += data
++        return off
++
++    def add(self, name: str, shape, values, bits: int) -> None:
++        n = math.prod(shape)
++        assert len(values) == n, name
++        if bits == 32:
++            off = self._place(struct.pack("<%df" % n, *values))
++            self.entries.append({"name": name, "fmt": FMT_F32, "off": off,
++                                 "shape": list(shape), "bytes": n * 4})
++            return
++        cols = shape[-1]
++        rows = n // cols
++        payload, scales, ng = quantize_rows(values, rows, cols, self.group, bits)
++        off = self._place(payload)
++        soff = self._place(scales)
++        self.entries.append({
++            "name": name, "fmt": FMT_Q8G if bits == 8 else FMT_Q4G,
++            "off": off, "shape": list(shape), "group": self.group,
++            "scale_off": soff, "bytes": len(payload) + len(scales),
++        })
++        assert ng * self.group * bits // 8 * rows == len(payload)
++
++
++def build(out: Path, cfg: dict, trunk_bits: int, group: int, seed: int) -> dict:
++    rng = Rng(seed)
++
++    def vals(n: int):
++        return [rng.uniform() for _ in range(n)]
++
++    n_layers = cfg["num_hidden_layers"]
++    hidden = cfg["hidden_size"]
++    dense = cfg["dense_mlp_idx"]
++    local = set(cfg["local_layer_ids"])
++    conv_k = cfg["sconv_kernel_size"]
++    d_rel = cfg["d_rel"]
++    routed, shared = cfg["n_routed_experts"], cfg["n_shared_experts"]
++    moe_inter, dense_inter = cfg["intermediate_size"], cfg["dense_intermediate_size"]
++
++    trunk = Trunk(group)
++
++    def add(name, shape):
++        # A matrix keeps its stored width; everything the binder dereferences
++        # directly has to be f32 whatever --trunk-bits says.
++        bits = 32 if resident_f32(name) else trunk_bits
++        trunk.add(name, shape, vals(math.prod(shape)), bits)
++
++    add("inkling.embed", (cfg["vocab_size"], hidden))
++    add("inkling.embed_norm", (hidden,))
++    add("inkling.final_norm", (hidden,))
++    add("inkling.unembed", (cfg["unpadded_vocab_size"], hidden))
++
++    for i in range(n_layers):
++        is_local = i in local
++        heads = cfg["swa_num_attention_heads"] if is_local else cfg["num_attention_heads"]
++        kv = cfg["swa_num_key_value_heads"] if is_local else cfg["num_key_value_heads"]
++        hd = cfg["swa_head_dim"] if is_local else cfg["head_dim"]
++        extent = cfg["sliding_window_size"] if is_local else cfg["rel_extent"]
++        p = "inkling.layer.%d." % i
++        add(p + "input_norm", (hidden,))
++        add(p + "post_attention_norm", (hidden,))
++        add(p + "q", (heads * hd, hidden))
++        add(p + "k", (kv * hd, hidden))
++        add(p + "v", (kv * hd, hidden))
++        add(p + "r", (heads * d_rel, hidden))
++        add(p + "o", (hidden, heads * hd))
++        add(p + "q_norm", (hd,))
++        add(p + "k_norm", (hd,))
++        add(p + "rel_proj", (d_rel, extent))
++        add(p + "k_sconv", (kv * hd, conv_k))
++        add(p + "v_sconv", (kv * hd, conv_k))
++        add(p + "attn_sconv", (hidden, conv_k))
++        add(p + "mlp_sconv", (hidden, conv_k))
++        if i < dense:
++            add(p + "mlp.gate", (dense_inter, hidden))
++            add(p + "mlp.up", (dense_inter, hidden))
++            add(p + "mlp.down", (hidden, dense_inter))
++            add(p + "mlp.global_scale", (1,))
++        else:
++            add(p + "router.weight", (routed + shared, hidden))
++            add(p + "router.correction_bias", (routed,))
++            add(p + "router.global_scale", (1,))
++            add(p + "shared.gate", (shared, moe_inter, hidden))
++            add(p + "shared.up", (shared, moe_inter, hidden))
++            add(p + "shared.down", (shared, hidden, moe_inter))
++
++    out.mkdir(parents=True, exist_ok=True)
++    (out / "trunk.bin").write_bytes(bytes(trunk.blob))
++
++    # Expert quantization. The records themselves are placeholders sized
++    # exactly as the manifest declares: the loader validates that geometry and
++    # opens nothing, and the promotion that reads them is the next one. Sized
++    # rather than omitted so the container is the right shape on disk.
++    stages, vec_dim, entries, index_block = 3, 8, 256, 16
++    rec_bytes = 4096
++    layers = []
++    for L in range(dense, n_layers):
++        name = "experts-L%d.bin" % L
++        (out / name).write_bytes(b"\0" * (rec_bytes * routed))
++        layers.append({"file": name, "layer": L, "experts": routed,
++                       "bytes": rec_bytes * routed, "codebook_base": 3 * stages * (L - dense)})
++
++    books = 3 * stages * (n_layers - dense)
++    book = bytearray()
++    for _ in range(books):
++        book += b"\0" * 16
++        book += b"".join(struct.pack("<H", f32_to_f16_bits(rng.uniform()))
++                         for _ in range(entries * vec_dim))
++    (out / "codebooks.bin").write_bytes(bytes(book))
++
++    manifest = {
++        "format_version": 0,
++        "arch": "inkling",
++        "tensor_prefix": "",
++        "config": cfg,
++        "expert_quant": {"stages": stages, "vec_dim": vec_dim,
++                         "entries": entries, "index_block": index_block,
++                         "bits_per_weight": 3.0},
++        "trunk": trunk.entries,
++        "layers": layers,
++    }
++    (out / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
++    return manifest
++
++
++TINY = {
++    # Small enough to write in a few hundred kilobytes, wide enough that a
++    # quantized matvec and its f32 reference differ by rounding rather than
++    # by luck. Every layer class the binder distinguishes is present: dense
++    # (0, 1), sparse local (2), sparse global (3).
++    "num_hidden_layers": 4,
++    "hidden_size": 32,
++    "vocab_size": 48,
++    "unpadded_vocab_size": 40,
++    # The CLI defaults to a 4096-token context and both the planner and the
++    # loader refuse one the model cannot hold, so a toy container still has
++    # to declare a real one.
++    "model_max_length": 4096,
++    "num_attention_heads": 4,
++    "num_key_value_heads": 2,
++    "head_dim": 8,
++    "swa_num_attention_heads": 4,
++    "swa_num_key_value_heads": 2,
++    "swa_head_dim": 8,
++    "sliding_window_size": 8,
++    "d_rel": 4,
++    "rel_extent": 16,
++    "sconv_kernel_size": 4,
++    "dense_mlp_idx": 2,
++    "local_layer_ids": [2],
++    "dense_intermediate_size": 64,
++    "intermediate_size": 16,
++    "n_routed_experts": 8,
++    "num_experts_per_tok": 2,
++    "n_shared_experts": 2,
++    "rms_norm_eps": 1e-6,
++    "route_scale": 8.0,
++    "logits_mup_width_multiplier": 16.0,
++    "log_scaling_n_floor": 128000,
++    "log_scaling_alpha": 0.1,
++    "eos_token_id": 11,
++}
++
++
++def main() -> None:
++    ap = argparse.ArgumentParser(description=__doc__,
++                                 formatter_class=argparse.RawDescriptionHelpFormatter)
++    ap.add_argument("--out", required=True, type=Path)
++    ap.add_argument("--trunk-bits", type=int, default=8, choices=(4, 8, 32),
++                    help="stored width of the matrices; 32 keeps them f32")
++    ap.add_argument("--group", type=int, default=8,
++                    help="weights per quantization scale")
++    ap.add_argument("--seed", type=int, default=19)
++    ap.add_argument("--config", type=Path,
++                    help="a text config to use instead of the tiny default")
++    args = ap.parse_args()
++
++    cfg = json.loads(args.config.read_text()) if args.config else dict(TINY)
++    if "text_config" in cfg:
++        cfg = cfg["text_config"]
++    m = build(args.out, cfg, args.trunk_bits, args.group, args.seed)
++    print("%s: %d tensors, %d expert banks, trunk %d bytes"
++          % (args.out, len(m["trunk"]), len(m["layers"]),
++             (args.out / "trunk.bin").stat().st_size))
++
++
++if __name__ == "__main__":
++    main()

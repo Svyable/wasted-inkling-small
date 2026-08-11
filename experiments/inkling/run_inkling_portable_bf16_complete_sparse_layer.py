@@ -9,10 +9,17 @@ public matrix-backend ABI remain unchanged.
 
 The checked-in layer now also contains a promoted BF16_REFERENCE sparse path.
 The retained historical probe still has a different job: independently rebuild
-that policy from the preserved F32 path using its source transforms. During the
-scoped build only, the compatibility adapter below selects the F32 arm from the
-temporary source copy before applying those historical transforms. The checked-
-in production file is never rewritten.
+that sparse policy from the preserved F32 path using its source transforms.
+During the scoped build only, the compatibility adapter below selects the F32
+arm from the temporary source copy before applying those historical transforms.
+The checked-in production file is never rewritten.
+
+Attention is different: its reviewed BF16_REFERENCE policy was already promoted
+before this retained tie-impact probe, and the tie experiment is not an
+attention-policy experiment. Reapplying the old text rewrite to a profile-aware
+attention implementation is both brittle and redundant. The scoped adapter
+therefore verifies that the promoted profile-aware attention contract is present
+and compiles it unchanged in the temporary tree.
 
 Unlike the historical runner, importing this module does not permanently
 rebind the shared composed-MoE implementation. The complete-layer overrides
@@ -62,15 +69,25 @@ _PROFILE_SHARED_DOWN_LEGACY = """                if (apply_matvec(backend, layer
                                  s->branch, NULL, s->gate, hidden, inter)) return -1;
 """
 
+_ATTENTION_PROFILE_MARKERS = (
+    "static void rmsnorm_head_profile(",
+    "const int bf16 = profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE;",
+    "rmsnorm_head_profile(out + (size_t)h * D, q + (size_t)h * D,",
+    "vdst[i] = waste_inkling_bf16_round(v[i]);",
+    "score = waste_inkling_bf16_round(score * dot_scale);",
+    "const float weight = bf16",
+    "oh[d] = waste_inkling_bf16_round(oh[d]);",
+)
+
 
 def _legacy_f32_sparse_source(source: str) -> str:
     """Select the preserved F32 sparse arm from a temporary profile-aware copy.
 
     Historical composed-MoE transforms predate ``BF16_REFERENCE`` and are
-    deliberately anchored to the old F32 sparse block.  Once that BF16 policy
+    deliberately anchored to the old F32 sparse block. Once that BF16 policy
     was promoted into production, the same F32 block moved four spaces deeper
-    under ``else``.  Re-indenting every old anchor would make the evidence
-    depend on the promoted implementation it is meant to reconstruct.
+    under ``else``. Re-indenting every old anchor would make the evidence depend
+    on the promoted implementation it is meant to reconstruct.
 
     Instead, collapse exactly one profile branch in the copied source and feed
     the original F32 body, at its historical indentation, to the old transforms.
@@ -146,6 +163,27 @@ def transform_complete_moe_source(source: str) -> str:
     return _base_transform_moe_source(legacy)
 
 
+def use_promoted_attention_source(source: str) -> str:
+    """Compile the already-promoted BF16 attention policy without rewriting it.
+
+    Tie sensitivity changes only the valid routed-expert subset. Reconstructing
+    an older attention candidate adds no independence to that question, and it
+    became invalid as soon as attention gained a first-class numeric profile.
+    Fail closed unless the profile-aware boundaries the experiment depends on
+    are visibly present in checked-in source.
+    """
+    missing = [marker for marker in _ATTENTION_PROFILE_MARKERS if marker not in source]
+    if missing:
+        raise implementation.ComposedMoeError(
+            "promoted BF16 attention contract is incomplete: " + repr(missing)
+        )
+    if source.count("waste_inkling_attention_step_profile(") != 2:
+        raise implementation.ComposedMoeError(
+            "expected one profile attention definition and one F32 wrapper call"
+        )
+    return source
+
+
 def apply_final_residual_source(source: str) -> str:
     count = source.count(_FINAL_RESIDUAL_OLD)
     if count != 1:
@@ -166,17 +204,20 @@ def complete_sparse_layer_overrides() -> Iterator[None]:
     """Install the complete-layer adapters without leaking module state."""
     original_transform = implementation.transform_aggregation_source
     original_moe_transform = implementation.transform_moe_source
+    original_attention_transform = implementation.transform_attention_source
     original_collector = implementation.ExactWeightCollector
     try:
         implementation.transform_moe_source = transform_complete_moe_source
         implementation.transform_aggregation_source = (
             transform_complete_sparse_layer_source
         )
+        implementation.transform_attention_source = use_promoted_attention_source
         implementation.ExactWeightCollector = composed_runner.ExactWeightCollector
         yield
     finally:
         implementation.transform_moe_source = original_moe_transform
         implementation.transform_aggregation_source = original_transform
+        implementation.transform_attention_source = original_attention_transform
         implementation.ExactWeightCollector = original_collector
 
 

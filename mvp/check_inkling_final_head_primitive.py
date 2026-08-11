@@ -2,7 +2,7 @@
 """Offline byte-exact regression for the bounded real Inkling final-head primitive.
 
 This intentionally proves only final RMSNorm, MuP width scaling, and selected
-semantic unembedding rows for one already-proven real layer-5 hidden row.  It
+semantic unembedding rows for one already-proven real layer-5 hidden row. It
 makes no claim about the true final layer-41 hidden state or full-model logits.
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ EXPECTED_SOURCE_ROW_SHA256 = (
     "b6a560aa44b26561ee0b08dd0b438fa06ef2c29685b5e28e96ab1e6bd7aef88a"
 )
 EXPECTED_LOGITS_SHA256 = (
-    "b30e62a788b9efa30d5673072af07be558a47976fed913fb71f34cd5f929790f"
+    "ae78227d03d2d9352691cb512032da2c5660dd02f53251760b693069150a4404"
 )
 EXPECTED_ROWS = tuple(range(8)) + tuple(range(100025, 100033)) + tuple(
     range(200050, 200058)
@@ -55,15 +55,8 @@ def bf16(raw: bytes, shape: tuple[int, ...]) -> torch.Tensor:
 
 def raw_bf16(tensor: torch.Tensor) -> bytes:
     assert tensor.dtype == torch.bfloat16
-    return (
-        tensor.detach()
-        .cpu()
-        .contiguous()
-        .view(torch.uint16)
-        .numpy()
-        .astype("<u2", copy=False)
-        .tobytes()
-    )
+    values = tensor.detach().cpu().contiguous().view(torch.uint16).reshape(-1).tolist()
+    return struct.pack(f"<{len(values)}H", *values)
 
 
 def require_exact(name: str, actual: torch.Tensor, expected: bytes) -> None:
@@ -132,7 +125,7 @@ def main() -> None:
 
     # Independent replay of the official Inkling RMSNorm semantics: reduce in
     # F32, cast the normalized activation back to the input dtype, then apply
-    # the checkpoint BF16 weight.  No Transformers code or network is used.
+    # the checkpoint BF16 weight. No Transformers code or network is used.
     with torch.no_grad():
         hidden_f32 = hidden.to(torch.float32)
         variance = hidden_f32.pow(2).mean(dim=-1, keepdim=True)

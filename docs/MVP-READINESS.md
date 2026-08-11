@@ -49,6 +49,14 @@ Three boundaries remain between this result and a production implementation:
 3. stateful dense layer 0, global sparse layer 5, cross-layer continuity, final
    normalization, and logits remain unproven under the composed policy.
 
+Boundaries 1-3 as written are the state at that handoff. Since then the layer
+policy has been promoted into checked-in C, dense 0 / sparse 2 / global 5 and
+consecutive transitions have closed (see
+[../PORTING_STATUS.md](../PORTING_STATUS.md)), and the final head is a checked-in
+primitive validated against official head weights on a supplied hidden state.
+The endpoint that remains is the true final-layer hidden state feeding that
+head; nothing yet is a logits claim.
+
 ## Evidence harness
 
 `mvp/inkling_fixture_reference.py` contains the bounded official layer

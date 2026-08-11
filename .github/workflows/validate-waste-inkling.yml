@@ -80,6 +80,7 @@ jobs:
           python3 tests/test_inkling_plan.py
           python3 tests/test_inkling_release.py
           python3 tests/test_inkling_config_c.py
+          python3 tests/test_inkling_final_head_c.py
           python3 tests/test_inkling_fixture.py
           python3 tests/test_inkling_throughput.py
           python3 tests/test_inkling_cache_trace.py

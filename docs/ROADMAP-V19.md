@@ -278,7 +278,12 @@ earlier points are cheaper to debug and later ones inherit their errors:
 6. router: **exact int32 index match first**, then normalized weights
 7. routed + shared expert contributions, joint normalization
 8. per-layer output
-9. `final_norm`, `final_norm_scaled`, `logits`
+9. `final_norm`, `final_norm_scaled`, `logits` — the head primitive behind
+   these three points is now checked in and validated against official head
+   weights on a supplied bounded hidden state
+   (`evidence-inkling-checked-bf16-final-head.yml`). What that gate cannot
+   supply is the vector: step 8 has to reach the real final layer first. Until
+   it does, these points are proven arithmetic on an input, not model logits.
 
 **Watch for.** BF16 semantics, not algebra. Accumulation order, where the
 official implementation rounds to BF16 versus keeps FP32, and

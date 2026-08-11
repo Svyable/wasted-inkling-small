@@ -99,6 +99,11 @@ static const char *matrix_role(waste_inkling_matrix_kind kind)
     case WASTE_IK_MAT_ROUTED_GATE:
     case WASTE_IK_MAT_ROUTED_UP:
     case WASTE_IK_MAT_ROUTED_DOWN:
+    /* The vocabulary projection is not a per-layer trunk matrix either: the
+     * loader binds `inkling.unembed` through a row callback, and the final
+     * head reaches a matrix backend only in the private BF16 evidence
+     * profile. There is no container name to hand back here. */
+    case WASTE_IK_MAT_UNEMBED:
         return NULL;
     }
     return NULL;

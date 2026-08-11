@@ -34,9 +34,6 @@ jobs:
           target_head=$(git rev-parse HEAD)
           test "$target_head" = "b5ee985311ac1775a349a9b7cd4070107d14f093"
 
-          # generate.sh creates a deterministic commit in its temporary clone.
-          # Give both that commit and the independent `git am` verifier a stable
-          # identity rather than depending on runner-global Git configuration.
           git config --global user.name 'WASTE Inkling integration'
           git config --global user.email 'inkling@waste.invalid'
 
@@ -78,7 +75,7 @@ jobs:
           EOF
           sed -i 's/^          //' "$dest/BASELINE"
 
-          sha256sum -c "$dest/SHA256SUMS"
+          (cd "$dest" && sha256sum -c SHA256SUMS)
           test "$(grep '^EXPECTED_APPLIED_TREE=' "$dest/BASELINE" | cut -d= -f2)" = "$tree"
           test "$(grep '^PATCH_SHA256=' "$dest/BASELINE" | cut -d= -f2)" = "$patch_sha"
 

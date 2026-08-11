@@ -34,8 +34,9 @@ static int read_all_at(int fd, uint8_t *dst, size_t n, int64_t off)
     return 0;
 }
 
-static int record_ok(const waste_model *m, int layer, int expert,
-                     const uint8_t *record)
+int waste_inkling_expert_record_validate(const waste_model *m,
+                                          int layer, int expert,
+                                          const uint8_t *record)
 {
     if (!m || !record || layer < 0 || layer >= m->cfg.n_layers) return 0;
     const waste_bank *b = &m->bank[layer];
@@ -90,7 +91,7 @@ static int store_fetch(void *user, int layer, int expert, uint8_t *dst)
         return -1;
     const int64_t off = (int64_t)expert * (int64_t)b->rec_bytes;
     if (read_all_at(b->fd, dst, (size_t)b->rec_bytes, off) ||
-        !record_ok(m, layer, expert, dst))
+        !waste_inkling_expert_record_validate(m, layer, expert, dst))
         return -1;
 
     pthread_mutex_lock(&m->fetch_mu);

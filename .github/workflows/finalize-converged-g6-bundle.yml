@@ -34,6 +34,12 @@ jobs:
           target_head=$(git rev-parse HEAD)
           test "$target_head" = "b5ee985311ac1775a349a9b7cd4070107d14f093"
 
+          # generate.sh creates a deterministic commit in its temporary clone.
+          # Give both that commit and the independent `git am` verifier a stable
+          # identity rather than depending on runner-global Git configuration.
+          git config --global user.name 'WASTE Inkling integration'
+          git config --global user.email 'inkling@waste.invalid'
+
           work="${RUNNER_TEMP}/waste-generated"
           out="${RUNNER_TEMP}/patches"
           tree=$(integration/waste/generate.sh "$work" "$out")
@@ -86,7 +92,5 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git -c user.name='WASTE Inkling integration' \
-              -c user.email='inkling@waste.invalid' \
-              commit -m 'Regenerate converged G6 loader bundle'
+          git commit -m 'Regenerate converged G6 loader bundle'
           git push origin HEAD:agent/converge-g6-loader-with-bf16-main

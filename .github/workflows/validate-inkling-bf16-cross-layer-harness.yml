@@ -72,12 +72,12 @@ jobs:
           assert all(len(row) == 6 for row in archive['layer2_topk_indices'])
           assert len(archive['layer2_topk_weights']) == 8
           assert all(len(row) == 6 for row in archive['layer2_topk_weights'])
-          assert len(archive['layer2_expert_union']) == archive['layer2_expert_union_size'] == 25
+          assert len(archive['layer2_expert_union']) == archive['layer2_expert_union_size'] == 32
           assert sorted({expert for row in archive['layer2_topk_indices'] for expert in row}) == archive['layer2_expert_union']
           parent = archive['stacked_parent']
           assert parent['freshness_mode'] == 'dependency_blobs'
           assert len(parent['dependencies']) == 10
-          print('CROSS_LAYER_ARCHIVE rows=8 topk=6 experts=25 dependencies=10')
+          print('CROSS_LAYER_ARCHIVE rows=8 topk=6 experts=32 dependencies=10')
           PY
 
       - name: Build checked-in BF16 runtime and weight helper

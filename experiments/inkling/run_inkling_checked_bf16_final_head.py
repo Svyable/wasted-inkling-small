@@ -44,6 +44,7 @@ from diagnose_inkling_native_bf16_backend import (
     MatvecCallback,
     native_bfloat16_linear,
 )
+from discover_inkling_router_experts import input_sha256
 from inkling_fixture import FixtureError, load_fixture, UNEMBED_NAME
 from inkling_fixture_reference import (
     FixtureReferenceError,
@@ -301,8 +302,12 @@ def selected_rows_matrix(fixture: Any, rows: list[int]) -> torch.Tensor:
 
 
 def tensor_sha256(value: torch.Tensor, dtype: torch.dtype) -> str:
-    raw = value.detach().to(dtype).cpu().contiguous().numpy().tobytes()
-    return hashlib.sha256(raw).hexdigest()
+    """Hash tensor bytes through the existing NumPy-free evidence helper.
+
+    `Tensor.numpy()` refuses bfloat16 outright, so hashing the completed bytes
+    has to go through the byte view rather than NumPy.
+    """
+    return input_sha256(value.detach(), dtype)
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -331,7 +336,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise FinalHeadEvidenceError(
             f"hidden state must be {hidden} numbers"
         )
+    # Complete the vector to BF16 before either side sees it. The official
+    # module receives a BF16 tensor and widens it internally; handing the C the
+    # unrounded F32 text would compare two different inputs and charge the
+    # difference to the head's policy.
     hidden_state = torch.tensor(values, dtype=torch.float32)
+    hidden_state = hidden_state.to(torch.bfloat16).float()
 
     rows = (sorted(set(int(row) for row in args.vocab_rows.split(",") if row))
             if args.vocab_rows else list(fixture.vocab_rows))

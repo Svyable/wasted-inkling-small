@@ -10,8 +10,8 @@
 - Pinned revision: `21152b5312c653be115f33a8342759064144e281`
 - Exact BF16 reference profile: Linux CPU with `ONEDNN_MAX_CPU_ISA=AVX2`
 - Merged foundation: through PR #68
-- Generated WASTE tree: `67920edcf4f0992729b54efa2a73d2fc2a3ca576`
-- Generated patch SHA-256: `4f4cddf27a15e0aa9598ffe17b9fffbbbd13a7a398d8f4a2295e44571d54cbd2`
+- Generated WASTE tree: `b428f70a6dcbbd0cec7364fe12739474f0b4851e`
+- Generated patch SHA-256: `356d7613fbc5acd7b6fef221617d700e940520bfc748e721a3fc49d4bd8171ff`
 
 ## Proven on `main`
 
@@ -40,9 +40,11 @@ Official-weight gates compile checked-in C unchanged (`source_rewriting=false`).
 `waste_inkling_final_head_profile()` in `inkling/src/inkling_model.c` is the one
 checked-in definition of the head: final RMS normalization, the logits-width
 completion, and the vocabulary projection over an explicit row selection. The
-public F32 step now calls it instead of carrying its own copy, and the single
-RMS normalization policy moved to `inkling_numeric.h` so the layer and the head
-cannot drift.
+public F32 step now calls it instead of carrying its own copy, and the head
+shares the layer's `waste_inkling_rmsnorm_profile()` rather than repeating the
+normalization policy. That function deliberately stays in `inkling_layer.c`:
+the retained evidence transforms rewrite its text in a copied tree, and moving
+it left three harnesses matching nothing.
 
 Both profiles are pinned by `inkling/tests/test_inkling_final_head_c.py`
 against an independent bit-level Python reference — ctypes only, no torch, so

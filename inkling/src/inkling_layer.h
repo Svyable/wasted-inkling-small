@@ -80,6 +80,14 @@ typedef enum {
     WASTE_IK_MAT_UNEMBED
 } waste_inkling_matrix_kind;
 
+/* RMS normalization under a numeric profile. Exposed so the final head shares
+ * the layer's definition instead of carrying a second copy of the policy.
+ * F32 is the original checked-in expression; BF16_REFERENCE is the ordering the
+ * retained official-weight evidence established. */
+void waste_inkling_rmsnorm_profile(float *out, const float *x,
+                                   const float *weight, int n, float eps,
+                                   waste_inkling_numeric_profile profile);
+
 typedef int (*waste_inkling_matvec_fn)(void *ctx, int layer,
     waste_inkling_matrix_kind kind, int index, const float *x, float *out,
     int rows, int cols);

@@ -1,4 +1,4 @@
-From 414da945773779b9a4c666ebc2acf99488e91ed3 Mon Sep 17 00:00:00 2001
+From e9bdd75e4b9617de3f88d0803953d67c2b7689ca Mon Sep 17 00:00:00 2001
 From: WASTE Inkling integration <inkling@waste.invalid>
 Date: Sun, 2 Aug 2026 00:00:00 +0000
 Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
@@ -20,13 +20,13 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  src/inkling_config.h                  | 134 ++++
  src/inkling_container.c               | 448 +++++++++++++
  src/inkling_container.h               |  89 +++
- src/inkling_layer.c                   | 533 +++++++++++++++
- src/inkling_layer.h                   | 201 ++++++
+ src/inkling_layer.c                   | 554 +++++++++++++++
+ src/inkling_layer.h                   | 209 ++++++
  src/inkling_manifest.c                | 128 ++++
  src/inkling_manifest.h                |  38 ++
  src/inkling_model.c                   | 345 ++++++++++
  src/inkling_model.h                   | 145 ++++
- src/inkling_numeric.h                 |  69 ++
+ src/inkling_numeric.h                 |  43 ++
  src/inkling_private.c                 | 791 ++++++++++++++++++++++
  src/inkling_private.h                 |  70 ++
  src/inkling_public.c                  | 141 ++++
@@ -98,7 +98,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/inkling_weights.py              | 369 ++++++++++
  tools/inspect_inkling.py              | 799 ++++++++++++++++++++++
  tools/make_inkling_container.py       | 322 +++++++++
- 94 files changed, 24024 insertions(+), 8 deletions(-)
+ 94 files changed, 24027 insertions(+), 8 deletions(-)
  create mode 100644 PATCH18-HANDOFF.md
  create mode 100644 TEST-RESULTS-P18.txt
  create mode 100644 docs/INKLING.md
@@ -2717,10 +2717,10 @@ index 0000000..d7c130c
 +#endif
 diff --git a/src/inkling_layer.c b/src/inkling_layer.c
 new file mode 100644
-index 0000000..d1b40fd
+index 0000000..268e07f
 --- /dev/null
 +++ b/src/inkling_layer.c
-@@ -0,0 +1,533 @@
+@@ -0,0 +1,554 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -2771,8 +2771,29 @@ index 0000000..d1b40fd
 +                                x, rows, cols, WASTE_INKLING_NUMERIC_F32);
 +}
 +
-+/* The policy itself lives in inkling_numeric.h so that the layer and the final
-+ * head share one definition. This wrapper only keeps the call sites short. */
++/* The one checked-in RMS normalization policy. Deliberately not static and
++ * deliberately still here: the final head calls it so the two cannot drift,
++ * and the retained evidence transforms rewrite this text in a copied tree to
++ * build their F32-with-injected-BF16 probes. */
++void waste_inkling_rmsnorm_profile(float *out, const float *x,
++                                   const float *weight, int n, float eps,
++                                   waste_inkling_numeric_profile profile)
++{
++    double ss = 0.0;
++    for (int i = 0; i < n; i++) ss += (double)x[i] * x[i];
++    const float scale = 1.0f / sqrtf((float)(ss / n) + eps);
++    if (profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE) {
++        /* Retained official-layer ordering: normalize, complete to BF16,
++         * multiply the BF16 weight, then complete the output again. */
++        for (int i = 0; i < n; i++) {
++            const float normalized = waste_inkling_bf16_round(x[i] * scale);
++            out[i] = waste_inkling_bf16_round(normalized * weight[i]);
++        }
++    } else {
++        for (int i = 0; i < n; i++) out[i] = x[i] * scale * weight[i];
++    }
++}
++
 +static void rmsnorm_profile(float *out, const float *x, const float *weight,
 +                            int n, float eps,
 +                            waste_inkling_numeric_profile profile)
@@ -3257,10 +3278,10 @@ index 0000000..d1b40fd
 \ No newline at end of file
 diff --git a/src/inkling_layer.h b/src/inkling_layer.h
 new file mode 100644
-index 0000000..e7c16d7
+index 0000000..6eb7028
 --- /dev/null
 +++ b/src/inkling_layer.h
-@@ -0,0 +1,201 @@
+@@ -0,0 +1,209 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -3342,6 +3363,14 @@ index 0000000..e7c16d7
 +     * in selection order. */
 +    WASTE_IK_MAT_UNEMBED
 +} waste_inkling_matrix_kind;
++
++/* RMS normalization under a numeric profile. Exposed so the final head shares
++ * the layer's definition instead of carrying a second copy of the policy.
++ * F32 is the original checked-in expression; BF16_REFERENCE is the ordering the
++ * retained official-weight evidence established. */
++void waste_inkling_rmsnorm_profile(float *out, const float *x,
++                                   const float *weight, int n, float eps,
++                                   waste_inkling_numeric_profile profile);
 +
 +typedef int (*waste_inkling_matvec_fn)(void *ctx, int layer,
 +    waste_inkling_matrix_kind kind, int index, const float *x, float *out,
@@ -4145,10 +4174,10 @@ index 0000000..539747d
 +#endif
 diff --git a/src/inkling_numeric.h b/src/inkling_numeric.h
 new file mode 100644
-index 0000000..82287e0
+index 0000000..6c5c535
 --- /dev/null
 +++ b/src/inkling_numeric.h
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,43 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Internal numeric execution profiles for the Inkling runtime.
 + *
@@ -4161,7 +4190,6 @@ index 0000000..82287e0
 +#ifndef WASTE_INKLING_NUMERIC_H
 +#define WASTE_INKLING_NUMERIC_H
 +
-+#include <math.h>
 +#include <stdint.h>
 +#include <string.h>
 +
@@ -4190,31 +4218,6 @@ index 0000000..82287e0
 +        memcpy(&value, &bits, sizeof value);
 +    }
 +    return value;
-+}
-+
-+/* The single checked-in RMS normalization policy, shared by every Inkling
-+ * normalization site so the layer and the final head cannot drift apart.
-+ *
-+ * F32 keeps the original checked-in expression exactly.  BF16_REFERENCE is the
-+ * ordering the retained official-weight evidence established: normalize,
-+ * complete to BF16, multiply the BF16 weight, then complete the output again.
-+ * The sum of squares is accumulated in double in both profiles; that is the
-+ * pre-existing behavior and the evidence was gathered against it. */
-+static inline void waste_inkling_rmsnorm_profile(
-+    float *out, const float *x, const float *weight, int n, float eps,
-+    waste_inkling_numeric_profile profile)
-+{
-+    double ss = 0.0;
-+    for (int i = 0; i < n; i++) ss += (double)x[i] * x[i];
-+    const float scale = 1.0f / sqrtf((float)(ss / n) + eps);
-+    if (profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE) {
-+        for (int i = 0; i < n; i++) {
-+            const float normalized = waste_inkling_bf16_round(x[i] * scale);
-+            out[i] = waste_inkling_bf16_round(normalized * weight[i]);
-+        }
-+    } else {
-+        for (int i = 0; i < n; i++) out[i] = x[i] * scale * weight[i];
-+    }
 +}
 +
 +#endif

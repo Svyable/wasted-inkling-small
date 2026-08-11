@@ -77,6 +77,85 @@ class FinalHeadRunnerStructureTest(unittest.TestCase):
                 head.main(argv)
             self.assertEqual(ctx.exception.code, 2)
 
+    def test_end_to_end_on_a_synthetic_head_fixture(self):
+        """The whole runner, on invented weights and the official RMSNorm.
+
+        The official-weight gate needs network and a CRC-verified fixture; this
+        needs neither, so a wiring break -- the ctypes signature, the trace
+        names, the row selection, the BF16 completion of the supplied vector --
+        fails here first and in seconds.
+        """
+        import argparse
+        import hashlib
+        import json
+        import tempfile
+        import zlib
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parents[2]
+        config_raw = (repo / "inkling" / "tests" / "data"
+                      / "inkling-small-config.json").read_bytes()
+        hidden = int(json.loads(config_raw)["text_config"]["hidden_size"])
+        rows = [0, 5, 200057]
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixture = root / "fixture"
+            fixture.mkdir()
+            torch.manual_seed(3)
+            entries = []
+
+            def add(name, tensor, axis0=None):
+                raw = bytes(tensor.to(torch.bfloat16).contiguous()
+                            .view(torch.uint8).reshape(-1).tolist())
+                rel = f"{name.replace('.', '_')}_{axis0}.bin"
+                (fixture / rel).write_bytes(raw)
+                item = {"name": name, "dtype": "BF16",
+                        "kind": "tensor" if axis0 is None else "axis0-slice",
+                        "shape": list(tensor.shape), "bytes": len(raw),
+                        "crc32": zlib.crc32(raw) & 0xFFFFFFFF, "path": rel}
+                if axis0 is not None:
+                    item["axis0"] = axis0
+                entries.append(item)
+
+            add("model.llm.norm.weight", torch.rand(hidden) * 1.5 + 0.2)
+            for row in rows:
+                add("model.llm.unembed.weight", torch.randn(hidden) * 0.05, row)
+            (fixture / "fixture.json").write_text(json.dumps({
+                "format": "inkling-parity-fixture", "version": 1,
+                "model_id": "synthetic", "layers": [], "experts": {},
+                "vocab_rows": rows,
+                "source": {"config_sha256": hashlib.sha256(config_raw).hexdigest(),
+                           "index_sha256": "b" * 64, "revision": "synthetic"},
+                "total_payload_bytes": sum(e["bytes"] for e in entries),
+                "entries": entries,
+            }))
+            (root / "config.json").write_bytes(config_raw)
+            (root / "inputs.json").write_text(
+                json.dumps([(torch.randn(hidden) * 0.7).tolist()]))
+
+            import inkling_c_config
+            c_config = inkling_c_config.normalized_c_layer_config(
+                json.loads(config_raw))
+            (root / "c-config.json").write_text(json.dumps(c_config))
+
+            result = head.run(argparse.Namespace(
+                fixture=str(fixture), model_config=str(root / "config.json"),
+                c_config=str(root / "c-config.json"),
+                hidden_state=str(root / "inputs.json"),
+                hidden_state_origin="synthetic", position=0,
+                vocab_rows="", workdir=str(root), out=None))
+
+        self.assertEqual(result["decision"]["first_boundary"], None)
+        self.assertEqual(result["decision"]["classification"],
+                         "checked_in_bf16_final_head_exact")
+        self.assertEqual(result["selection"]["vocab_rows"], rows)
+        self.assertEqual(len(result["execution"]["backend_calls"]), 1)
+        self.assertIs(result["claims"]["final_model_logits"], False)
+        for point in head.POINTS:
+            self.assertEqual(result["comparison"][point]["raw_exact_fraction"],
+                             1.0, point)
+
     def test_report_never_claims_final_model_logits(self):
         whole = inspect.getsource(head)
         self.assertIn('"final_model_logits": False', whole)

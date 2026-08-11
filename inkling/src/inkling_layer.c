@@ -48,8 +48,29 @@ static int apply_matvec(const waste_inkling_matrix_backend *backend,
                                 x, rows, cols, WASTE_INKLING_NUMERIC_F32);
 }
 
-/* The policy itself lives in inkling_numeric.h so that the layer and the final
- * head share one definition. This wrapper only keeps the call sites short. */
+/* The one checked-in RMS normalization policy. Deliberately not static and
+ * deliberately still here: the final head calls it so the two cannot drift,
+ * and the retained evidence transforms rewrite this text in a copied tree to
+ * build their F32-with-injected-BF16 probes. */
+void waste_inkling_rmsnorm_profile(float *out, const float *x,
+                                   const float *weight, int n, float eps,
+                                   waste_inkling_numeric_profile profile)
+{
+    double ss = 0.0;
+    for (int i = 0; i < n; i++) ss += (double)x[i] * x[i];
+    const float scale = 1.0f / sqrtf((float)(ss / n) + eps);
+    if (profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE) {
+        /* Retained official-layer ordering: normalize, complete to BF16,
+         * multiply the BF16 weight, then complete the output again. */
+        for (int i = 0; i < n; i++) {
+            const float normalized = waste_inkling_bf16_round(x[i] * scale);
+            out[i] = waste_inkling_bf16_round(normalized * weight[i]);
+        }
+    } else {
+        for (int i = 0; i < n; i++) out[i] = x[i] * scale * weight[i];
+    }
+}
+
 static void rmsnorm_profile(float *out, const float *x, const float *weight,
                             int n, float eps,
                             waste_inkling_numeric_profile profile)

@@ -169,7 +169,11 @@ jobs:
         run: |
           set -uo pipefail
           err="${RUNNER_TEMP}/final-head.err"
-          PYTHONPATH=inkling/tools:mvp:experiments/inkling python3 \
+          # Both streams go to the log and to the preserved artifact. An
+          # earlier revision redirected stderr to a file and printed it only on
+          # failure, which is exactly when the log needs it most and exactly
+          # when it turned out to be missing.
+          PYTHONPATH=inkling/tools:mvp:experiments/inkling python3 -X faulthandler \
             experiments/inkling/run_inkling_checked_bf16_final_head.py \
             --fixture "${RUNNER_TEMP}/head-fixture" \
             --model-config "${RUNNER_TEMP}/config.json" \
@@ -179,13 +183,11 @@ jobs:
             --position 0 \
             --workdir "${RUNNER_TEMP}" \
             --out "${RUNNER_TEMP}/final-head.json" \
-            > /dev/null 2> "$err"
-          rc=$?
+            2>&1 | tee "$err"
+          rc="${PIPESTATUS[0]}"
+          echo "FINAL_HEAD_EXIT rc=$rc"
+          ls -l "${RUNNER_TEMP}"/final-head.* || true
           if [ "$rc" -ne 0 ]; then
-            cat "$err" >&2
-            if [ -f "${RUNNER_TEMP}/final-head.json" ]; then
-              cat "${RUNNER_TEMP}/final-head.json" >&2
-            fi
             exit "$rc"
           fi
           python3 - <<'PY'

@@ -132,10 +132,12 @@ at test time. Public dispatch remains out of scope for that promotion.
 The head — final RMS normalization, the logits-width completion, and the
 vocabulary projection — is now one checked-in primitive,
 `waste_inkling_final_head_profile()`, rather than three operations inlined in
-the model step. Its BF16 policy is the same one the layers use: the shared
-`waste_inkling_rmsnorm_profile()` ordering (normalize, complete, multiply the
-BF16 weight, complete again), a width **division** completed to BF16, and a
-projection that only a matrix backend may evaluate.
+the model step. Its BF16 policy is the same one the layers use, by calling the same function:
+`waste_inkling_rmsnorm_profile()` (normalize, complete, multiply the BF16
+weight, complete again), then a width **division** completed to BF16, then a
+projection that only a matrix backend may evaluate. That function stays in
+`inkling_layer.c` because the retained evidence transforms rewrite its text in
+a copied tree; exporting it was the way to share it without a second copy.
 
 The division is worth naming. At the release value 16 a reciprocal multiply
 would agree bit-for-bit, so the choice is invisible in the release numbers and

@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright 2026 SQLite Cloud, Inc.
  */
-#define _POSIX_C_SOURCE 200809L
 #include "inkling_expert_store.h"
 
 #include "crc32.h"
@@ -134,10 +133,10 @@ int waste_inkling_expert_store_open(waste_model *m, const char *dir,
         const int e = js_at(d, layers, i);
         char file[128], path[768];
         js_str(d, js_get(d, e, "file"), file, sizeof file);
+        const int path_n = snprintf(path, sizeof path, "%s/%s", dir, file);
         if (!safe_bank_file(file) || m->bank[L].n_experts <= 0 ||
-            m->bank[L].rec_bytes <= 0 ||
-            snprintf(path, sizeof path, "%s/%s", dir, file) < 0 ||
-            strlen(path) >= sizeof path - 1) {
+            m->bank[L].rec_bytes <= 0 || path_n < 0 ||
+            (size_t)path_n >= sizeof path) {
             close_sparse_banks(m);
             return -1;
         }

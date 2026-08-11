@@ -1,0 +1,36 @@
+name: Check bounded Inkling final-head primitive
+
+on:
+  push:
+    branches:
+      - main
+      - agent/inkling-final-head-primitive
+    paths:
+      - ".github/workflows/inkling-final-head-primitive.yml"
+      - "mvp/check_inkling_final_head_primitive.py"
+      - "tests/fixtures/inkling/final_head_primitive_real/**"
+  pull_request:
+    paths:
+      - ".github/workflows/inkling-final-head-primitive.yml"
+      - "mvp/check_inkling_final_head_primitive.py"
+      - "tests/fixtures/inkling/final_head_primitive_real/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-byte-exact:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      OMP_NUM_THREADS: 1
+      MKL_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+      ONEDNN_MAX_CPU_ISA: AVX2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned numerical runtime
+        run: python3 -m pip install --quiet --break-system-packages 'torch==2.13.0'
+      - name: Replay frozen final-head primitive
+        run: python3 mvp/check_inkling_final_head_primitive.py

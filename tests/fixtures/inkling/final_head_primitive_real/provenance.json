@@ -1,0 +1,117 @@
+{
+  "config_sha256": "dcb5b1d587bce2f1e6b29833d739a724d05b4bfaa2dc1164fbe679330478ba53",
+  "files": {
+    "expected-final-norm-scaled.bf16.bin": {
+      "bytes": 8192,
+      "sha256": "6beeaceb37296808f9389cd43631dacacca10513cc0900177db65c8e5e5457a1"
+    },
+    "expected-final-norm.bf16.bin": {
+      "bytes": 8192,
+      "sha256": "a7e9702219600204a0623ce64fc67bc0ecb30204201b018262a1c6f5223dfd3d"
+    },
+    "expected-selected-logits.bf16.bin": {
+      "bytes": 48,
+      "sha256": "ae78227d03d2d9352691cb512032da2c5660dd02f53251760b693069150a4404"
+    },
+    "final-norm-weight.bf16.bin": {
+      "bytes": 8192,
+      "sha256": "3331352f58aefa3138e13cf9fce4c7d701a5620bb04ba3878afcb34e65bebfa7"
+    },
+    "input-layer5-pos7.bf16.bin": {
+      "bytes": 8192,
+      "sha256": "b6a560aa44b26561ee0b08dd0b438fa06ef2c29685b5e28e96ab1e6bd7aef88a"
+    },
+    "selected-row-ids.u32.bin": {
+      "bytes": 96,
+      "sha256": "9ccb9dae8823f69053755aae322dc598448b654cd37278ff46f0544091082fa2"
+    },
+    "selected-unembed-rows.bf16.bin": {
+      "bytes": 196608,
+      "sha256": "355164bc6294654572fbab116f7f59268a865772202a2a2d1e8a8670ed232cd8"
+    }
+  },
+  "format": "inkling-final-head-primitive-real",
+  "index_sha256": "68b1ab9dade825da1d9d162303f7356167ba2b90fd2c5fdf519e898d45adb0d9",
+  "model_id": "thinkingmachines/Inkling-Small",
+  "network": {
+    "bytes_read": 298717,
+    "requests": 31
+  },
+  "non_claims": [
+    "input is not the true final layer-41 hidden state",
+    "selected semantic rows are not full final-model logits",
+    "padded storage rows outside semantic vocab are not scored",
+    "no public runtime execution is promoted by this fixture"
+  ],
+  "profile": {
+    "logits_mup_width_multiplier": 16.0,
+    "module_dtype": "BF16",
+    "onednn_max_cpu_isa": "AVX2",
+    "rms_eps": 1e-06,
+    "torch": "2.13.0+cu130",
+    "transformers": "5.14.1"
+  },
+  "revision": "21152b5312c653be115f33a8342759064144e281",
+  "source_hidden": {
+    "artifact_id": 9086582184,
+    "artifact_zip_sha256": "17912d4c28ec633ef07443def743716f146e62ffecfab34d73a62dcc851d5351",
+    "claim": "real proven layer-5 output test vector; not the final model hidden state",
+    "full_layer5_output_sha256": "4218f9ff2c97dd409ca5c8e82dec4e4de52a0024f1cb2c8c4fd185a81eb38978",
+    "position": 7,
+    "row_sha256": "b6a560aa44b26561ee0b08dd0b438fa06ef2c29685b5e28e96ab1e6bd7aef88a",
+    "workflow_run_id": 31451503885
+  },
+  "source_tensors": {
+    "final_norm": {
+      "dtype": "BF16",
+      "name": "model.llm.norm.weight",
+      "offset": 17469370444,
+      "shape": [
+        4096
+      ],
+      "shard": "model-00025-of-00032.safetensors",
+      "size": 8192
+    },
+    "unembed": {
+      "dtype": "BF16",
+      "name": "model.llm.unembed.weight",
+      "offset": 12952119332,
+      "row_bytes": 8192,
+      "selected_rows": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        100025,
+        100026,
+        100027,
+        100028,
+        100029,
+        100030,
+        100031,
+        100032,
+        200050,
+        200051,
+        200052,
+        200053,
+        200054,
+        200055,
+        200056,
+        200057
+      ],
+      "semantic_vocab_size": 200058,
+      "shard": "model-00019-of-00032.safetensors",
+      "size": 1646788608,
+      "storage_shape": [
+        201024,
+        4096
+      ],
+      "storage_vocab_size": 201024
+    }
+  },
+  "version": 2
+}

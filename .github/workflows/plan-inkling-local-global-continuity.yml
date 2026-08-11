@@ -62,6 +62,7 @@ jobs:
           import json, os
           from pathlib import Path
           route = json.loads(Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json').read_text())
+          prov = json.loads(Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.provenance.json').read_text())
           plan = json.loads((Path(os.environ['RUNNER_TEMP']) / 'local-global-plan.json').read_text())
           actual = {
               'revision': plan.get('revision'),
@@ -74,6 +75,10 @@ jobs:
               'requests': plan.get('requests'),
           }
           print('LOCAL_GLOBAL_PLAN_ACTUAL ' + json.dumps(actual, sort_keys=True))
+          expected = prov['bound_result']['final_pair_fixture']
+          assert expected['plan_workflow_run_id'] == 31447354335
+          assert expected['plan_artifact_id'] == 9085039143
+          assert expected['plan_artifact_zip_sha256'] == '243b745aa70d43e41d58df71d4fd6bb3a012decbe6e1b1ceaffa530c7e5523ad'
           assert plan['revision'] == route['revision']
           assert plan['config_sha256'] == route['config_sha256']
           assert plan['index_sha256'] == route['index_sha256']
@@ -82,9 +87,9 @@ jobs:
               '4': route['first_layer']['selected_experts'],
               '5': route['second_layer']['selected_experts'],
           }
-          assert plan['entries'] == 178
-          assert plan['payload_bytes'] == 3629546504
-          assert plan['requests'] == 50
+          assert plan['entries'] == expected['entries'] == 164
+          assert plan['payload_bytes'] == expected['payload_bytes'] == 3502541832
+          assert plan['requests'] == expected['requests'] == 50
           print(
               'LOCAL_GLOBAL_FINAL_PLAN '
               f"entries={plan['entries']} payload_bytes={plan['payload_bytes']} "

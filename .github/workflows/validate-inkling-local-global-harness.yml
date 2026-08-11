@@ -1,0 +1,97 @@
+name: Validate Inkling local-global continuity harness
+
+on:
+  pull_request:
+    paths:
+      - "docs/OFFICIAL-INKLING-SMALL-LAYER-PATTERN.json"
+      - "docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json"
+      - "docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.provenance.json"
+      - "experiments/inkling/discover_inkling_local_global_pair_routes.py"
+      - "experiments/inkling/run_inkling_checked_bf16_local_global_pair.py"
+      - "mvp/check_stacked_evidence_freshness.py"
+      - "mvp/port_trace.py"
+      - ".github/workflows/validate-inkling-local-global-harness.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  harness:
+    name: Validate pair provenance, import and checked build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: 1
+      MKL_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+      ONEDNN_MAX_CPU_ISA: AVX2
+      PYTHONPATH: ${{ github.workspace }}/inkling/tools:${{ github.workspace }}/mvp:${{ github.workspace }}/experiments/inkling
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate frozen artifact and semantic freshness before dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            mvp/port_trace.py \
+            mvp/check_stacked_evidence_freshness.py \
+            experiments/inkling/discover_inkling_local_global_pair_routes.py \
+            experiments/inkling/run_inkling_checked_bf16_local_global_pair.py
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          route_bytes = Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json').read_bytes()
+          route = json.loads(route_bytes)
+          prov = json.loads(Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.provenance.json').read_text())
+          pattern = json.loads(Path('docs/OFFICIAL-INKLING-SMALL-LAYER-PATTERN.json').read_text())
+          assert hashlib.sha256(route_bytes).hexdigest() == prov['route_file_sha256'] == 'b56af980cb2bb55a6551edbf5865f12acbb04c462ed4b3bf0bf33162c850a067'
+          assert route['pair'] == pattern['first_local_to_global_pair'] == [4, 5]
+          assert route['first_output_sha256'] == prov['bound_result']['layer4_output_sha256']
+          assert len(route['first_layer']['selected_experts']) == prov['bound_result']['layer4_expert_union_size'] == 37
+          assert len(route['second_layer']['selected_experts']) == prov['bound_result']['layer5_expert_union_size'] == 25
+          assert prov['bound_result']['final_pair_fixture'] == {
+              'entries': 178, 'payload_bytes': 3629546504, 'requests': 50,
+          }
+          print('LOCAL_GLOBAL_ARCHIVE pair=4->5 l4=37 l5=25 final_bytes=3629546504')
+          PY
+          git fetch --no-tags --depth=200 origin \
+            +refs/heads/agent/inkling-cross-layer-continuity:refs/remotes/origin/agent/inkling-cross-layer-continuity
+          PYTHONPATH=mvp python3 mvp/check_stacked_evidence_freshness.py \
+            docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.provenance.json \
+            --parent-ref refs/remotes/origin/agent/inkling-cross-layer-continuity
+
+      - name: Install pinned Python stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            'torch==2.13.0' 'transformers==5.14.1'
+
+      - name: Import pair runner and build checked runtime/helper
+        run: |
+          python3 experiments/inkling/run_inkling_checked_bf16_local_global_pair.py --help >/dev/null
+          python3 - <<'PY'
+          import ctypes, tempfile
+          from pathlib import Path
+          from checked_bf16_profile_collector import (
+              CheckedPostReductionWeightHelper,
+              build_checked_weight_helper,
+          )
+          from run_inkling_checked_bf16_sparse_layer import (
+              build_checked_library,
+              configure_profile_library,
+          )
+          with tempfile.TemporaryDirectory() as directory:
+              root = Path(directory)
+              library, source = build_checked_library(root / 'pair.so')
+              assert source['source_rewriting'] is False
+              lib = ctypes.CDLL(str(library))
+              configure_profile_library(lib)
+              helper = CheckedPostReductionWeightHelper(
+                  build_checked_weight_helper(root / 'weights.so')
+              )
+              assert helper is not None
+          print('LOCAL_GLOBAL_BUILD source_rewriting=false helper=ready')
+          PY

@@ -5,8 +5,8 @@
  *
  * This interface is deliberately below model execution: it opens the bank
  * files already validated by inkling_container.c and returns raw native WEXP
- * records.  No expert is dequantized here and public Inkling stepping remains
- * refused.  The next compute tranche can consume these same cached records
+ * records. No expert is dequantized here and public Inkling stepping remains
+ * refused. The next compute tranche can consume these same cached records
  * through WASTE's native VQ kernels without introducing a second cache or a
  * second on-disk format.
  */
@@ -24,14 +24,22 @@ extern "C" {
 
 /* Open every sparse-layer bank named by the already-validated Inkling
  * manifest and initialize m->cache/m->miss_buf from the caller's normal WASTE
- * load options.  Bank geometry must already be present in m->bank[]. */
+ * load options. Bank geometry must already be present in m->bank[]. */
 int waste_inkling_expert_store_open(waste_model *m, const char *dir,
                                     const js_doc *d,
                                     const waste_load_opts *opt);
 
-/* Return one raw WEXP record through the normal WASTE ecache.  With a zero
+/* Validate the architecture-neutral WEXP contract before a record reaches a
+ * compute kernel: identity, format, codebook, offsets, record geometry, and
+ * (when m->verify is set) the payload CRC. This is also the seam the native
+ * VQ backend will consume in the next tranche. */
+int waste_inkling_expert_record_validate(const waste_model *m,
+                                          int layer, int expert,
+                                          const uint8_t *record);
+
+/* Return one raw WEXP record through the normal WASTE ecache. With a zero
  * cache budget this uses the model's aligned miss buffer, matching the native
- * WASTE path.  The returned pointer remains owned by the model/cache. */
+ * WASTE path. The returned pointer remains owned by the model/cache. */
 const uint8_t *waste_inkling_expert_record_get(waste_model *m,
                                                 int layer, int expert);
 

@@ -82,7 +82,7 @@ jobs:
           archive = json.loads(Path('docs/OFFICIAL-CROSS-LAYER-ROUTES.json').read_text())
           experts = archive['layer2_expert_union']
           assert archive['version'] == 3
-          assert archive['layer2_expert_union_size'] == len(experts) == 25
+          assert archive['layer2_expert_union_size'] == len(experts) == 32
           print('REVISION=' + archive['revision'])
           print('EXPERTS=2:' + ','.join(map(str, experts)))
           PY
@@ -230,7 +230,7 @@ jobs:
           assert result['source']['source_rewriting'] is False
           assert result['positions'] == 8
           assert result['layers'] == [0, 1, 2]
-          assert result['route_archive']['expert_union_size'] == 25
+          assert result['route_archive']['expert_union_size'] == 32
           assert result['route_archive']['official_route_reproduced_before_adapter'] is True
           assert decision['classification'] == 'checked_in_bf16_cross_layer_0_1_2_exact'
           assert decision['first_boundary'] is None

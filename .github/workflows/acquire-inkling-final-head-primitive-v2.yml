@@ -1,6 +1,12 @@
 name: Reproduce bounded Inkling final-head primitive fixture
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/acquire-inkling-final-head-primitive-v2.yml"
+      - "mvp/inkling_release_config.py"
+      - "mvp/inkling_remote_fixture_core.py"
+      - "tests/fixtures/inkling/final_head_primitive_real/**"
   workflow_dispatch:
 
 permissions:
@@ -8,7 +14,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: reproduce-inkling-final-head-primitive
+  group: reproduce-inkling-final-head-primitive-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:

@@ -1,10 +1,10 @@
-From e9bdd75e4b9617de3f88d0803953d67c2b7689ca Mon Sep 17 00:00:00 2001
+From 1cf8df6f2028e750761ab16b20879b40a8c40a11 Mon Sep 17 00:00:00 2001
 From: WASTE Inkling integration <inkling@waste.invalid>
 Date: Sun, 2 Aug 2026 00:00:00 +0000
 Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
 
 ---
- Makefile                              |  25 +-
+ Makefile                              |  29 +-
  PATCH18-HANDOFF.md                    |  59 ++
  TEST-RESULTS-P18.txt                  |  68 ++
  docs/INKLING.md                       | 507 ++++++++++++++
@@ -20,6 +20,8 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  src/inkling_config.h                  | 134 ++++
  src/inkling_container.c               | 448 +++++++++++++
  src/inkling_container.h               |  89 +++
+ src/inkling_expert_store.c            | 208 ++++++
+ src/inkling_expert_store.h            |  57 ++
  src/inkling_layer.c                   | 554 +++++++++++++++
  src/inkling_layer.h                   | 209 ++++++
  src/inkling_manifest.c                | 128 ++++
@@ -37,8 +39,8 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  src/inkling_stage_reader.h            |  59 ++
  src/inkling_wexp.c                    | 369 ++++++++++
  src/inkling_wexp.h                    |  59 ++
- src/model.c                           |  96 ++-
- src/model.h                           |   6 +
+ src/model.c                           | 111 ++-
+ src/model.h                           |  13 +
  src/waste.c                           |  51 +-
  tests/data/inkling-small-config.json  |  69 ++
  tests/data/inkling-small-release.json |  10 +
@@ -53,6 +55,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tests/test_inkling_config_c.py        | 259 +++++++
  tests/test_inkling_container.c        | 326 +++++++++
  tests/test_inkling_expert_bench.py    | 116 ++++
+ tests/test_inkling_expert_store.c     | 166 +++++
  tests/test_inkling_final_head_c.py    | 492 ++++++++++++++
  tests/test_inkling_fixture.py         | 449 +++++++++++++
  tests/test_inkling_io.c               | 256 +++++++
@@ -98,7 +101,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/inkling_weights.py              | 369 ++++++++++
  tools/inspect_inkling.py              | 799 ++++++++++++++++++++++
  tools/make_inkling_container.py       | 322 +++++++++
- 94 files changed, 24027 insertions(+), 8 deletions(-)
+ 97 files changed, 24480 insertions(+), 12 deletions(-)
  create mode 100644 PATCH18-HANDOFF.md
  create mode 100644 TEST-RESULTS-P18.txt
  create mode 100644 docs/INKLING.md
@@ -114,6 +117,8 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100644 src/inkling_config.h
  create mode 100644 src/inkling_container.c
  create mode 100644 src/inkling_container.h
+ create mode 100644 src/inkling_expert_store.c
+ create mode 100644 src/inkling_expert_store.h
  create mode 100644 src/inkling_layer.c
  create mode 100644 src/inkling_layer.h
  create mode 100644 src/inkling_manifest.c
@@ -143,6 +148,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100644 tests/test_inkling_config_c.py
  create mode 100644 tests/test_inkling_container.c
  create mode 100644 tests/test_inkling_expert_bench.py
+ create mode 100644 tests/test_inkling_expert_store.c
  create mode 100644 tests/test_inkling_final_head_c.py
  create mode 100644 tests/test_inkling_fixture.py
  create mode 100644 tests/test_inkling_io.c
@@ -189,10 +195,10 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100644 tools/make_inkling_container.py
 
 diff --git a/Makefile b/Makefile
-index 34a282c..ed28335 100644
+index 34a282c..391aada 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -100,9 +100,13 @@ CFLAGS  += -DVQ_SUPER=$(VQ_SUPER)
+@@ -100,9 +100,14 @@ CFLAGS  += -DVQ_SUPER=$(VQ_SUPER)
  # and then corrupts memory at run time.
  CFLAGS  += -MMD -MP
  
@@ -203,19 +209,21 @@ index 34a282c..ed28335 100644
 +       src/inkling_attention.c src/inkling_layer.c src/inkling_model.c \
 +       src/inkling_bind.c src/inkling_stage_reader.c src/inkling_wexp.c \
 +       src/inkling_qtensor.c src/inkling_private.c src/inkling_manifest.c \
-+       src/inkling_public.c src/inkling_container.c src/kda.c src/backend.c \
-+       src/ecache.c src/version.c src/tokenizer.c src/waste.c src/vq.c \
-+       src/vision.c src/image.c src/crc32.c src/memory.c
++       src/inkling_public.c src/inkling_container.c \
++       src/inkling_expert_store.c src/kda.c src/backend.c src/ecache.c \
++       src/version.c src/tokenizer.c src/waste.c src/vq.c src/vision.c \
++       src/image.c src/crc32.c src/memory.c
  # Match what backend.c tests for. Linux/aarch64 reports "aarch64", which
  # does not contain "arm" — the old findstring left kda_neon.c out of the
  # build while backend.c still emitted the call to it, so the link failed
-@@ -227,12 +231,25 @@ waste$(EXE): cli/main.o libwaste.a
+@@ -227,12 +232,28 @@ waste$(EXE): cli/main.o libwaste.a
  # One list, used by both `test` and `clean`. A stale test binary is one of
  # the two failures tests/run.sh was written to catch, so a binary that
  # `test` builds and `clean` forgets defeats the check meant to notice it.
 -TESTNAMES := test_kda test_container test_forward test_tokenizer test_k3parts \
-+TESTNAMES := test_inkling test_inkling_io test_inkling_container test_kda \
-+             test_container test_forward test_tokenizer test_k3parts \
++TESTNAMES := test_inkling test_inkling_io test_inkling_container \
++             test_inkling_expert_store test_kda test_container \
++             test_forward test_tokenizer test_k3parts \
               test_state test_vision test_image test_memory test_cpus sweep
  TESTBINS  := $(addsuffix $(EXE),$(TESTNAMES))
  
@@ -232,6 +240,8 @@ index 34a282c..ed28335 100644
 +# rather than a handful of translation units, because what it is testing is
 +# that waste_model_load dispatches at all.
 +test_inkling_container$(EXE): tests/test_inkling_container.o libwaste.a
++	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
++test_inkling_expert_store$(EXE): tests/test_inkling_expert_store.o libwaste.a
 +	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
  test_kda$(EXE): tests/test_kda.o libwaste.a
  	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
@@ -2710,6 +2720,283 @@ index 0000000..d7c130c
 + * there is no reason for a second unpacker. Returns 0 or -1. */
 +int waste_trunk_row_f32(waste_model *m, const waste_tensor *t, long row,
 +                        int cols, float *dst);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/src/inkling_expert_store.c b/src/inkling_expert_store.c
+new file mode 100644
+index 0000000..301bbd8
+--- /dev/null
++++ b/src/inkling_expert_store.c
+@@ -0,0 +1,208 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ */
++#include "inkling_expert_store.h"
++
++#include "crc32.h"
++#include "ecache.h"
++#include "platform.h"
++#include "waste_format.h"
++
++#include <limits.h>
++#include <pthread.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <unistd.h>
++
++static int safe_bank_file(const char *name)
++{
++    return name && name[0] && !strchr(name, '/') && !strchr(name, '\\') &&
++           strcmp(name, ".") && strcmp(name, "..");
++}
++
++static int read_all_at(int fd, uint8_t *dst, size_t n, int64_t off)
++{
++    while (n) {
++        const int64_t got = waste_pread(fd, dst, n, off);
++        if (got <= 0 || (uint64_t)got > (uint64_t)n) return -1;
++        dst += (size_t)got;
++        n -= (size_t)got;
++        off += got;
++    }
++    return 0;
++}
++
++int waste_inkling_expert_record_validate(const waste_model *m,
++                                          int layer, int expert,
++                                          const uint8_t *record)
++{
++    if (!m || !record || layer < 0 || layer >= m->cfg.n_layers) return 0;
++    const waste_bank *b = &m->bank[layer];
++    if (expert < 0 || expert >= b->n_experts || b->rec_bytes <= 0) return 0;
++    const size_t rec_bytes = (size_t)b->rec_bytes;
++    if (rec_bytes < sizeof(waste_expert_hdr)) return 0;
++
++    const waste_expert_hdr *h = (const waste_expert_hdr *)record;
++    const int expected_fmt = m->stages == 3 ? WQ_VQ3R
++                           : m->stages == 2 ? WQ_VQ2R : -1;
++    if (expected_fmt < 0 || h->magic != WASTE_MAGIC_EXPERT ||
++        h->layer != (uint16_t)layer || h->expert_id != (uint16_t)expert ||
++        h->fmt != (uint8_t)expected_fmt || h->flags != 0 ||
++        h->codebook_id != (uint16_t)b->cb_base || h->lowrank_id != 0 ||
++        h->reserved0 != 0 || h->reserved1[0] != 0 || h->reserved1[1] != 0 ||
++        h->rec_4k_blocks == 0 ||
++        (size_t)h->rec_4k_blocks * WASTE_ALIGN != rec_bytes)
++        return 0;
++
++    if (!(h->gate_off == sizeof *h && h->gate_off < h->up_off &&
++          h->up_off < h->down_off && h->down_off < h->chan_corr_off &&
++          h->chan_corr_off <= rec_bytes))
++        return 0;
++
++    if (m->cfg.moe_inter <= 0 || m->cfg.hidden <= 0) return 0;
++    const uint64_t scale_rows = (uint64_t)2 * (uint64_t)m->cfg.moe_inter +
++                                (uint64_t)m->cfg.hidden;
++    if (scale_rows > (uint64_t)SIZE_MAX / sizeof(uint16_t)) return 0;
++    const size_t scale_bytes = (size_t)scale_rows * sizeof(uint16_t);
++    if ((size_t)h->chan_corr_off > rec_bytes ||
++        scale_bytes > rec_bytes - (size_t)h->chan_corr_off)
++        return 0;
++    const size_t payload_end = (size_t)h->chan_corr_off + scale_bytes;
++
++    if (m->verify) {
++        const size_t payload_off = sizeof *h;
++        if (payload_end < payload_off ||
++            waste_crc32(record + payload_off, payload_end - payload_off) != h->crc32)
++            return 0;
++    }
++    return 1;
++}
++
++static int store_fetch(void *user, int layer, int expert, uint8_t *dst)
++{
++    waste_model *m = (waste_model *)user;
++    if (!m || !dst || layer < 0 || layer >= m->cfg.n_layers) return -1;
++    const waste_bank *b = &m->bank[layer];
++    if (expert < 0 || expert >= b->n_experts || b->fd < 0 || b->rec_bytes <= 0)
++        return -1;
++    if ((uint64_t)expert > (uint64_t)INT64_MAX / (uint64_t)b->rec_bytes)
++        return -1;
++    const int64_t off = (int64_t)expert * (int64_t)b->rec_bytes;
++    if (read_all_at(b->fd, dst, (size_t)b->rec_bytes, off) ||
++        !waste_inkling_expert_record_validate(m, layer, expert, dst))
++        return -1;
++
++    pthread_mutex_lock(&m->fetch_mu);
++    m->expert_reads++;
++    pthread_mutex_unlock(&m->fetch_mu);
++    return 0;
++}
++
++static void close_sparse_banks(waste_model *m)
++{
++    if (!m) return;
++    for (int L = m->cfg.first_dense; L < m->cfg.n_layers; L++) {
++        if (m->bank[L].fd >= 0) {
++            close(m->bank[L].fd);
++            m->bank[L].fd = -1;
++        }
++    }
++}
++
++int waste_inkling_expert_store_open(waste_model *m, const char *dir,
++                                    const js_doc *d,
++                                    const waste_load_opts *opt)
++{
++    if (!m || !dir || !d || !m->inkling || m->cfg.n_layers <= 0 ||
++        m->cfg.first_dense < 0 || m->cfg.first_dense >= m->cfg.n_layers ||
++        m->miss_buf || m->cache.slot)
++        return -1;
++
++    static const waste_load_opts defaults = { .direct_io = 1 };
++    if (!opt) opt = &defaults;
++    const int layers = js_get(d, 0, "layers");
++    const int n = js_size(d, layers);
++    const int want = m->cfg.n_layers - m->cfg.first_dense;
++    if (n != want || (n > 0 && js_at(d, layers, 0) < 0)) return -1;
++
++    size_t max_rec = 0;
++    m->direct_io = m->want_direct;
++    for (int i = 0; i < n; i++) {
++        const int L = m->cfg.first_dense + i;
++        const int e = js_at(d, layers, i);
++        char file[128], path[768];
++        js_str(d, js_get(d, e, "file"), file, sizeof file);
++        const int path_n = snprintf(path, sizeof path, "%s/%s", dir, file);
++        if (!safe_bank_file(file) || m->bank[L].n_experts <= 0 ||
++            m->bank[L].rec_bytes <= 0 || path_n < 0 ||
++            (size_t)path_n >= sizeof path) {
++            close_sparse_banks(m);
++            return -1;
++        }
++        m->bank[L].fd = waste_expert_bank_open(
++            path, (size_t)m->bank[L].rec_bytes, m->want_direct, &m->direct_io);
++        if (m->bank[L].fd < 0) {
++            close_sparse_banks(m);
++            return -1;
++        }
++        const int64_t actual = waste_file_size(m->bank[L].fd);
++        const uint64_t expected = (uint64_t)m->bank[L].rec_bytes *
++                                  (uint64_t)m->bank[L].n_experts;
++        if (actual < 0 || (uint64_t)actual != expected) {
++            close_sparse_banks(m);
++            return -1;
++        }
++        if ((size_t)m->bank[L].rec_bytes > max_rec)
++            max_rec = (size_t)m->bank[L].rec_bytes;
++    }
++
++    if (!max_rec || waste_ecache_init(&m->cache, opt->cache_bytes, max_rec,
++                                      opt->policy)) {
++        close_sparse_banks(m);
++        return -1;
++    }
++    m->miss_buf = (uint8_t *)waste_dio_alloc(max_rec);
++    if (!m->miss_buf) {
++        waste_ecache_free(&m->cache);
++        close_sparse_banks(m);
++        return -1;
++    }
++    return 0;
++}
++
++const uint8_t *waste_inkling_expert_record_get(waste_model *m,
++                                                int layer, int expert)
++{
++    if (!m || !m->inkling || !m->miss_buf) return NULL;
++    if (m->cache.n_slots > 0)
++        return waste_ecache_get(&m->cache, layer, expert, store_fetch, m);
++
++    if (layer < 0 || layer >= m->cfg.n_layers || expert < 0 ||
++        expert >= m->bank[layer].n_experts)
++        return NULL;
++    m->cache.misses++;
++    m->cache.bytes_read += (size_t)m->bank[layer].rec_bytes;
++    return store_fetch(m, layer, expert, m->miss_buf) == 0 ? m->miss_buf : NULL;
++}
++
++void waste_inkling_expert_hint(waste_model *m, int layer,
++                               const int *experts, int n)
++{
++    if (m && m->inkling && m->cache.n_slots > 0 && experts && n > 0)
++        waste_ecache_hint(&m->cache, layer, experts, n);
++}
++
++const uint8_t *waste_inkling_expert_record_hold(waste_model *m,
++                                                 int layer, int expert)
++{
++    if (!m || !m->inkling || m->cache.n_slots <= 0) return NULL;
++    return waste_ecache_hold(&m->cache, layer, expert, store_fetch, m);
++}
++
++void waste_inkling_expert_release(waste_model *m)
++{
++    if (m && m->inkling && m->cache.n_slots > 0)
++        waste_ecache_release(&m->cache);
++}
+diff --git a/src/inkling_expert_store.h b/src/inkling_expert_store.h
+new file mode 100644
+index 0000000..f3a2742
+--- /dev/null
++++ b/src/inkling_expert_store.h
+@@ -0,0 +1,57 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ *
++ * Inkling routed-expert storage over WASTE's existing bounded expert cache.
++ *
++ * This interface is deliberately below model execution: it opens the bank
++ * files already validated by inkling_container.c and returns raw native WEXP
++ * records. No expert is dequantized here and public Inkling stepping remains
++ * refused. The next compute tranche can consume these same cached records
++ * through WASTE's native VQ kernels without introducing a second cache or a
++ * second on-disk format.
++ */
++#ifndef WASTE_INKLING_EXPERT_STORE_H
++#define WASTE_INKLING_EXPERT_STORE_H
++
++#include <stdint.h>
++
++#include "json.h"
++#include "model.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Open every sparse-layer bank named by the already-validated Inkling
++ * manifest and initialize m->cache/m->miss_buf from the caller's normal WASTE
++ * load options. Bank geometry must already be present in m->bank[]. */
++int waste_inkling_expert_store_open(waste_model *m, const char *dir,
++                                    const js_doc *d,
++                                    const waste_load_opts *opt);
++
++/* Validate the architecture-neutral WEXP contract before a record reaches a
++ * compute kernel: identity, format, codebook, offsets, record geometry, and
++ * (when m->verify is set) the payload CRC. This is also the seam the native
++ * VQ backend will consume in the next tranche. */
++int waste_inkling_expert_record_validate(const waste_model *m,
++                                          int layer, int expert,
++                                          const uint8_t *record);
++
++/* Return one raw WEXP record through the normal WASTE ecache. With a zero
++ * cache budget this uses the model's aligned miss buffer, matching the native
++ * WASTE path. The returned pointer remains owned by the model/cache. */
++const uint8_t *waste_inkling_expert_record_get(waste_model *m,
++                                                int layer, int expert);
++
++/* Existing ecache hint/hold semantics, exposed at the architecture boundary
++ * so routed top-k can issue reads before matrix work begins in a later gate. */
++void waste_inkling_expert_hint(waste_model *m, int layer,
++                               const int *experts, int n);
++const uint8_t *waste_inkling_expert_record_hold(waste_model *m,
++                                                 int layer, int expert);
++void waste_inkling_expert_release(waste_model *m);
 +
 +#ifdef __cplusplus
 +}
@@ -6379,20 +6666,31 @@ index 0000000..715830e
 +#endif
 +#endif
 diff --git a/src/model.c b/src/model.c
-index 51ef35b..73efeae 100644
+index 51ef35b..2df1c8e 100644
 --- a/src/model.c
 +++ b/src/model.c
-@@ -22,7 +22,9 @@
+@@ -22,7 +22,10 @@
  #include <fcntl.h>
  #include <unistd.h>          /* MinGW ships one too: open/close/lseek */
  
 +#include "arch.h"
  #include "crc32.h"
 +#include "inkling_container.h"
++#include "inkling_expert_store.h"
  #include "ecache.h"
  #include "json.h"
  #include "platform.h"
-@@ -613,7 +615,16 @@ static int load_trunk(waste_model *m, const char *dir, const js_doc *d, int trun
+@@ -69,7 +72,8 @@ static char *slurp(const char *path, size_t *len)
+     return b;
+ }
+ 
+-static int bank_open(const char *path, size_t rec_bytes, int want, int *direct);
++int waste_expert_bank_open(const char *path, size_t rec_bytes,
++                           int want, int *direct);
+ 
+ /* pread until the whole range lands; short reads are legal.
+  *
+@@ -613,7 +617,16 @@ static int load_trunk(waste_model *m, const char *dir, const js_doc *d, int trun
               * row is read per token. Keeping 1.11 GB resident to touch 7 KB
               * of it is a bad trade against the expert cache, so leave it on
               * disk and pread the row. */
@@ -6410,7 +6708,7 @@ index 51ef35b..73efeae 100644
                  t->on_disk = 1;
                  t->file_off = off;
                  t->file_scale_off = soff;
-@@ -668,6 +679,65 @@ static int load_trunk(waste_model *m, const char *dir, const js_doc *d, int trun
+@@ -668,6 +681,65 @@ static int load_trunk(waste_model *m, const char *dir, const js_doc *d, int trun
      return 0;
  }
  
@@ -6476,7 +6774,7 @@ index 51ef35b..73efeae 100644
  static int tensor_matrix_ok(const waste_model *m, const char *name, int rows, int cols)
  {
      const waste_tensor *t = waste_find(m, name);
-@@ -1013,6 +1083,26 @@ int waste_model_load(waste_model *m, const char *dir, int kv_cap,
+@@ -1013,6 +1085,30 @@ int waste_model_load(waste_model *m, const char *dir, int kv_cap,
          }
      }
  
@@ -6493,7 +6791,11 @@ index 51ef35b..73efeae 100644
 +        char arch[64];
 +        js_str(&d, js_get(&d, 0, "arch"), arch, sizeof arch);
 +        if (waste_arch_classify(arch) == WASTE_ARCH_INKLING) {
-+            const int rc = waste_inkling_container_load(m, dir, &d, kv_cap);
++            int rc = waste_inkling_container_load(m, dir, &d, kv_cap);
++            /* Storage is a separate promotion from execution. Open the
++             * already-validated WEXP banks through WASTE's own bounded cache
++             * while the forward-path refusal below remains in force. */
++            if (!rc) rc = waste_inkling_expert_store_open(m, dir, &d, opt);
 +            js_free(&d);
 +            free(src);
 +            return rc;
@@ -6503,7 +6805,18 @@ index 51ef35b..73efeae 100644
      {
          int cfg = js_get(&d, 0, "config");
          /* The converter flattens K3's nested text_config into `config` and
-@@ -1402,6 +1492,8 @@ void waste_model_free(waste_model *m)
+@@ -1227,8 +1323,8 @@ int waste_model_load(waste_model *m, const char *dir, int kv_cap,
+             js_free(&d); free(src); return -2;
+         }
+         m->bank[L].rec_bytes = m->bank[L].n_experts ? bytes / m->bank[L].n_experts : 0;
+-        m->bank[L].fd = bank_open(path, m->bank[L].rec_bytes, m->want_direct,
+-                                  &m->direct_io);
++        m->bank[L].fd = waste_expert_bank_open(path, m->bank[L].rec_bytes,
++                                               m->want_direct, &m->direct_io);
+         if (m->bank[L].fd < 0) { js_free(&d); free(src); return -1; }
+     }
+     js_free(&d);
+@@ -1402,6 +1498,8 @@ void waste_model_free(waste_model *m)
       * clean shutdown and a read on a descriptor that has been closed and
       * possibly reused. */
      waste_ecache_io_stop(&m->cache);
@@ -6512,7 +6825,17 @@ index 51ef35b..73efeae 100644
  
      /* Reachable on a partially-built model now that waste_open frees what
       * a failed load left behind, so nothing here may assume the load got
-@@ -3556,6 +3648,7 @@ const float *waste_model_prefill(waste_model *m, const int *tokens, int n,
+@@ -1480,7 +1578,8 @@ static int bank_probe(int fd)
+ }
+ #endif
+ 
+-static int bank_open(const char *path, size_t rec_bytes, int asked, int *direct)
++int waste_expert_bank_open(const char *path, size_t rec_bytes,
++                           int asked, int *direct)
+ {
+     (void)rec_bytes; (void)direct;
+     /* Two separate questions, and conflating them misreports one platform
+@@ -3556,6 +3655,7 @@ const float *waste_model_prefill(waste_model *m, const int *tokens, int n,
  {
      const waste_config *c = &m->cfg;
      const int hid = c->hidden;
@@ -6520,7 +6843,7 @@ index 51ef35b..73efeae 100644
      if (n <= 0) return m->logits;
      if (n == 1) return waste_model_step(m, tokens[0], pos0, NULL);
      dump_pos0 = pos0;
-@@ -3698,6 +3791,7 @@ const float *waste_model_prefill(waste_model *m, const int *tokens, int n,
+@@ -3698,6 +3798,7 @@ const float *waste_model_prefill(waste_model *m, const int *tokens, int n,
  
  const float *waste_model_step(waste_model *m, int token, int pos, int *routed)
  {
@@ -6529,7 +6852,7 @@ index 51ef35b..73efeae 100644
      const waste_config *c = &m->cfg;
      const int hid = c->hidden;
 diff --git a/src/model.h b/src/model.h
-index 13352a4..60605ba 100644
+index 13352a4..137deb5 100644
 --- a/src/model.h
 +++ b/src/model.h
 @@ -199,6 +199,12 @@ typedef struct {
@@ -6545,6 +6868,20 @@ index 13352a4..60605ba 100644
  } waste_model;
  
  /* Everything the load needs that is not in the container. These are
+@@ -227,6 +233,13 @@ typedef struct {
+ int  waste_model_load(waste_model *m, const char *dir, int kv_cap,
+                       const waste_load_opts *opt);
+ void waste_model_free(waste_model *m);
++
++/* Architecture-neutral bank open used by the native Kimi loader and by
++ * Inkling's storage adapter. It preserves WASTE's O_DIRECT/F_NOCACHE probe
++ * and fallback rules instead of giving each architecture its own I/O path. */
++int waste_expert_bank_open(const char *path, size_t rec_bytes,
++                           int want_direct, int *direct_io);
++
+ /* Runs one token; returns logits (vocab floats, owned by the model), or
+  * NULL when an expert record failed to read or failed verification —
+  * waste_model_read_error then says which one and why.
 diff --git a/src/waste.c b/src/waste.c
 index b59cbf6..5b95029 100644
 --- a/src/waste.c
@@ -8982,6 +9319,178 @@ index 0000000..521e47e
 +
 +if __name__ == "__main__":
 +    unittest.main()
+diff --git a/tests/test_inkling_expert_store.c b/tests/test_inkling_expert_store.c
+new file mode 100644
+index 0000000..3920627
+--- /dev/null
++++ b/tests/test_inkling_expert_store.c
+@@ -0,0 +1,166 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Copyright 2026 SQLite Cloud, Inc.
++ *
++ * Storage-only routed expert contract. This deliberately does not execute an
++ * expert: it proves that Inkling's native WEXP bytes survive the same bounded
++ * cache path WASTE already uses, including identity/CRC rejection and the
++ * explicit zero-cache fallback.
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++
++#include "../src/crc32.h"
++#include "../src/ecache.h"
++#include "../src/inkling_expert_store.h"
++#include "../src/waste_format.h"
++
++static int fails;
++
++static void check(int ok, const char *what)
++{
++    if (!ok) {
++        fprintf(stderr, "INKLING EXPERT STORE: %s\n", what);
++        fails++;
++    }
++}
++
++static void make_record(uint8_t *record, int layer, int expert, int codebook,
++                        int hidden, int moe_inter)
++{
++    memset(record, 0, WASTE_ALIGN);
++    waste_expert_hdr *h = (waste_expert_hdr *)record;
++    h->magic = WASTE_MAGIC_EXPERT;
++    h->layer = (uint16_t)layer;
++    h->expert_id = (uint16_t)expert;
++    h->fmt = WQ_VQ3R;
++    h->codebook_id = (uint16_t)codebook;
++    h->rec_4k_blocks = 1;
++    h->gate_off = (uint32_t)sizeof *h;
++    h->up_off = 64;
++    h->down_off = 80;
++    h->chan_corr_off = 96;
++
++    const size_t scale_rows = (size_t)2 * (size_t)moe_inter + (size_t)hidden;
++    const size_t payload_end = (size_t)h->chan_corr_off +
++                               scale_rows * sizeof(uint16_t);
++    for (size_t i = sizeof *h; i < payload_end; i++)
++        record[i] = (uint8_t)(17u + (unsigned)expert * 29u + (unsigned)i);
++    h->crc32 = waste_crc32(record + sizeof *h, payload_end - sizeof *h);
++}
++
++int main(void)
++{
++    enum { LAYER = 1, EXPERTS = 2, CODEBOOK = 7, HIDDEN = 2, MOE_INTER = 2 };
++    static const char path[] = "test-inkling-expert-store.tmp";
++    uint8_t *records = (uint8_t *)malloc((size_t)EXPERTS * WASTE_ALIGN);
++    uint8_t *bad = (uint8_t *)malloc(WASTE_ALIGN);
++    waste_model m;
++    FILE *f = NULL;
++
++    check(records && bad, "out of memory");
++    if (!records || !bad) goto done;
++    for (int e = 0; e < EXPERTS; e++)
++        make_record(records + (size_t)e * WASTE_ALIGN,
++                    LAYER, e, CODEBOOK, HIDDEN, MOE_INTER);
++
++    f = fopen(path, "wb");
++    check(f != NULL, "cannot create bank fixture");
++    if (!f) goto done;
++    check(fwrite(records, WASTE_ALIGN, EXPERTS, f) == EXPERTS,
++          "cannot write bank fixture");
++    check(fclose(f) == 0, "cannot close bank fixture");
++    f = NULL;
++
++    memset(&m, 0, sizeof m);
++    for (int L = 0; L < WASTE_MAX_LAYERS; L++) m.bank[L].fd = -1;
++    m.inkling = &m;                 /* non-NULL architecture sentinel */
++    m.cfg.n_layers = 2;
++    m.cfg.first_dense = LAYER;
++    m.cfg.hidden = HIDDEN;
++    m.cfg.moe_inter = MOE_INTER;
++    m.stages = 3;
++    m.verify = 1;
++    m.want_direct = 0;
++    m.direct_io = 0;
++    m.bank[LAYER].n_experts = EXPERTS;
++    m.bank[LAYER].cb_base = CODEBOOK;
++    m.bank[LAYER].rec_bytes = WASTE_ALIGN;
++    check(pthread_mutex_init(&m.fetch_mu, NULL) == 0, "mutex init failed");
++    m.bank[LAYER].fd = waste_expert_bank_open(
++        path, WASTE_ALIGN, m.want_direct, &m.direct_io);
++    check(m.bank[LAYER].fd >= 0, "cannot open bank fixture");
++    check(waste_ecache_init(&m.cache, (size_t)2 * WASTE_ALIGN,
++                            WASTE_ALIGN, 0) == 0,
++          "cache init failed");
++    m.miss_buf = (uint8_t *)waste_dio_alloc(WASTE_ALIGN);
++    check(m.miss_buf != NULL, "miss buffer allocation failed");
++    if (m.bank[LAYER].fd < 0 || !m.miss_buf) goto cleanup_model;
++
++    const uint8_t *first = waste_inkling_expert_record_get(&m, LAYER, 0);
++    check(first != NULL, "first expert fetch failed");
++    check(m.expert_reads == 1, "first cache miss did not perform one read");
++    check(m.cache.misses == 1 && m.cache.hits == 0,
++          "first expert fetch was not one cache miss");
++    check(first && waste_inkling_expert_record_validate(&m, LAYER, 0, first),
++          "cached record did not validate");
++
++    const uint8_t *again = waste_inkling_expert_record_get(&m, LAYER, 0);
++    check(again == first, "cache hit did not return the resident record");
++    check(m.expert_reads == 1, "cache hit performed disk I/O");
++    check(m.cache.misses == 1 && m.cache.hits == 1,
++          "second expert fetch was not a cache hit");
++
++    const uint8_t *held = waste_inkling_expert_record_hold(&m, LAYER, 1);
++    check(held != NULL && m.cache.n_held == 1,
++          "expert hold did not pin a second record");
++    check(m.expert_reads == 2 && m.cache.misses == 2,
++          "held expert was not fetched exactly once");
++    waste_inkling_expert_release(&m);
++    check(m.cache.n_held == 0, "expert release left a cache record pinned");
++
++    check(waste_inkling_expert_record_get(&m, LAYER, EXPERTS) == NULL,
++          "expert index past the bank was served");
++    check(waste_inkling_expert_record_get(&m, -1, 0) == NULL,
++          "negative layer was served");
++
++    if (first) {
++        memcpy(bad, first, WASTE_ALIGN);
++        bad[sizeof(waste_expert_hdr)] ^= 1u;
++        check(!waste_inkling_expert_record_validate(&m, LAYER, 0, bad),
++              "payload corruption passed CRC validation");
++        memcpy(bad, first, WASTE_ALIGN);
++        ((waste_expert_hdr *)bad)->expert_id = 1;
++        check(!waste_inkling_expert_record_validate(&m, LAYER, 0, bad),
++              "record identity mismatch was accepted");
++    }
++
++    /* A zero-byte cache is an explicit supported mode, not a half-created
++     * cache. The same record is read on every demand through the aligned miss
++     * buffer, which keeps memory bounded and statistics honest. */
++    waste_ecache_free(&m.cache);
++    check(waste_ecache_init(&m.cache, 0, WASTE_ALIGN, 0) == 0,
++          "zero-cache init failed");
++    const uint64_t reads_before = m.expert_reads;
++    check(waste_inkling_expert_record_get(&m, LAYER, 0) != NULL &&
++          waste_inkling_expert_record_get(&m, LAYER, 0) != NULL,
++          "zero-cache fallback fetch failed");
++    check(m.expert_reads == reads_before + 2,
++          "zero-cache fallback unexpectedly retained the record");
++    check(m.cache.hits == 0 && m.cache.misses == 2,
++          "zero-cache statistics are not two misses");
++
++cleanup_model:
++    waste_ecache_free(&m.cache);
++    waste_dio_free(m.miss_buf);
++    if (m.bank[LAYER].fd >= 0) close(m.bank[LAYER].fd);
++    pthread_mutex_destroy(&m.fetch_mu);
++done:
++    if (f) fclose(f);
++    remove(path);
++    free(bad);
++    free(records);
++    if (!fails) puts("INKLING_EXPERT_STORE_OK");
++    return fails ? 1 : 0;
++}
 diff --git a/tests/test_inkling_final_head_c.py b/tests/test_inkling_final_head_c.py
 new file mode 100644
 index 0000000..ec09f2f

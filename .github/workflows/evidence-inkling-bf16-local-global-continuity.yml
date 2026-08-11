@@ -1,0 +1,236 @@
+name: Evidence checked Inkling BF16 local-global continuity
+
+on:
+  pull_request:
+    paths:
+      - "inkling/src/inkling*.c"
+      - "inkling/src/inkling*.h"
+      - "inkling/tools/inkling_fixture.py"
+      - "inkling/tools/inkling_layer_parity.py"
+      - "docs/OFFICIAL-INKLING-SMALL-LAYER-PATTERN.json"
+      - "docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json"
+      - "docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.provenance.json"
+      - "mvp/port_trace.py"
+      - "mvp/check_stacked_evidence_freshness.py"
+      - "mvp/discover_inkling_router_experts.py"
+      - "mvp/diagnose_inkling_pre_router.py"
+      - "mvp/inkling_c_config.py"
+      - "mvp/inkling_fixture_reference.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "mvp/inkling_remote_fixture_core.py"
+      - "experiments/inkling/checked_bf16_profile_collector.py"
+      - "experiments/inkling/checked_bf16_stateful_analysis.py"
+      - "experiments/inkling/diagnose_inkling_bf16_stateful_mlp_boundary.py"
+      - "experiments/inkling/run_inkling_checked_bf16_sparse_layer.py"
+      - "experiments/inkling/run_inkling_checked_bf16_stateful_layer.py"
+      - "experiments/inkling/run_inkling_checked_bf16_local_global_pair.py"
+      - ".github/workflows/evidence-inkling-bf16-local-global-continuity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-bf16-local-global-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  continuity:
+    name: Checked BF16 sparse local-4 to global-5 continuity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      OMP_NUM_THREADS: 1
+      MKL_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+      ONEDNN_MAX_CPU_ISA: AVX2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Reject stale pair evidence before dependencies or fixture bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            mvp/port_trace.py \
+            mvp/check_stacked_evidence_freshness.py \
+            experiments/inkling/run_inkling_checked_bf16_local_global_pair.py
+          git fetch --no-tags --depth=200 origin \
+            +refs/heads/agent/inkling-cross-layer-continuity:refs/remotes/origin/agent/inkling-cross-layer-continuity
+          PYTHONPATH=mvp python3 mvp/check_stacked_evidence_freshness.py \
+            docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.provenance.json \
+            --parent-ref refs/remotes/origin/agent/inkling-cross-layer-continuity \
+            --json > "${RUNNER_TEMP}/pair-freshness.json"
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          route_bytes = Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json').read_bytes()
+          prov = json.loads(Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.provenance.json').read_text())
+          assert hashlib.sha256(route_bytes).hexdigest() == prov['route_file_sha256'] == 'b56af980cb2bb55a6551edbf5865f12acbb04c462ed4b3bf0bf33162c850a067'
+          assert prov['bound_result']['final_pair_fixture'] == {
+              'entries': 178, 'payload_bytes': 3629546504, 'requests': 50,
+          }
+          print('PAIR_FRESHNESS artifact and semantic producers exact')
+          PY
+
+      - name: Install pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            'torch==2.13.0' 'transformers==5.14.1'
+
+      - name: Reproduce exact final pair plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > "${RUNNER_TEMP}/fixture.env"
+          import json, shlex
+          from pathlib import Path
+          route = json.loads(Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json').read_text())
+          l4 = route['first_layer']['selected_experts']
+          l5 = route['second_layer']['selected_experts']
+          assert len(l4) == 37 and len(l5) == 25
+          experts = '4:' + ','.join(map(str, l4)) + ';5:' + ','.join(map(str, l5))
+          print('REVISION=' + shlex.quote(route['revision']))
+          print('EXPERTS=' + shlex.quote(experts))
+          PY
+          # shellcheck source=/dev/null
+          . "${RUNNER_TEMP}/fixture.env"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$REVISION" --layers 4,5 --experts "$EXPERTS" \
+            --max-total-gib 4 --plan-only > "${RUNNER_TEMP}/local-global-plan.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          route = json.loads(Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json').read_text())
+          plan = json.loads((Path(os.environ['RUNNER_TEMP']) / 'local-global-plan.json').read_text())
+          assert plan['revision'] == route['revision']
+          assert plan['config_sha256'] == route['config_sha256']
+          assert plan['index_sha256'] == route['index_sha256']
+          assert plan['layers'] == [4, 5]
+          assert plan['experts'] == {
+              '4': route['first_layer']['selected_experts'],
+              '5': route['second_layer']['selected_experts'],
+          }
+          assert plan['entries'] == 178
+          assert plan['payload_bytes'] == 3629546504
+          assert plan['requests'] == 50
+          print('PAIR_PLAN entries=178 payload_bytes=3629546504 requests=50 l4=37 l5=25')
+          PY
+
+      - name: Extract CRC-verified final pair fixture and inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . "${RUNNER_TEMP}/fixture.env"
+          fixture="${RUNNER_TEMP}/local-global-fixture"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$REVISION" --layers 4,5 --experts "$EXPERTS" \
+              --max-total-gib 4 --out "$fixture" \
+              > "${RUNNER_TEMP}/local-global-manifest.json"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then sleep $((10 << (attempt - 1))); fi
+          done
+          test "$extracted" = true
+          python3 inkling/tools/inkling_fixture.py --fixture "$fixture" --verify
+
+          PYTHONPATH=mvp python3 - <<PY
+          import hashlib, json, time
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import deterministic_hidden_states, input_sha256
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+          route = json.loads(Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json').read_text())
+          root = Path('${RUNNER_TEMP}')
+          source = HttpRangeSource('https://huggingface.co/thinkingmachines/Inkling-Small', route['revision'])
+          config = None
+          for attempt in range(4):
+              try:
+                  config = source.file('config.json')
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3: raise
+                  time.sleep(10 * (2**attempt))
+          assert config is not None
+          assert hashlib.sha256(config).hexdigest() == route['config_sha256']
+          (root / 'config.json').write_bytes(config)
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          assert input_sha256(inputs, torch.bfloat16) == route['inputs_sha256']
+          (root / 'inputs.json').write_text(json.dumps(inputs.tolist()) + '\n')
+          PY
+          PYTHONPATH=mvp python3 mvp/inkling_c_config.py \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --out "${RUNNER_TEMP}/c-config.json"
+
+      - name: Execute checked local-to-global pair
+        shell: bash
+        run: |
+          set -uo pipefail
+          err="${RUNNER_TEMP}/local-global.err"
+          PYTHONPATH=inkling/tools:mvp:experiments/inkling python3 \
+            experiments/inkling/run_inkling_checked_bf16_local_global_pair.py \
+            --fixture "${RUNNER_TEMP}/local-global-fixture" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --c-config "${RUNNER_TEMP}/c-config.json" \
+            --inputs "${RUNNER_TEMP}/inputs.json" \
+            --routes docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json \
+            --trace-dir "${RUNNER_TEMP}/local-global-trace" \
+            --out "${RUNNER_TEMP}/local-global.json" \
+            > /dev/null 2> "$err"
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            cat "$err" >&2
+            if [ -f "${RUNNER_TEMP}/local-global.json" ]; then
+              cat "${RUNNER_TEMP}/local-global.json" >&2
+            fi
+            exit "$rc"
+          fi
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = json.loads((Path(os.environ['RUNNER_TEMP']) / 'local-global.json').read_text())
+          assert result['source']['source_rewriting'] is False
+          assert result['pair'] == [4, 5]
+          assert result['positions'] == 8
+          assert result['adapter_contract'] == 'explicit_candidate_runner_no_module_rebinding'
+          assert result['route_contract'] == 'observed_preserved_reference_used_downstream'
+          assert result['decision']['classification'] == 'checked_in_bf16_local_global_4_5_exact'
+          assert result['decision']['first_boundary'] is None
+          assert result['trace']['status'] == 'match'
+          assert result['trace']['layers'] == [4, 5]
+          assert result['trace']['boundaries_compared'] == 4
+          for layer in ('4', '5'):
+              analysis = result['layers'][layer]
+              assert analysis['decision']['classification'] == 'stateful_sparse_mlp_ladder_exact'
+              assert analysis['decision']['first_boundary_stage'] is None
+              assert analysis['decision']['first_boundary_position'] is None
+              assert len(analysis['backend_calls']) == 240
+          print(
+              'LOCAL_GLOBAL_DECISION '
+              f"classification={result['decision']['classification']} "
+              f"trace={result['trace']['status']} "
+              f"layer4_sha={result['official']['layer4_output_sha256']} "
+              f"layer5_sha={result['official']['layer5_output_sha256']}"
+          )
+          PY
+
+      - name: Preserve local-global continuity evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: checked-bf16-local-global-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/pair-freshness.json
+            ${{ runner.temp }}/local-global-plan.json
+            ${{ runner.temp }}/local-global.json
+            ${{ runner.temp }}/local-global.err
+            ${{ runner.temp }}/local-global-trace
+          if-no-files-found: warn
+          retention-days: 30

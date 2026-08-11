@@ -1,0 +1,85 @@
+{
+  "config_sha256": "dcb5b1d587bce2f1e6b29833d739a724d05b4bfaa2dc1164fbe679330478ba53",
+  "dense_layers": 2,
+  "first_local_to_global_pair": [
+    4,
+    5
+  ],
+  "format": "inkling-small-layer-pattern",
+  "local_layer_ids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    12,
+    13,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20,
+    21,
+    22,
+    24,
+    25,
+    26,
+    27,
+    28,
+    30,
+    31,
+    32,
+    33,
+    34,
+    36,
+    37,
+    38,
+    39,
+    40
+  ],
+  "local_to_global_pairs": [
+    [
+      4,
+      5
+    ],
+    [
+      10,
+      11
+    ],
+    [
+      16,
+      17
+    ],
+    [
+      22,
+      23
+    ],
+    [
+      28,
+      29
+    ],
+    [
+      34,
+      35
+    ],
+    [
+      40,
+      41
+    ]
+  ],
+  "num_hidden_layers": 42,
+  "revision": "21152b5312c653be115f33a8342759064144e281",
+  "version": 1,
+  "reference_profile": {
+    "workflow_run_id": 31446601600,
+    "artifact_id": 9084754999,
+    "artifact_zip_sha256": "a46d1ce66e5bd4ca726218a49145b3a02bece561423dd1a28b7a9e5fa278f50c",
+    "artifact_payload_sha256": "5b07a45a1cc54fec7fa76c496fedff02ab31f7af5d2c7edb70473577e44f9c43"
+  }
+}

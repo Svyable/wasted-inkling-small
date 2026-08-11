@@ -1,0 +1,86 @@
+{
+  "format": "inkling-local-global-route-artifact-provenance",
+  "version": 2,
+  "route_file": "docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json",
+  "route_file_sha256": "b56af980cb2bb55a6551edbf5865f12acbb04c462ed4b3bf0bf33162c850a067",
+  "workflow_run_id": 31446759388,
+  "artifact_id": 9084905627,
+  "artifact_name": "local-global-routes-31446759388-1",
+  "artifact_zip_sha256": "9a9ca4e8ff876b4be34313c8710706ce7fa7b58876a5be66febba9f7b6f0fbf3",
+  "artifact_files": {
+    "layer4-seed-plan.json": "c9ce8521f5d18a181751e7913cad3dfa982ad634186db6bfeec9b467fe9c1c45",
+    "layer4-seed-manifest.json": "cea27989df51661c793296a69402c26c116f22cc0c868b07c2bcda6f71614d28",
+    "layer4-route.json": "7957a5cfc1a1793e8d2f040f4b378eb1dc1f91a1fc8926908e435c05c98bb105",
+    "pair-discovery-experts.txt": "365da00f79f0690d2bfd74109eec6857324b36d4d329adff4c240aa908a29824",
+    "pair-discovery-plan.json": "2142ff4ea79502dd19fc197e855688d16213285d26e82fd97f09b5f9a0e5d7ec",
+    "pair-discovery-manifest.json": "019b6ab357f89310dae44bb816ee99f68e42fa666c60e5072baac76fd79ff625",
+    "local-global-routes.json": "b56af980cb2bb55a6551edbf5865f12acbb04c462ed4b3bf0bf33162c850a067"
+  },
+  "bound_result": {
+    "pair": [4, 5],
+    "layer4_expert_union_size": 37,
+    "layer5_expert_union_size": 25,
+    "layer4_output_sha256": "ef56b086c989e4922d944fe09ddbb2ee1b6ee2e4efc30058a6aa5b6c5569ecbf",
+    "pair_discovery_fixture": {
+      "entries": 116,
+      "payload_bytes": 2294582280,
+      "requests": 50
+    },
+    "final_pair_fixture": {
+      "entries": 164,
+      "payload_bytes": 3502541832,
+      "requests": 50,
+      "plan_workflow_run_id": 31447354335,
+      "plan_artifact_id": 9085039143,
+      "plan_artifact_zip_sha256": "243b745aa70d43e41d58df71d4fd6bb3a012decbe6e1b1ceaffa530c7e5523ad"
+    }
+  },
+  "stacked_parent": {
+    "repository": "Svyable/wasted-inkling-small",
+    "branch": "agent/inkling-cross-layer-continuity",
+    "recorded_head": "c29d0244bb650d5b6863c6d472747c32a8fd97bc",
+    "freshness_mode": "dependency_blobs",
+    "dependencies": [
+      {
+        "scope": "parent",
+        "path": "mvp/discover_inkling_router_experts.py",
+        "blob_sha": "c564eed0ce706363cc648c3350469a7ef2045859"
+      },
+      {
+        "scope": "parent",
+        "path": "mvp/inkling_fixture_reference.py",
+        "blob_sha": "d8f42bb506c5408258a8e525fbabcd258c6c29a3"
+      },
+      {
+        "scope": "parent",
+        "path": "mvp/inkling_release_config.py",
+        "blob_sha": "8ad5ed49a68c9a58d2ed317d19d8df931d9ed48d"
+      },
+      {
+        "scope": "parent",
+        "path": "mvp/inkling_remote_fixture.py",
+        "blob_sha": "d57c46b2783f18225fe7802e3cde29fef2908cdf"
+      },
+      {
+        "scope": "parent",
+        "path": "mvp/inkling_remote_fixture_core.py",
+        "blob_sha": "a873485d76ff79b09439e0232175c51405ac99e5"
+      },
+      {
+        "scope": "parent",
+        "path": "inkling/tools/inkling_fixture.py",
+        "blob_sha": "86655ab798dd7b31a8248c90cf14dbbc68aff25d"
+      },
+      {
+        "scope": "current",
+        "path": "experiments/inkling/discover_inkling_local_global_pair_routes.py",
+        "blob_sha": "39c74ef15529fe94cae4109af9f540be2d5763a4"
+      }
+    ],
+    "non_dependencies": [
+      "checked C execution and numeric-profile implementation",
+      "generated release packaging",
+      "unrelated documentation and CI metadata"
+    ]
+  }
+}

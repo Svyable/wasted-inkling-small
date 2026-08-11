@@ -1,0 +1,249 @@
+{
+  "config_sha256": "dcb5b1d587bce2f1e6b29833d739a724d05b4bfaa2dc1164fbe679330478ba53",
+  "dense_output_sha256": {
+    "0": "6da27bcc1bf1935f0407e081083e1ca238b6d4dbbaa39d92d1d2ffd9e523c43f",
+    "1": "74c3cb62b7ef1a3616299e48ce31065b2633ddb5f11f0afc34bc74fdcf9614e6"
+  },
+  "format": "inkling-cross-layer-route-discovery",
+  "index_sha256": "68b1ab9dade825da1d9d162303f7356167ba2b90fd2c5fdf519e898d45adb0d9",
+  "input_dtype": "bfloat16",
+  "inputs_sha256": "53102b39703fcec1ea4593c4a149e168169d0062769f7bac7944c1afe9831b7f",
+  "layer2_expert_union": [
+    18,
+    24,
+    27,
+    33,
+    46,
+    52,
+    60,
+    62,
+    69,
+    70,
+    82,
+    97,
+    102,
+    116,
+    133,
+    138,
+    143,
+    145,
+    151,
+    152,
+    154,
+    160,
+    161,
+    165,
+    166,
+    197,
+    201,
+    205,
+    209,
+    226,
+    241,
+    245
+  ],
+  "layer2_expert_union_size": 32,
+  "layer2_seed_fixture_experts": [
+    0
+  ],
+  "layer2_topk_indices": [
+    [
+      33,
+      151,
+      46,
+      205,
+      69,
+      62
+    ],
+    [
+      97,
+      138,
+      201,
+      152,
+      82,
+      102
+    ],
+    [
+      154,
+      27,
+      82,
+      138,
+      209,
+      133
+    ],
+    [
+      33,
+      46,
+      18,
+      116,
+      70,
+      62
+    ],
+    [
+      52,
+      205,
+      46,
+      69,
+      27,
+      161
+    ],
+    [
+      133,
+      46,
+      145,
+      60,
+      241,
+      166
+    ],
+    [
+      60,
+      165,
+      24,
+      46,
+      160,
+      245
+    ],
+    [
+      143,
+      197,
+      166,
+      18,
+      226,
+      138
+    ]
+  ],
+  "layer2_topk_weights": [
+    [
+      0.005767822265625,
+      0.006927490234375,
+      0.00738525390625,
+      0.00640869140625,
+      0.00604248046875,
+      0.007049560546875
+    ],
+    [
+      0.006744384765625,
+      0.0084228515625,
+      0.00738525390625,
+      0.006744384765625,
+      0.006622314453125,
+      0.00653076171875
+    ],
+    [
+      0.0101318359375,
+      0.007171630859375,
+      0.00775146484375,
+      0.0068359375,
+      0.00653076171875,
+      0.005950927734375
+    ],
+    [
+      0.007049560546875,
+      0.00982666015625,
+      0.0096435546875,
+      0.00653076171875,
+      0.006134033203125,
+      0.007171630859375
+    ],
+    [
+      0.0068359375,
+      0.0081787109375,
+      0.00787353515625,
+      0.006134033203125,
+      0.00604248046875,
+      0.005767822265625
+    ],
+    [
+      0.00640869140625,
+      0.007476806640625,
+      0.01171875,
+      0.00531005859375,
+      0.00543212890625,
+      0.005218505859375
+    ],
+    [
+      0.005767822265625,
+      0.00982666015625,
+      0.008544921875,
+      0.006927490234375,
+      0.006134033203125,
+      0.006744384765625
+    ],
+    [
+      0.00543212890625,
+      0.006744384765625,
+      0.005584716796875,
+      0.009765625,
+      0.0113525390625,
+      0.005584716796875
+    ]
+  ],
+  "layers": [
+    0,
+    1,
+    2
+  ],
+  "model_id": "thinkingmachines/Inkling-Small",
+  "positions": 8,
+  "reference_execution": "layer0-prefill -> direct-hidden-handoff -> layer1-prefill -> direct-hidden-handoff -> layer2-router-capture",
+  "reference_profile": {
+    "artifact_id": 9082366932,
+    "artifact_zip_sha256": "9a99aa77ac7093158dddee1e96deae5e51370ed60a6d149f512fc18734cb5cef",
+    "onednn_max_cpu_isa": "AVX2",
+    "runner": "ubuntu-24.04",
+    "torch": "2.13.0",
+    "transformers": "5.14.1",
+    "workflow_run_id": 31439506979
+  },
+  "revision": "21152b5312c653be115f33a8342759064144e281",
+  "stacked_parent": {
+    "branch": "agent/promote-inkling-bf16-profile",
+    "dependencies": [
+      {
+        "blob_sha": "c564eed0ce706363cc648c3350469a7ef2045859",
+        "path": "mvp/discover_inkling_router_experts.py",
+        "scope": "parent"
+      },
+      {
+        "blob_sha": "d8f42bb506c5408258a8e525fbabcd258c6c29a3",
+        "path": "mvp/inkling_fixture_reference.py",
+        "scope": "parent"
+      },
+      {
+        "blob_sha": "8ad5ed49a68c9a58d2ed317d19d8df931d9ed48d",
+        "path": "mvp/inkling_release_config.py",
+        "scope": "parent"
+      },
+      {
+        "blob_sha": "d57c46b2783f18225fe7802e3cde29fef2908cdf",
+        "path": "mvp/inkling_remote_fixture.py",
+        "scope": "parent"
+      },
+      {
+        "blob_sha": "a873485d76ff79b09439e0232175c51405ac99e5",
+        "path": "mvp/inkling_remote_fixture_core.py",
+        "scope": "parent"
+      },
+      {
+        "blob_sha": "86655ab798dd7b31a8248c90cf14dbbc68aff25d",
+        "path": "inkling/tools/inkling_fixture.py",
+        "scope": "parent"
+      },
+      {
+        "blob_sha": "e295b4b55d4a20434a2483fd520a709d1cc3fcdf",
+        "path": "experiments/inkling/discover_inkling_cross_layer_routes.py",
+        "scope": "current"
+      }
+    ],
+    "freshness_mode": "dependency_blobs",
+    "non_dependencies": [
+      "checked C execution and numeric-profile implementation",
+      "generated dist bundle and release packaging",
+      "documentation-only parent changes",
+      "unrelated CI metadata"
+    ],
+    "recorded_head": "5ca9807a45bb468e0c136ea1b07c6739b682cda5",
+    "repository": "Svyable/wasted-inkling-small"
+  },
+  "version": 3
+}

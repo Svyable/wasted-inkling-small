@@ -1,0 +1,110 @@
+name: Validate Inkling BF16 cross-layer harness
+
+on:
+  pull_request:
+    paths:
+      - "docs/OFFICIAL-CROSS-LAYER-ROUTES.json"
+      - "mvp/port_trace.py"
+      - "mvp/check_stacked_evidence_freshness.py"
+      - "mvp/test_port_trace.py"
+      - "mvp/test_stacked_evidence_freshness.py"
+      - "experiments/inkling/run_inkling_checked_bf16_cross_layer.py"
+      - "experiments/inkling/run_inkling_checked_bf16_stateful_layer.py"
+      - "experiments/inkling/measure_inkling_dense_bf16_profile.py"
+      - "experiments/inkling/run_inkling_checked_bf16_sparse_layer.py"
+      - "experiments/inkling/checked_bf16_profile_collector.py"
+      - ".github/workflows/validate-inkling-bf16-cross-layer-harness.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  harness:
+    name: Validate trace, freshness, import and checked build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: 1
+      MKL_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+      ONEDNN_MAX_CPU_ISA: AVX2
+      PYTHONPATH: ${{ github.workspace }}/inkling/tools:${{ github.workspace }}/mvp:${{ github.workspace }}/experiments/inkling
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prove shared trace and stacked-evidence contracts before dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            mvp/port_trace.py \
+            mvp/check_stacked_evidence_freshness.py \
+            mvp/test_port_trace.py \
+            mvp/test_stacked_evidence_freshness.py
+          PYTHONPATH=mvp python3 mvp/test_port_trace.py
+          PYTHONPATH=mvp python3 mvp/test_stacked_evidence_freshness.py
+          git fetch --no-tags --depth=200 origin \
+            +refs/heads/agent/promote-inkling-bf16-profile:refs/remotes/origin/agent/promote-inkling-bf16-profile
+          PYTHONPATH=mvp python3 mvp/check_stacked_evidence_freshness.py \
+            docs/OFFICIAL-CROSS-LAYER-ROUTES.json \
+            --parent-ref refs/remotes/origin/agent/promote-inkling-bf16-profile
+
+      - name: Install pinned Python stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            'torch==2.13.0' 'transformers==5.14.1'
+
+      - name: Import runner and validate archive contract
+        run: |
+          python3 experiments/inkling/run_inkling_checked_bf16_cross_layer.py --help >/dev/null
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          archive = json.loads(Path('docs/OFFICIAL-CROSS-LAYER-ROUTES.json').read_text())
+          assert archive['format'] == 'inkling-cross-layer-route-discovery'
+          assert archive['version'] == 3
+          assert archive['layers'] == [0, 1, 2]
+          assert archive['positions'] == 8
+          assert len(archive['layer2_topk_indices']) == 8
+          assert all(len(row) == 6 for row in archive['layer2_topk_indices'])
+          assert len(archive['layer2_topk_weights']) == 8
+          assert all(len(row) == 6 for row in archive['layer2_topk_weights'])
+          assert len(archive['layer2_expert_union']) == archive['layer2_expert_union_size'] == 32
+          assert sorted({expert for row in archive['layer2_topk_indices'] for expert in row}) == archive['layer2_expert_union']
+          parent = archive['stacked_parent']
+          assert parent['freshness_mode'] == 'dependency_blobs'
+          dependencies = parent['dependencies']
+          assert len(dependencies) == 7
+          assert sum(item.get('scope', 'parent') == 'parent' for item in dependencies) == 6
+          assert sum(item.get('scope', 'parent') == 'current' for item in dependencies) == 1
+          print('CROSS_LAYER_ARCHIVE rows=8 topk=6 experts=32 dependencies=7(parent=6,current=1)')
+          PY
+
+      - name: Build checked-in BF16 runtime and weight helper
+        run: |
+          python3 - <<'PY'
+          import ctypes, tempfile
+          from pathlib import Path
+          from checked_bf16_profile_collector import (
+              CheckedPostReductionWeightHelper,
+              build_checked_weight_helper,
+          )
+          from run_inkling_checked_bf16_sparse_layer import (
+              build_checked_library,
+              configure_profile_library,
+          )
+          with tempfile.TemporaryDirectory() as directory:
+              root = Path(directory)
+              library, source = build_checked_library(root / 'continuity.so')
+              assert source['source_rewriting'] is False
+              lib = ctypes.CDLL(str(library))
+              configure_profile_library(lib)
+              helper = CheckedPostReductionWeightHelper(
+                  build_checked_weight_helper(root / 'weights.so')
+              )
+              assert helper is not None
+          print('CROSS_LAYER_BUILD source_rewriting=false helper=ready')
+          PY

@@ -63,6 +63,17 @@ jobs:
           from pathlib import Path
           route = json.loads(Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json').read_text())
           plan = json.loads((Path(os.environ['RUNNER_TEMP']) / 'local-global-plan.json').read_text())
+          actual = {
+              'revision': plan.get('revision'),
+              'config_sha256': plan.get('config_sha256'),
+              'index_sha256': plan.get('index_sha256'),
+              'layers': plan.get('layers'),
+              'experts': plan.get('experts'),
+              'entries': plan.get('entries'),
+              'payload_bytes': plan.get('payload_bytes'),
+              'requests': plan.get('requests'),
+          }
+          print('LOCAL_GLOBAL_PLAN_ACTUAL ' + json.dumps(actual, sort_keys=True))
           assert plan['revision'] == route['revision']
           assert plan['config_sha256'] == route['config_sha256']
           assert plan['index_sha256'] == route['index_sha256']

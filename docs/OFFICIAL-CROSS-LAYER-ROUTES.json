@@ -200,48 +200,44 @@
     "branch": "agent/promote-inkling-bf16-profile",
     "dependencies": [
       {
-        "blob_sha": "29aca44b3474d31223430d8a8328bf682e5f6932",
-        "path": "inkling/src/inkling_layer.c"
-      },
-      {
-        "blob_sha": "8a48fefcc22fc626a83edd96766a9149487afa8a",
-        "path": "inkling/src/inkling_layer.h"
-      },
-      {
-        "blob_sha": "6c5c535684d3e731901c20ba5ed908af58fa6072",
-        "path": "inkling/src/inkling_numeric.h"
-      },
-      {
         "blob_sha": "c564eed0ce706363cc648c3350469a7ef2045859",
-        "path": "mvp/discover_inkling_router_experts.py"
-      },
-      {
-        "blob_sha": "018d03c8b0bbc841e5afd1c8e4e43f9a5a58ea9b",
-        "path": "mvp/diagnose_inkling_pre_router.py"
+        "path": "mvp/discover_inkling_router_experts.py",
+        "scope": "parent"
       },
       {
         "blob_sha": "d8f42bb506c5408258a8e525fbabcd258c6c29a3",
-        "path": "mvp/inkling_fixture_reference.py"
+        "path": "mvp/inkling_fixture_reference.py",
+        "scope": "parent"
       },
       {
-        "blob_sha": "dee3bd36f490e8c2fe67850c85abfe8f7e7005db",
-        "path": "experiments/inkling/measure_inkling_dense_bf16_profile.py"
+        "blob_sha": "8ad5ed49a68c9a58d2ed317d19d8df931d9ed48d",
+        "path": "mvp/inkling_release_config.py",
+        "scope": "parent"
       },
       {
-        "blob_sha": "5391d46d866f4ae14d07c663fa6981d8ce703e3c",
-        "path": "experiments/inkling/run_inkling_checked_bf16_sparse_layer.py"
+        "blob_sha": "d57c46b2783f18225fe7802e3cde29fef2908cdf",
+        "path": "mvp/inkling_remote_fixture.py",
+        "scope": "parent"
       },
       {
-        "blob_sha": "0c3d1cf8fade9535b815fd14097666f543ce8d28",
-        "path": "experiments/inkling/run_inkling_checked_bf16_stateful_layer.py"
+        "blob_sha": "a873485d76ff79b09439e0232175c51405ac99e5",
+        "path": "mvp/inkling_remote_fixture_core.py",
+        "scope": "parent"
       },
       {
-        "blob_sha": "9c8fbf6ad3d9187c2f0d3c48edf50cb85881e2ea",
-        "path": "experiments/inkling/checked_bf16_profile_collector.py"
+        "blob_sha": "86655ab798dd7b31a8248c90cf14dbbc68aff25d",
+        "path": "inkling/tools/inkling_fixture.py",
+        "scope": "parent"
+      },
+      {
+        "blob_sha": "e295b4b55d4a20434a2483fd520a709d1cc3fcdf",
+        "path": "experiments/inkling/discover_inkling_cross_layer_routes.py",
+        "scope": "current"
       }
     ],
     "freshness_mode": "dependency_blobs",
     "non_dependencies": [
+      "checked C execution and numeric-profile implementation",
       "generated dist bundle and release packaging",
       "documentation-only parent changes",
       "unrelated CI metadata"

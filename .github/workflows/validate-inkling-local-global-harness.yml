@@ -73,7 +73,7 @@ jobs:
           python3 -m pip install --quiet --break-system-packages \
             'torch==2.13.0' 'transformers==5.14.1'
 
-      - name: Import pair runner and build checked runtime/helper
+      - name: Import pair runner, prove RouteRow construction, and build checked runtime/helper
         run: |
           python3 experiments/inkling/run_inkling_checked_bf16_local_global_pair.py --help >/dev/null
           python3 - <<'PY'
@@ -83,10 +83,20 @@ jobs:
               CheckedPostReductionWeightHelper,
               build_checked_weight_helper,
           )
+          from run_inkling_checked_bf16_local_global_pair import _rows
           from run_inkling_checked_bf16_sparse_layer import (
               build_checked_library,
               configure_profile_library,
           )
+
+          sample = {
+              'topk_indices': [[1, 2], [3, 4]],
+              'topk_weights': [[0.1, 0.2], [0.3, 0.4]],
+          }
+          rows = _rows(sample, 4)
+          assert [row.indices for row in rows] == [(1, 2), (3, 4)]
+          assert [row.weights for row in rows] == [(0.1, 0.2), (0.3, 0.4)]
+
           with tempfile.TemporaryDirectory() as directory:
               root = Path(directory)
               library, source = build_checked_library(root / 'pair.so')
@@ -97,5 +107,5 @@ jobs:
                   build_checked_weight_helper(root / 'weights.so')
               )
               assert helper is not None
-          print('LOCAL_GLOBAL_BUILD source_rewriting=false helper=ready')
+          print('LOCAL_GLOBAL_BUILD rows=2 source_rewriting=false helper=ready')
           PY

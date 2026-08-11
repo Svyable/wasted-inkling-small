@@ -27,9 +27,12 @@
       "requests": 50
     },
     "final_pair_fixture": {
-      "entries": 178,
-      "payload_bytes": 3629546504,
-      "requests": 50
+      "entries": 164,
+      "payload_bytes": 3502541832,
+      "requests": 50,
+      "plan_workflow_run_id": 31447354335,
+      "plan_artifact_id": 9085039143,
+      "plan_artifact_zip_sha256": "243b745aa70d43e41d58df71d4fd6bb3a012decbe6e1b1ceaffa530c7e5523ad"
     }
   },
   "stacked_parent": {

@@ -51,6 +51,34 @@ def parse_experts(text: str) -> dict[int, list[int]]:
     return out
 
 
+def parse_rows(text: str) -> list[int]:
+    """Parse a bounded row selection: ``0,7,19`` or ``0-7,19``.
+
+    Used for vocabulary rows of the unembedding table. Ranges are inclusive
+    because a contiguous token window is the common evidence selection.
+    """
+    if not text:
+        return []
+    rows: set[int] = set()
+    for part in text.split(","):
+        if not part:
+            continue
+        try:
+            if "-" in part[1:]:
+                start_text, end_text = part.split("-", 1)
+                start, end = int(start_text), int(end_text)
+                require(0 <= start <= end, f"invalid row range {part!r}")
+                rows.update(range(start, end + 1))
+            else:
+                value = int(part)
+                require(value >= 0, f"invalid row {part!r}")
+                rows.add(value)
+        except ValueError as exc:
+            raise RemoteFixtureError(f"invalid row selection {part!r}") from exc
+    require(rows, "row selection is empty")
+    return sorted(rows)
+
+
 class SafeRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
@@ -234,6 +262,9 @@ SPARSE_SUFFIXES = (
 )
 
 
+UNEMBED_NAME = "model.llm.unembed.weight"
+
+
 def required_layer(layer: int, sparse: bool) -> set[str]:
     prefix = f"model.llm.layers.{layer}."
     suffixes = COMMON_SUFFIXES + (SPARSE_SUFFIXES if sparse else DENSE_SUFFIXES)
@@ -242,10 +273,12 @@ def required_layer(layer: int, sparse: bool) -> set[str]:
 
 class Plan:
     def __init__(self, model: str, source: HttpRanges, config: bytes, index: bytes,
-                 layers: set[int], experts: dict[int, list[int]], entries: list[Entry]) -> None:
+                 layers: set[int], experts: dict[int, list[int]], entries: list[Entry],
+                 vocab_rows: Iterable[int] = ()) -> None:
         self.model, self.revision = model, source.revision
         self.config, self.index = config, index
         self.layers, self.experts, self.entries = tuple(sorted(layers)), experts, entries
+        self.vocab_rows = tuple(sorted(set(int(row) for row in vocab_rows)))
         self.metadata_bytes, self.requests = source.bytes_read, source.requests
 
     @property
@@ -261,6 +294,7 @@ class Plan:
             "model_id": self.model, "revision": self.revision,
             "layers": list(self.layers),
             "experts": {str(k): v for k, v in sorted(self.experts.items())},
+            "vocab_rows": list(self.vocab_rows),
             "entries": len(self.entries), "payload_bytes": self.payload_bytes,
             "metadata_bytes_read": self.metadata_bytes, "requests": self.requests,
             "shards": sorted({entry.shard for entry in self.entries}),
@@ -271,9 +305,19 @@ class Plan:
 
 def build_plan(source: HttpRanges, model: str, layers: Iterable[int],
                experts: dict[int, list[int]] | None = None,
-               max_total: int = 8 << 30, max_entry: int = 2 << 30) -> Plan:
+               max_total: int = 8 << 30, max_entry: int = 2 << 30,
+               vocab_rows: Iterable[int] | None = None) -> Plan:
     selected = set(map(int, layers))
-    require(selected and min(selected) >= 0, "at least one nonnegative layer is required")
+    rows = sorted(set(int(row) for row in (vocab_rows or ())))
+    # A head-only fixture selects no layer at all: the trunk norms are always
+    # included, and bounded vocabulary rows are kilobytes. Requiring a layer
+    # would make final-head evidence pay for hundreds of megabytes it never
+    # reads.
+    require(selected or rows,
+            "at least one layer or vocabulary row is required")
+    require(not selected or min(selected) >= 0,
+            "at least one nonnegative layer is required")
+    require(all(row >= 0 for row in rows), "vocabulary rows must be nonnegative")
     config_raw = source.file("config.json")
     index_raw = source.file("model.safetensors.index.json")
     try:
@@ -284,7 +328,8 @@ def build_plan(source: HttpRanges, model: str, layers: Iterable[int],
     require(isinstance(text, dict), "config has no text_config")
     n_layers, n_experts, dense = (text.get(k) for k in
                                   ("num_hidden_layers", "n_routed_experts", "dense_mlp_idx"))
-    require(isinstance(n_layers, int) and n_layers > max(selected), "selected layer is out of range")
+    require(isinstance(n_layers, int) and (not selected or n_layers > max(selected)),
+            "selected layer is out of range")
     require(isinstance(n_experts, int) and n_experts > 0, "invalid n_routed_experts")
     require(isinstance(dense, int) and 0 <= dense <= n_layers, "invalid dense_mlp_idx")
     experts = experts or {}
@@ -324,9 +369,34 @@ def build_plan(source: HttpRanges, model: str, layers: Iterable[int],
             for expert in sorted(set(ids)):
                 add(Entry(name, "axis0-slice", expert, loc.dtype, loc.shape[1:],
                           stride, loc.shard, loc.offset + expert * stride))
+    if rows:
+        # Bounded vocabulary rows for final-head evidence. The whole table is
+        # gigabytes; a selection is what makes the gate affordable. Rows are
+        # bounded by the unpadded vocabulary, not by the padded matrix, so a
+        # selection cannot reach into padding that the head never evaluates.
+        require(UNEMBED_NAME in available,
+                f"release index is missing required tensors: {UNEMBED_NAME}")
+        loc = reader.location(UNEMBED_NAME)
+        require(len(loc.shape) == 2, "unembedding table is not a matrix")
+        unpadded = text.get("unpadded_vocab_size")
+        require(unpadded is None or (isinstance(unpadded, bool) is False
+                                     and isinstance(unpadded, int)
+                                     and 0 < unpadded <= loc.shape[0]),
+                "invalid unpadded_vocab_size")
+        hidden = text.get("hidden_size")
+        require(hidden is None or hidden == loc.shape[1],
+                "unembedding width disagrees with hidden_size")
+        bound = loc.shape[0] if unpadded is None else int(unpadded)
+        require(rows[-1] < bound,
+                f"vocabulary row {rows[-1]} is outside the {bound}-row vocabulary")
+        stride = math.prod(loc.shape[1:]) * DTYPE_BYTES[loc.dtype]
+        for row in rows:
+            add(Entry(UNEMBED_NAME, "axis0-slice", row, loc.dtype, loc.shape[1:],
+                      stride, loc.shard, loc.offset + row * stride))
     require(len({(entry.name, entry.axis0) for entry in entries}) == len(entries),
             "duplicate fixture entries")
-    return Plan(model, source, config_raw, index_raw, selected, experts, entries)
+    return Plan(model, source, config_raw, index_raw, selected, experts, entries,
+                rows)
 
 
 def safe_name(label: str) -> str:
@@ -369,6 +439,7 @@ def extract(source: HttpRanges, plan: Plan, out: Path | str) -> dict[str, Any]:
         "format": "inkling-parity-fixture", "version": 1,
         "model_id": plan.model, "layers": list(plan.layers),
         "experts": {str(k): v for k, v in sorted(plan.experts.items())},
+        "vocab_rows": list(plan.vocab_rows),
         "source": {"repository": plan.model, "revision": plan.revision,
                    "config_sha256": hashlib.sha256(plan.config).hexdigest(),
                    "index_sha256": hashlib.sha256(plan.index).hexdigest()},
@@ -378,7 +449,8 @@ def extract(source: HttpRanges, plan: Plan, out: Path | str) -> dict[str, Any]:
         "remote_requests": source.requests,
         "entries": manifest_entries,
         "notes": ["strict HTTP ranges from an immutable revision",
-                  "vocabulary tables omitted", "routed experts are axis-0 slices"],
+                  "vocabulary tables are omitted unless bounded rows are selected",
+                  "routed experts and vocabulary rows are axis-0 slices"],
     }
     tmp = root / "fixture.json.tmp"
     tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
@@ -394,8 +466,10 @@ _required_layer_names = required_layer
 def build_remote_plan(source: HttpRanges, *, model_id: str, layers: Iterable[int],
                       experts: dict[int, list[int]] | None = None,
                       max_total_bytes: int = 8 << 30,
-                      max_tensor_bytes: int = 2 << 30) -> Plan:
-    return build_plan(source, model_id, layers, experts, max_total_bytes, max_tensor_bytes)
+                      max_tensor_bytes: int = 2 << 30,
+                      vocab_rows: Iterable[int] | None = None) -> Plan:
+    return build_plan(source, model_id, layers, experts, max_total_bytes,
+                      max_tensor_bytes, vocab_rows)
 
 
 def extract_remote_fixture(source: HttpRanges, plan: Plan, out: Path | str,
@@ -410,6 +484,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--revision", required=True)
     ap.add_argument("--layers", required=True)
     ap.add_argument("--experts", default="")
+    ap.add_argument("--vocab-rows", default="",
+                    help="bounded unembedding rows, e.g. 0-7,128")
     ap.add_argument("--out")
     ap.add_argument("--plan-only", action="store_true")
     ap.add_argument("--max-total-gib", type=float, default=8)
@@ -424,7 +500,8 @@ def main(argv: list[str] | None = None) -> int:
                           [int(value) for value in args.layers.split(",") if value],
                           parse_experts(args.experts),
                           int(args.max_total_gib * (1 << 30)),
-                          int(args.max_entry_gib * (1 << 30)))
+                          int(args.max_entry_gib * (1 << 30)),
+                          parse_rows(args.vocab_rows))
         if args.plan_only:
             result = plan.summary()
         else:

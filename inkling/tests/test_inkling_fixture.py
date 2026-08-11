@@ -140,6 +140,49 @@ class FixtureLoadTest(unittest.TestCase):
         self.assertEqual(names, {"model.llm.layers.0.attn.q_proj.weight"})
         self.assertEqual(len(fixture.layer_entries(1)), 3)
 
+    def test_vocabulary_rows_are_addressed_by_axis0(self) -> None:
+        name = "model.llm.unembed.weight"
+        builder = complete(self.root)
+        builder.add_slice(name, 0, [8], seed=31)
+        builder.add_slice(name, 17, [8], seed=31)
+        builder.write(vocab_rows=[17, 0])
+        fixture = load_fixture(self.root)
+        self.assertEqual(fixture.vocab_rows, (0, 17))
+        slices = fixture.vocab_row_slices()
+        self.assertEqual(list(slices), [0, 17])
+        self.assertNotEqual(fixture.raw(name, 0), fixture.raw(name, 17))
+        fixture.require_vocab_rows([0, 17])
+        with self.assertRaises(FixtureError):
+            fixture.require_vocab_rows([0, 5])
+
+    def test_head_only_fixture_needs_no_layer(self) -> None:
+        name = "model.llm.unembed.weight"
+        builder = FixtureBuilder(self.root)
+        builder.layers = []
+        builder.experts = {}
+        builder.add_tensor("model.llm.norm.weight", [8])
+        builder.add_slice(name, 4, [8], seed=31)
+        builder.write(vocab_rows=[4])
+        fixture = load_fixture(self.root)
+        self.assertEqual(fixture.layers, ())
+        self.assertEqual(list(fixture.vocab_row_slices()), [4])
+        self.assertEqual(fixture.verify(), fixture.payload_bytes)
+
+    def test_fixtures_without_vocabulary_rows_report_none(self) -> None:
+        complete(self.root).write()
+        fixture = load_fixture(self.root)
+        self.assertEqual(fixture.vocab_rows, ())
+        with self.assertRaises(FixtureError):
+            fixture.vocab_row_slices()
+
+    def test_declared_vocabulary_rows_must_match_the_slices(self) -> None:
+        builder = complete(self.root)
+        builder.add_slice("model.llm.unembed.weight", 0, [8], seed=31)
+        builder.write(vocab_rows=[0, 4])
+        fixture = load_fixture(self.root)
+        with self.assertRaises(FixtureError):
+            fixture.vocab_row_slices()
+
     def test_source_binding(self) -> None:
         complete(self.root).write()
         fixture = load_fixture(self.root)
@@ -172,7 +215,7 @@ class FixtureRejectionTest(unittest.TestCase):
         self.assertRejects("unsupported fixture version", version=2)
 
     def test_no_layers(self) -> None:
-        self.assertRejects("no valid layer list", layers=[])
+        self.assertRejects("covers neither layers nor vocabulary rows", layers=[])
 
     def test_negative_layer(self) -> None:
         self.assertRejects("no valid layer list", layers=[0, -1])
@@ -182,6 +225,11 @@ class FixtureRejectionTest(unittest.TestCase):
 
     def test_expert_selection_outside_layers(self) -> None:
         self.assertRejects("unselected layer", experts={"7": [1]})
+
+    def test_malformed_vocabulary_rows(self) -> None:
+        self.assertRejects("nonnegative integers", vocab_rows=[0, -3])
+        self.assertRejects("duplicates", vocab_rows=[2, 2])
+        self.assertRejects("not a list", vocab_rows={"0": 1})
 
     def test_declared_total_must_match(self) -> None:
         self.assertRejects("payload bytes", total_payload_bytes=1)

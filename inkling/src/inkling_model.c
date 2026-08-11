@@ -34,10 +34,8 @@ static int layer_capacity(const waste_inkling_config *cfg, int layer,
 static void rmsnorm(float *out, const float *x, const float *weight,
                     int n, float eps)
 {
-    double ss = 0.0;
-    for (int i = 0; i < n; i++) ss += (double)x[i] * x[i];
-    const float scale = 1.0f / sqrtf((float)(ss / n) + eps);
-    for (int i = 0; i < n; i++) out[i] = x[i] * scale * weight[i];
+    waste_inkling_rmsnorm_profile(out, x, weight, n, eps,
+                                  WASTE_INKLING_NUMERIC_F32);
 }
 
 static float dot(const float *a, const float *b, int n)
@@ -182,6 +180,89 @@ static int get_row(const float *table, int rows, int cols,
     return get ? get(ctx, row, cols, out) : -1;
 }
 
+int waste_inkling_final_head_profile(
+    const waste_inkling_config *cfg,
+    const waste_inkling_model_weights *w,
+    const waste_inkling_matrix_backend *backend,
+    const float *hidden_state,
+    const int *rows, int n_rows,
+    float *logits, size_t logits_count,
+    float *normalized, float *row_scratch,
+    waste_inkling_numeric_profile profile,
+    const waste_inkling_trace *trace)
+{
+    if (!cfg || !w || !hidden_state || !logits || !normalized ||
+        !row_scratch || !w->final_norm ||
+        cfg->hidden <= 0 || cfg->unpadded_vocab <= 0 ||
+        n_rows <= 0 || logits_count < (size_t)n_rows ||
+        !(cfg->logits_width_multiplier > 0.0f) ||
+        !waste_inkling_numeric_profile_valid(profile))
+        return -1;
+
+    const int bf16 = profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE;
+    /* The resident table may be shorter than the vocabulary; a callback covers
+     * exactly the unpadded vocabulary. Either way a selection that reaches
+     * past what is bound fails closed rather than reading a neighboring row. */
+    const int bound = w->unembedding ? w->unembedding_rows : cfg->unpadded_vocab;
+    if (bf16) {
+        if (!backend || !backend->matvec) return -1;
+    } else if (!w->unembedding && !w->unembedding_get) {
+        return -1;
+    } else if (n_rows > bound) {
+        return -1;
+    }
+    if (rows) {
+        const int limit = bf16 ? cfg->unpadded_vocab : bound;
+        for (int j = 0; j < n_rows; j++)
+            if (rows[j] < 0 || rows[j] >= limit) return -1;
+    }
+
+    const int hidden = cfg->hidden;
+    waste_inkling_rmsnorm_profile(normalized, hidden_state, w->final_norm,
+                                  hidden, cfg->rms_eps, profile);
+    if (trace && trace->emit_float &&
+        trace->emit_float(trace->ctx, -1, "final_norm", normalized,
+                          (size_t)hidden)) return -1;
+    if (bf16) {
+        /* The official forward divides the hidden state by this factor
+         * immediately before the vocabulary projection, so divide here rather
+         * than multiply by a reciprocal. The release multiplier is 16 and the
+         * two agree there; they diverge for any multiplier whose reciprocal is
+         * inexact, and the operation should not depend on that. */
+        for (int i = 0; i < hidden; i++)
+            normalized[i] = waste_inkling_bf16_round(
+                normalized[i] / cfg->logits_width_multiplier);
+    } else {
+        const float inv_width = 1.0f / cfg->logits_width_multiplier;
+        for (int i = 0; i < hidden; i++) normalized[i] *= inv_width;
+    }
+    if (trace && trace->emit_float &&
+        trace->emit_float(trace->ctx, -1, "final_norm_scaled", normalized,
+                          (size_t)hidden)) return -1;
+
+    if (bf16) {
+        if (backend->matvec(backend->ctx, -1, WASTE_IK_MAT_UNEMBED, 0,
+                            normalized, logits, n_rows, hidden)) return -1;
+    } else {
+        for (int j = 0; j < n_rows; j++) {
+            const int v = rows ? rows[j] : j;
+            const float *row;
+            if (w->unembedding) {
+                row = w->unembedding + (size_t)v * hidden;
+            } else {
+                if (w->unembedding_get(w->unembedding_ctx, v, hidden,
+                                       row_scratch)) return -1;
+                row = row_scratch;
+            }
+            logits[j] = dot(row, normalized, hidden);
+        }
+    }
+    if (trace && trace->emit_float &&
+        trace->emit_float(trace->ctx, -1, "logits", logits,
+                          (size_t)n_rows)) return -1;
+    return 0;
+}
+
 int waste_inkling_model_step_backend_trace(
     const waste_inkling_config *cfg,
     const waste_inkling_model_weights *w,
@@ -226,31 +307,13 @@ int waste_inkling_model_step_backend_trace(
             return -1;
     }
 
-    rmsnorm(scratch->row, scratch->x, w->final_norm,
-            cfg->hidden, cfg->rms_eps);
-    if (trace && trace->emit_float &&
-        trace->emit_float(trace->ctx, -1, "final_norm", scratch->row,
-                          (size_t)cfg->hidden)) return -1;
-    const float inv_width = 1.0f / cfg->logits_width_multiplier;
-    for (int i = 0; i < cfg->hidden; i++) scratch->row[i] *= inv_width;
-    if (trace && trace->emit_float &&
-        trace->emit_float(trace->ctx, -1, "final_norm_scaled", scratch->row,
-                          (size_t)cfg->hidden)) return -1;
-
-    for (int v = 0; v < cfg->unpadded_vocab; v++) {
-        const float *row;
-        if (w->unembedding) {
-            row = w->unembedding + (size_t)v * cfg->hidden;
-        } else {
-            if (w->unembedding_get(w->unembedding_ctx, v, cfg->hidden,
-                                   scratch->x)) return -1;
-            row = scratch->x;
-        }
-        logits[v] = dot(row, scratch->row, cfg->hidden);
-    }
-    if (trace && trace->emit_float &&
-        trace->emit_float(trace->ctx, -1, "logits", logits,
-                          (size_t)cfg->unpadded_vocab)) return -1;
+    /* Public stepping stays on the checked-in F32 profile. scratch->x holds the
+     * decoder output on the way in and is reused as the row staging buffer,
+     * which the primitive documents as allowed. */
+    if (waste_inkling_final_head_profile(cfg, w, NULL, scratch->x,
+            NULL, cfg->unpadded_vocab, logits, logits_count,
+            scratch->row, scratch->x, WASTE_INKLING_NUMERIC_F32, trace))
+        return -1;
     state->next_position++;
     return 0;
 }

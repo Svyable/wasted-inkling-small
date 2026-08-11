@@ -1,0 +1,228 @@
+name: Evidence checked Inkling BF16 final head
+
+# Validates the checked-in final-head primitive -- final RMS normalization, the
+# logits-width completion, and the bounded vocabulary projection -- against the
+# official head weights on the recorded Linux AVX2 reference profile.
+#
+# This gate is deliberately cheap: a head-only fixture selects no decoder layer
+# at all, so it downloads the two trunk norms and eleven unembedding rows, on
+# the order of a hundred kilobytes. It is not a claim about model logits; the
+# hidden state is a supplied source-bound vector and the report says so.
+
+on:
+  pull_request:
+    paths:
+      - "inkling/src/inkling_model.c"
+      - "inkling/src/inkling_model.h"
+      - "inkling/src/inkling_numeric.h"
+      - "inkling/src/inkling_layer.h"
+      - "inkling/tools/inkling_fixture.py"
+      - "inkling/tools/inkling_layer_parity.py"
+      - "inkling/tests/test_inkling_final_head_c.py"
+      - "mvp/inkling_c_config.py"
+      - "mvp/inkling_fixture_reference.py"
+      - "mvp/inkling_release_config.py"
+      - "mvp/inkling_remote_fixture.py"
+      - "mvp/inkling_remote_fixture_core.py"
+      - "experiments/inkling/run_inkling_checked_bf16_final_head.py"
+      - "experiments/inkling/test_inkling_checked_bf16_final_head_runner.py"
+      - ".github/workflows/evidence-inkling-checked-bf16-final-head.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-bf16-final-head-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The rows the gate evaluates: the first eight, two interior rows, and the
+  # last real vocabulary row of the 200,058-row unpadded vocabulary.
+  VOCAB_ROWS: "0-7,199,1024,200057"
+
+jobs:
+  final-head:
+    name: Checked BF16 final norm and bounded unembedding
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      OMP_NUM_THREADS: 1
+      MKL_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+      ONEDNN_MAX_CPU_ISA: AVX2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Cheap gates first: the head's numeric policy is pinned by a
+      # dependency-light differential test, so a policy regression fails here
+      # rather than after installing torch and fetching official bytes.
+      - name: Pin the head policy before dependencies or official bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            experiments/inkling/run_inkling_checked_bf16_final_head.py \
+            experiments/inkling/test_inkling_checked_bf16_final_head_runner.py \
+            mvp/inkling_remote_fixture.py \
+            mvp/inkling_remote_fixture_core.py
+          python3 inkling/tests/test_inkling_final_head_c.py
+          python3 inkling/tests/test_inkling_fixture.py
+          (cd mvp && python3 -m unittest test_inkling_remote_fixture)
+
+      - name: Install pinned official stack
+        run: |
+          python3 -m pip install --quiet --break-system-packages \
+            'torch==2.13.0' 'transformers==5.14.1'
+
+      - name: Structural checks on the evidence runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=inkling/tools:mvp:experiments/inkling python3 -m unittest \
+            test_inkling_checked_bf16_final_head_runner -v
+
+      - name: Reproduce the exact head-only fixture plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision="$(python3 -c "import json;print(json.load(open('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json'))['revision'])")"
+          echo "REVISION=$revision" >> "$GITHUB_ENV"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$revision" --layers "" --vocab-rows "$VOCAB_ROWS" \
+            --max-total-gib 1 --plan-only > "${RUNNER_TEMP}/head-plan.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          route = json.loads(Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json').read_text())
+          plan = json.loads((Path(os.environ['RUNNER_TEMP']) / 'head-plan.json').read_text())
+          rows = [0, 1, 2, 3, 4, 5, 6, 7, 199, 1024, 200057]
+          # Two trunk norms plus one slice per row, every one a BF16 row of
+          # 4096 values. A different dtype or width changes these numbers.
+          assert plan['revision'] == route['revision'], plan['revision']
+          assert plan['config_sha256'] == route['config_sha256']
+          assert plan['index_sha256'] == route['index_sha256']
+          assert plan['layers'] == []
+          assert plan['experts'] == {}
+          assert plan['vocab_rows'] == rows, plan['vocab_rows']
+          assert plan['entries'] == 2 + len(rows) == 13, plan['entries']
+          assert plan['payload_bytes'] == 13 * 4096 * 2 == 106496, plan['payload_bytes']
+          print('HEAD_PLAN entries=13 payload_bytes=106496 '
+                f"requests={plan['requests']} shards={len(plan['shards'])}")
+          PY
+
+      - name: Extract the CRC-verified head fixture and inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="${RUNNER_TEMP}/head-fixture"
+          extracted=false
+          for attempt in 1 2 3 4; do
+            rm -rf "$fixture"
+            if python3 mvp/inkling_remote_fixture.py \
+              --revision "$REVISION" --layers "" --vocab-rows "$VOCAB_ROWS" \
+              --max-total-gib 1 --out "$fixture" \
+              > "${RUNNER_TEMP}/head-manifest.json"; then
+              extracted=true
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then sleep $((10 << (attempt - 1))); fi
+          done
+          test "$extracted" = true
+          python3 inkling/tools/inkling_fixture.py --fixture "$fixture" --verify
+
+          PYTHONPATH=mvp python3 - <<PY
+          import hashlib, json, time
+          from pathlib import Path
+          import torch
+          from discover_inkling_router_experts import deterministic_hidden_states, input_sha256
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+          route = json.loads(Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json').read_text())
+          root = Path('${RUNNER_TEMP}')
+          source = HttpRangeSource('https://huggingface.co/thinkingmachines/Inkling-Small', route['revision'])
+          config = None
+          for attempt in range(4):
+              try:
+                  config = source.file('config.json')
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3: raise
+                  time.sleep(10 * (2**attempt))
+          assert config is not None
+          assert hashlib.sha256(config).hexdigest() == route['config_sha256']
+          (root / 'config.json').write_bytes(config)
+          # The same deterministic source-bound vectors the router selection
+          # and continuity gates use. This is an input to the head, not a
+          # decoder output: the report records that distinction.
+          inputs = deterministic_hidden_states(8, 4096, 19)
+          assert input_sha256(inputs, torch.bfloat16) == route['inputs_sha256']
+          (root / 'inputs.json').write_text(json.dumps(inputs.tolist()) + '\n')
+          PY
+          PYTHONPATH=mvp python3 mvp/inkling_c_config.py \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --out "${RUNNER_TEMP}/c-config.json"
+
+      - name: Execute the checked final head
+        shell: bash
+        run: |
+          set -uo pipefail
+          err="${RUNNER_TEMP}/final-head.err"
+          # Both streams go to the log and to the preserved artifact. An
+          # earlier revision redirected stderr to a file and printed it only on
+          # failure, which is exactly when the log needs it most and exactly
+          # when it turned out to be missing.
+          PYTHONPATH=inkling/tools:mvp:experiments/inkling python3 -X faulthandler \
+            experiments/inkling/run_inkling_checked_bf16_final_head.py \
+            --fixture "${RUNNER_TEMP}/head-fixture" \
+            --model-config "${RUNNER_TEMP}/config.json" \
+            --c-config "${RUNNER_TEMP}/c-config.json" \
+            --hidden-state "${RUNNER_TEMP}/inputs.json" \
+            --hidden-state-origin "deterministic-source-bound-inputs-position-0" \
+            --position 0 \
+            --workdir "${RUNNER_TEMP}" \
+            --out "${RUNNER_TEMP}/final-head.json" \
+            2>&1 | tee "$err"
+          rc="${PIPESTATUS[0]}"
+          echo "FINAL_HEAD_EXIT rc=$rc"
+          ls -l "${RUNNER_TEMP}"/final-head.* || true
+          if [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = json.loads((Path(os.environ['RUNNER_TEMP']) / 'final-head.json').read_text())
+          assert result['source']['source_rewriting'] is False
+          assert result['source']['production_source_unchanged'] is True
+          assert result['source']['unembedding_storage'] == 'matrix-backend-only'
+          assert result['fixture']['layers'] == []
+          assert result['selection']['rows'] == 11
+          assert result['selection']['hidden'] == 4096
+          assert result['width_multiplier'] == 16.0
+          assert len(result['execution']['backend_calls']) == 1
+          assert result['claims']['final_model_logits'] is False
+          assert result['decision']['first_boundary'] is None
+          assert result['decision']['classification'] == 'checked_in_bf16_final_head_exact'
+          for point in ('final_norm', 'final_norm_scaled', 'logits'):
+              assert result['comparison'][point]['raw_exact_fraction'] == 1.0, point
+          print('FINAL_HEAD_DECISION '
+                f"classification={result['decision']['classification']} "
+                f"rows={result['selection']['rows']} "
+                f"unembed_sha={result['selection']['unembedding_sha256']} "
+                f"hidden_sha={result['hidden_state']['sha256']}")
+          PY
+
+      - name: Preserve final-head evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: checked-bf16-final-head-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/head-plan.json
+            ${{ runner.temp }}/head-manifest.json
+            ${{ runner.temp }}/final-head.json
+            ${{ runner.temp }}/final-head.err
+          if-no-files-found: warn
+          retention-days: 30

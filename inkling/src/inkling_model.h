@@ -104,6 +104,41 @@ int waste_inkling_model_step_backend_trace(
     waste_inkling_expert_get_fn expert_get, void *expert_ctx,
     const waste_inkling_trace *trace);
 
+/* The final head as one primitive: final RMS normalization, the logits-width
+ * completion, and the vocabulary projection.  Split out of the model step so
+ * the completion semantics can be validated on a supplied hidden state without
+ * executing a decoder, and so both callers share one definition.
+ *
+ * A validated hidden state is *not* a claim about model logits.  This computes
+ * the head of whatever vector it is given.
+ *
+ * Row selection: `rows` may name `n_rows` vocabulary rows, or be NULL for the
+ * first `n_rows` rows.  `logits[j]` always corresponds to selection slot `j`.
+ * A bounded selection is what makes official-weight evidence affordable — the
+ * whole table is gigabytes.
+ *
+ * F32 evaluates the projection from `weights->unembedding` or its row
+ * callback.  BF16_REFERENCE requires `backend`, because exact BF16 evidence is
+ * kernel-sensitive and must not be manufactured by widening a BF16 table into
+ * this scalar path; the backend is called once with rows = n_rows and is
+ * responsible for holding exactly the selected rows in selection order.
+ *
+ * `normalized` and `row_scratch` are caller-owned [cfg->hidden] buffers.
+ * `normalized` may alias neither `logits` nor `weights->final_norm`;
+ * `row_scratch` may alias `hidden_state`, which is fully consumed first.
+ * Trace points are emitted at layer -1 as final_norm, final_norm_scaled, and
+ * logits, matching the model step. */
+int waste_inkling_final_head_profile(
+    const waste_inkling_config *cfg,
+    const waste_inkling_model_weights *weights,
+    const waste_inkling_matrix_backend *backend,
+    const float *hidden_state,
+    const int *rows, int n_rows,
+    float *logits, size_t logits_count,
+    float *normalized, float *row_scratch,
+    waste_inkling_numeric_profile profile,
+    const waste_inkling_trace *trace);
+
 #ifdef __cplusplus
 }
 #endif

@@ -127,6 +127,35 @@ private, fail-closed C execution profile and rerun the representative
 dense/local-sparse/global-sparse fixtures without rewriting production source
 at test time. Public dispatch remains out of scope for that promotion.
 
+## Final head
+
+The head — final RMS normalization, the logits-width completion, and the
+vocabulary projection — is now one checked-in primitive,
+`waste_inkling_final_head_profile()`, rather than three operations inlined in
+the model step. Its BF16 policy is the same one the layers use, by calling the same function:
+`waste_inkling_rmsnorm_profile()` (normalize, complete, multiply the BF16
+weight, complete again), then a width **division** completed to BF16, then a
+projection that only a matrix backend may evaluate. That function stays in
+`inkling_layer.c` because the retained evidence transforms rewrite its text in
+a copied tree; exporting it was the way to share it without a second copy.
+
+The division is worth naming. At the release value 16 a reciprocal multiply
+would agree bit-for-bit, so the choice is invisible in the release numbers and
+would silently diverge for any other multiplier. The primitive divides because
+that is the operation the official forward performs;
+`test_inkling_final_head_c.py` asserts the two differ on a value where they can.
+
+`evidence-inkling-checked-bf16-final-head.yml` runs the primitive against the
+official `InklingRMSNorm` and eleven official unembedding rows. It is a cheap
+gate — a head-only fixture selects no decoder layer, so it moves about 100 KiB
+of official payload — and it runs the dependency-light policy test before
+installing torch.
+
+What it does not establish: the hidden state is a supplied source-bound vector,
+not the output of a proven 42-layer decoder. The report carries
+`claims.final_model_logits: false` and the vector's origin and hash, so a green
+board cannot be read as model-level logit parity.
+
 ## Safety boundary
 
 All transforms remain temporary and source-integrity checked. Official data

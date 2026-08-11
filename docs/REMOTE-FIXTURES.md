@@ -123,6 +123,35 @@ That expert set covers the committed eight-position input sequence. Different
 hidden states may route differently and require a separately recorded selection
 artifact; the extractor never silently expands coverage.
 
+## Bounded vocabulary rows and head-only fixtures
+
+Final-head evidence needs the final norm and a handful of unembedding rows, not
+a 1.6 GiB vocabulary table. `--vocab-rows` selects rows of
+`model.llm.unembed.weight` as axis-0 slices, exactly the way `--experts`
+selects routed experts:
+
+```sh
+python3 mvp/inkling_remote_fixture.py \
+  --revision 21152b5312c653be115f33a8342759064144e281 \
+  --layers "" --vocab-rows 0-7,199,1024,200057 \
+  --max-total-gib 1 --plan-only
+```
+
+Ranges are inclusive, so a contiguous token window is one argument. Rows are
+bounded by `unpadded_vocab_size`, not by the padded matrix: a row that exists
+only as padding is refused, because the head never evaluates it.
+
+`--layers ""` is a **head-only fixture**. The two trunk norms are always
+included, so with eleven BF16 rows of width 4096 the plan is 13 entries and
+106,496 payload bytes. Requiring a decoder layer would have made this gate pay
+for hundreds of megabytes it never reads. A fixture must still cover something:
+no layers and no rows is refused on both the planning and the loading side.
+
+The consumer side is `Fixture.vocab_rows`, `Fixture.vocab_row_slices()`, and
+`Fixture.require_vocab_rows()`, which fails closed by name on any row the
+fixture does not carry and refuses a manifest whose declared rows disagree with
+its slices.
+
 ## Scope boundary
 
 This is an evidence acquisition tool under `mvp/`. It does not alter the WASTE

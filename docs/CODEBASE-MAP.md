@@ -156,6 +156,16 @@ Whole-model step: row-backed embedding → embedding RMSNorm → 42 layers →
 final RMSNorm → divide by `logits_mup_width_multiplier` → independent
 row-backed unembedding → truncate to `unpadded_vocab`.
 
+The last three of those are `waste_inkling_final_head_profile()`, split out so
+the head's completion semantics can be validated on a supplied hidden state
+without executing a decoder. The step calls it on the F32 profile; the
+`BF16_REFERENCE` profile requires a matrix backend for the vocabulary
+projection and accepts a bounded row selection, which is what makes
+official-weight head evidence affordable. Its normalization is the layer's
+`waste_inkling_rmsnorm_profile()`, exported from `src/inkling_layer.c` rather
+than copied — and left in that file because the retained evidence transforms
+patch its text in a copied tree.
+
 Exposes exact caller-owned storage sizes (`…_state_floats()`,
 `…_scratch_floats()`, `…_scratch_ints()`). Nothing in the execution layer
 allocates.

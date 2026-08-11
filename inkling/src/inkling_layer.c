@@ -48,9 +48,13 @@ static int apply_matvec(const waste_inkling_matrix_backend *backend,
                                 x, rows, cols, WASTE_INKLING_NUMERIC_F32);
 }
 
-static void rmsnorm_profile(float *out, const float *x, const float *weight,
-                            int n, float eps,
-                            waste_inkling_numeric_profile profile)
+/* The one checked-in RMS normalization policy. Deliberately not static and
+ * deliberately still here: the final head calls it so the two cannot drift,
+ * and the retained evidence transforms rewrite this text in a copied tree to
+ * build their F32-with-injected-BF16 probes. */
+void waste_inkling_rmsnorm_profile(float *out, const float *x,
+                                   const float *weight, int n, float eps,
+                                   waste_inkling_numeric_profile profile)
 {
     double ss = 0.0;
     for (int i = 0; i < n; i++) ss += (double)x[i] * x[i];
@@ -65,6 +69,13 @@ static void rmsnorm_profile(float *out, const float *x, const float *weight,
     } else {
         for (int i = 0; i < n; i++) out[i] = x[i] * scale * weight[i];
     }
+}
+
+static void rmsnorm_profile(float *out, const float *x, const float *weight,
+                            int n, float eps,
+                            waste_inkling_numeric_profile profile)
+{
+    waste_inkling_rmsnorm_profile(out, x, weight, n, eps, profile);
 }
 
 static float silu(float x) { return x / (1.0f + expf(-x)); }

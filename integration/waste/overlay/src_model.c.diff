@@ -1,36 +1,150 @@
 diff --git a/src/model.c b/src/model.c
-index 8d4992a..4cad9cc 100644
+index 51ef35b..73efeae 100644
 --- a/src/model.c
 +++ b/src/model.c
-@@ -22,6 +22,7 @@
+@@ -22,7 +22,9 @@
  #include <fcntl.h>
  #include <unistd.h>          /* MinGW ships one too: open/close/lseek */
  
 +#include "arch.h"
  #include "crc32.h"
++#include "inkling_container.h"
  #include "ecache.h"
  #include "json.h"
-@@ -972,6 +973,23 @@ int waste_model_load(waste_model *m, const char *dir, int kv_cap,
+ #include "platform.h"
+@@ -613,7 +615,16 @@ static int load_trunk(waste_model *m, const char *dir, const js_doc *d, int trun
+              * row is read per token. Keeping 1.11 GB resident to touch 7 KB
+              * of it is a bad trade against the expert cache, so leave it on
+              * disk and pread the row. */
+-            if (strstr(t->name, "embed_tokens.weight")) {
++            /* Inkling names its two vocabulary tables differently and has
++             * two of them, the embedding and an independent unembedding.
++             * Same trade either way: one row per token is read out of a
++             * table that would otherwise be the largest resident tensor in
++             * the container. The architecture test keeps the wider name
++             * rule off the Kimi path entirely, and waste_inkling_plan_
++             * memory_json leaves out exactly what this leaves on disk. */
++            if (strstr(t->name, "embed_tokens.weight") ||
++                (waste_arch_classify(m->cfg.arch) == WASTE_ARCH_INKLING &&
++                 waste_arch_row_backed(t->name))) {
+                 t->on_disk = 1;
+                 t->file_off = off;
+                 t->file_scale_off = soff;
+@@ -668,6 +679,65 @@ static int load_trunk(waste_model *m, const char *dir, const js_doc *d, int trun
+     return 0;
+ }
+ 
++/* The one claim this build has not earned.
++ *
++ * An Inkling container now loads: its geometry is built, its tensors are
++ * bound, and the byte counts the planner reported are the ones the load
++ * produced. None of that is a claim about what a token is. The forward
++ * pass further down is Kimi's, and running an Inkling model through it
++ * would produce output — which is the failure mode worth refusing, because
++ * wrong tokens look exactly like right ones. */
++static int inkling_refuses(const waste_model *m, const char *what)
++{
++    if (!waste_inkling_container_present(m)) return 0;
++    fprintf(stderr,
++            "waste: Inkling container loaded, but %s is not integrated in "
++            "this build\n", what);
++    return 1;
++}
++
++/* The Inkling container reads the same trunk.bin — same offsets, same scale
++ * tables, same packed widths — so it reads it through the same function.
++ * Declared in inkling_container.h, which is who it is for. */
++int waste_trunk_load(waste_model *m, const char *dir, const js_doc *d,
++                     int trunk)
++{
++    return load_trunk(m, dir, d, trunk);
++}
++
++/* One row of any trunk tensor as f32. waste_embed_row is this bound to
++ * Kimi's embedding name and its token clamp; Inkling has two tables under
++ * other names, and a second unpacker for the same bytes is a second thing
++ * to get wrong. Out-of-range rows are refused rather than clamped: the
++ * caller here is a bound weight table, not a user-supplied token. */
++int waste_trunk_row_f32(waste_model *m, const waste_tensor *t, long row,
++                        int cols, float *dst)
++{
++    if (!m || !t || !dst || cols < 1 || row < 0 || t->ndim < 2) return -1;
++    if (t->shape[t->ndim - 1] != cols) return -1;
++    if ((size_t)row >= t->n / (size_t)cols) return -1;
++    if (!t->on_disk) {
++        if (!t->data && !t->q) return -1;
++        waste_deq_row(t, row, cols, dst);
++        return 0;
++    }
++    if (!t->group || !m->embrow || !m->embsc) return -1;
++    {   /* trunk_row lands the row in the model's scratch; deq_row unpacks
++         * whatever width it is at. Reading it as a one-row tensor keeps
++         * the unpacking in one place rather than repeating the bit
++         * arithmetic for a third time. */
++        const int8_t *q; const uint16_t *sc;
++        waste_tensor one = *t;
++        trunk_row(m, t, row, &q, &sc);
++        one.data = NULL;
++        one.q = (int8_t *)q;
++        one.qs = (uint16_t *)sc;
++        one.on_disk = 0;
++        waste_deq_row(&one, 0, cols, dst);
++    }
++    return 0;
++}
++
+ static int tensor_matrix_ok(const waste_model *m, const char *name, int rows, int cols)
+ {
+     const waste_tensor *t = waste_find(m, name);
+@@ -1013,6 +1083,26 @@ int waste_model_load(waste_model *m, const char *dir, int kv_cap,
          }
      }
  
-+    /* The public loader is still Kimi-specific. Recognize Inkling before
-+     * Kimi config parsing or tensor binding so a plausible set of dimensions
-+     * cannot select the wrong forward path. The private Inkling runtime is
-+     * promoted only after official-weight parity and public schema review. */
++    /* Recognize Inkling before Kimi config parsing or tensor binding, so a
++     * plausible set of dimensions cannot select the wrong forward path.
++     *
++     * This used to be the refusal. It is now the branch: the Inkling side
++     * builds its own geometry contract and binds its own tensors, and
++     * everything below — Kimi's config, its expert banks, its scratch — is
++     * skipped rather than fed a container it would misread. What has not
++     * been promoted is execution, and that refusal moved to where it
++     * belongs, at the step. */
 +    {
 +        char arch[64];
 +        js_str(&d, js_get(&d, 0, "arch"), arch, sizeof arch);
 +        if (waste_arch_classify(arch) == WASTE_ARCH_INKLING) {
-+            fprintf(stderr,
-+                    "waste: Inkling container recognized, but this build "
-+                    "has no integrated public Inkling forward path\n");
++            const int rc = waste_inkling_container_load(m, dir, &d, kv_cap);
 +            js_free(&d);
 +            free(src);
-+            return -3;                       /* -> WASTE_E_UNSUPPORTED */
++            return rc;
 +        }
 +    }
 +
      {
          int cfg = js_get(&d, 0, "config");
          /* The converter flattens K3's nested text_config into `config` and
+@@ -1402,6 +1492,8 @@ void waste_model_free(waste_model *m)
+      * clean shutdown and a read on a descriptor that has been closed and
+      * possibly reused. */
+     waste_ecache_io_stop(&m->cache);
++    /* Before the tensors: the container holds views into them. */
++    waste_inkling_container_free(m);
+ 
+     /* Reachable on a partially-built model now that waste_open frees what
+      * a failed load left behind, so nothing here may assume the load got
+@@ -3556,6 +3648,7 @@ const float *waste_model_prefill(waste_model *m, const int *tokens, int n,
+ {
+     const waste_config *c = &m->cfg;
+     const int hid = c->hidden;
++    if (inkling_refuses(m, "the Inkling forward path")) return NULL;
+     if (n <= 0) return m->logits;
+     if (n == 1) return waste_model_step(m, tokens[0], pos0, NULL);
+     dump_pos0 = pos0;
+@@ -3698,6 +3791,7 @@ const float *waste_model_prefill(waste_model *m, const int *tokens, int n,
+ 
+ const float *waste_model_step(waste_model *m, int token, int pos, int *routed)
+ {
++    if (inkling_refuses(m, "the Inkling forward path")) return NULL;
+     dump_pos0 = pos;
+     const waste_config *c = &m->cfg;
+     const int hid = c->hidden;

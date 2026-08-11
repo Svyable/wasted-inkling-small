@@ -1,8 +1,8 @@
 diff --git a/tools/convert.py b/tools/convert.py
-index e156a81..74ddd16 100644
+index cf9abd4..fae3e06 100644
 --- a/tools/convert.py
 +++ b/tools/convert.py
-@@ -72,6 +72,7 @@ def atomic_text(path, value):
+@@ -87,6 +87,7 @@ def atomic_text(path, value):
  
  sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
  from mxfp4 import ST                                            # noqa: E402
@@ -10,7 +10,7 @@ index e156a81..74ddd16 100644
  
  # --- native VQ encoder (optional; ~15x the torch path) --------------------
  _VQ = None
-@@ -472,8 +473,18 @@ def main():
+@@ -807,8 +808,18 @@ def main():
      os.environ.setdefault("OMP_NUM_THREADS", str(per))
      os.environ.setdefault("MKL_NUM_THREADS", str(per))
  

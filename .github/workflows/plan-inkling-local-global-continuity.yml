@@ -1,0 +1,88 @@
+name: Plan Inkling local-global continuity fixture
+
+on:
+  pull_request:
+    paths:
+      - "docs/OFFICIAL-INKLING-SMALL-LAYER-PATTERN.json"
+      - "docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json"
+      - "docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.provenance.json"
+      - "mvp/inkling_remote_fixture.py"
+      - "mvp/inkling_remote_fixture_core.py"
+      - ".github/workflows/plan-inkling-local-global-continuity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inkling-local-global-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Bound exact layer-4 to layer-5 fixture
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify frozen route artifact and plan exact fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > "${RUNNER_TEMP}/fixture.env"
+          import hashlib, json
+          from pathlib import Path
+          route_path = Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json')
+          route_bytes = route_path.read_bytes()
+          route = json.loads(route_bytes)
+          prov = json.loads(Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.provenance.json').read_text())
+          pattern = json.loads(Path('docs/OFFICIAL-INKLING-SMALL-LAYER-PATTERN.json').read_text())
+          assert hashlib.sha256(route_bytes).hexdigest() == prov['route_file_sha256'] == 'b56af980cb2bb55a6551edbf5865f12acbb04c462ed4b3bf0bf33162c850a067'
+          assert prov['artifact_id'] == 9084905627
+          assert prov['artifact_zip_sha256'] == '9a9ca4e8ff876b4be34313c8710706ce7fa7b58876a5be66febba9f7b6f0fbf3'
+          assert route['pair'] == pattern['first_local_to_global_pair'] == [4, 5]
+          l4 = route['first_layer']['selected_experts']
+          l5 = route['second_layer']['selected_experts']
+          assert len(l4) == 37 and len(l5) == 25
+          assert sorted({x for row in route['first_layer']['topk_indices'] for x in row}) == l4
+          assert sorted({x for row in route['second_layer']['topk_indices'] for x in row}) == l5
+          print('REVISION=' + route['revision'])
+          print('EXPERTS=4:' + ','.join(map(str, l4)) + ';5:' + ','.join(map(str, l5)))
+          PY
+          # shellcheck source=/dev/null
+          . "${RUNNER_TEMP}/fixture.env"
+          python3 mvp/inkling_remote_fixture.py \
+            --revision "$REVISION" --layers 4,5 --experts "$EXPERTS" \
+            --max-total-gib 4 --plan-only > "${RUNNER_TEMP}/local-global-plan.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          route = json.loads(Path('docs/OFFICIAL-LOCAL-GLOBAL-ROUTES.json').read_text())
+          plan = json.loads((Path(os.environ['RUNNER_TEMP']) / 'local-global-plan.json').read_text())
+          assert plan['revision'] == route['revision']
+          assert plan['config_sha256'] == route['config_sha256']
+          assert plan['index_sha256'] == route['index_sha256']
+          assert plan['layers'] == [4, 5]
+          assert plan['experts'] == {
+              '4': route['first_layer']['selected_experts'],
+              '5': route['second_layer']['selected_experts'],
+          }
+          assert plan['payload_bytes'] < 4 * 1024**3
+          print(
+              'LOCAL_GLOBAL_FINAL_PLAN '
+              f"entries={plan['entries']} payload_bytes={plan['payload_bytes']} "
+              f"requests={plan['requests']} l4={len(plan['experts']['4'])} "
+              f"l5={len(plan['experts']['5'])}"
+          )
+          PY
+
+      - name: Preserve exact plan
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: local-global-final-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/local-global-plan.json
+          if-no-files-found: error
+          retention-days: 30

@@ -92,6 +92,14 @@ static const char *matrix_role(waste_inkling_matrix_kind kind)
     case WASTE_IK_MAT_SHARED_GATE: return "shared.gate";
     case WASTE_IK_MAT_SHARED_UP: return "shared.up";
     case WASTE_IK_MAT_SHARED_DOWN: return "shared.down";
+    /* Routed experts are not trunk matrices in G6 step 2. Their bank
+     * metadata is validated above, but record opening/cache dispatch is a
+     * later promotion. Keep these enum values explicit so a future matrix
+     * kind still trips -Wswitch instead of disappearing behind a default. */
+    case WASTE_IK_MAT_ROUTED_GATE:
+    case WASTE_IK_MAT_ROUTED_UP:
+    case WASTE_IK_MAT_ROUTED_DOWN:
+        return NULL;
     }
     return NULL;
 }

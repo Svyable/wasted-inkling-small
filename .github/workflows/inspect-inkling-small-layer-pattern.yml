@@ -1,0 +1,100 @@
+name: Inspect pinned Inkling-Small layer pattern
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/inspect-inkling-small-layer-pattern.yml"
+      - "mvp/inkling_remote_fixture.py"
+      - "mvp/inkling_remote_fixture_core.py"
+      - "mvp/inkling_release_config.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    name: Resolve first local-to-global adjacency
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fetch only pinned config and bind structural pattern
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}/mvp
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import time
+          from pathlib import Path
+          from inkling_remote_fixture import HttpRangeSource, RemoteFixtureError
+
+          revision = '21152b5312c653be115f33a8342759064144e281'
+          source = HttpRangeSource('https://huggingface.co/thinkingmachines/Inkling-Small', revision)
+          config_bytes = None
+          for attempt in range(4):
+              try:
+                  config_bytes = source.file('config.json')
+                  break
+              except RemoteFixtureError:
+                  if attempt == 3:
+                      raise
+                  time.sleep(10 * (2 ** attempt))
+          assert config_bytes is not None
+          digest = hashlib.sha256(config_bytes).hexdigest()
+          assert digest == 'dcb5b1d587bce2f1e6b29833d739a724d05b4bfaa2dc1164fbe679330478ba53'
+          full = json.loads(config_bytes)
+          text = full.get('text_config', full)
+          n_layers = int(text['num_hidden_layers'])
+          dense_layers = int(text.get('num_dense_layers', text.get('dense_mlp_idx', 0)))
+
+          local_ids = text.get('local_layer_ids')
+          if local_ids is None:
+              pattern = text.get('layer_types') or text.get('attention_layer_types')
+              if not isinstance(pattern, list) or len(pattern) != n_layers:
+                  raise AssertionError(
+                      'pinned config exposes neither local_layer_ids nor a complete layer-type list'
+                  )
+              local_ids = [i for i, value in enumerate(pattern) if str(value).lower() == 'local']
+          local = {int(value) for value in local_ids}
+          if any(layer < 0 or layer >= n_layers for layer in local):
+              raise AssertionError('local layer id outside model depth')
+
+          pairs = [
+              [layer, layer + 1]
+              for layer in range(max(dense_layers, 0), n_layers - 1)
+              if layer in local and (layer + 1) not in local
+          ]
+          if not pairs:
+              raise AssertionError('no local->global adjacency in pinned Inkling-Small config')
+          first = pairs[0]
+          result = {
+              'format': 'inkling-small-layer-pattern',
+              'version': 1,
+              'revision': revision,
+              'config_sha256': digest,
+              'num_hidden_layers': n_layers,
+              'dense_layers': dense_layers,
+              'local_layer_ids': sorted(local),
+              'local_to_global_pairs': pairs,
+              'first_local_to_global_pair': first,
+          }
+          Path('inkling-small-layer-pattern.json').write_text(
+              json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          print('INKLING_SMALL_PATTERN ' + json.dumps(result, sort_keys=True))
+          PY
+
+      - name: Preserve pinned pattern
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: inkling-small-layer-pattern-${{ github.run_id }}-${{ github.run_attempt }}
+          path: inkling-small-layer-pattern.json
+          if-no-files-found: error
+          retention-days: 30

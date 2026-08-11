@@ -51,6 +51,16 @@ _PROFILE_SPARSE_ELSE = """
 _PROFILE_SPARSE_END = """        }
         if (trace_f(trace, layer, "moe_out", s->ff, (size_t)hidden)) return -1;
 """
+# The preserved F32 implementation acquired this harmless line wrap when the
+# checked-in profile was promoted. Reconstruct the historical text shape in the
+# temporary copy so the old evidence transform keeps testing the same math.
+_PROFILE_SHARED_DOWN_CURRENT = """                if (apply_matvec(backend, layer, WASTE_IK_MAT_SHARED_DOWN, e,
+                                 s->branch, NULL, s->gate,
+                                 hidden, inter)) return -1;
+"""
+_PROFILE_SHARED_DOWN_LEGACY = """                if (apply_matvec(backend, layer, WASTE_IK_MAT_SHARED_DOWN, e,
+                                 s->branch, NULL, s->gate, hidden, inter)) return -1;
+"""
 
 
 def _legacy_f32_sparse_source(source: str) -> str:
@@ -122,7 +132,18 @@ def _legacy_f32_sparse_source(source: str) -> str:
 
 def transform_complete_moe_source(source: str) -> str:
     """Run the historical MoE transform against the preserved F32 arm."""
-    return _base_transform_moe_source(_legacy_f32_sparse_source(source))
+    legacy = _legacy_f32_sparse_source(source)
+    count = legacy.count(_PROFILE_SHARED_DOWN_CURRENT)
+    if count != 1:
+        raise implementation.ComposedMoeError(
+            f"expected exactly one wrapped F32 shared-down block; found {count}"
+        )
+    legacy = legacy.replace(
+        _PROFILE_SHARED_DOWN_CURRENT,
+        _PROFILE_SHARED_DOWN_LEGACY,
+        1,
+    )
+    return _base_transform_moe_source(legacy)
 
 
 def apply_final_residual_source(source: str) -> str:

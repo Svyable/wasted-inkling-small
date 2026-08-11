@@ -4,6 +4,8 @@
 #ifndef WASTE_INKLING_H
 #define WASTE_INKLING_H
 
+#include "inkling_numeric.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,15 +24,31 @@ extern "C" {
  * routed_index/routed_weight: [top_k]
  * shared_weight: [n_shared]
  *
- * Selected entries are returned in descending choice-score order.  Expert
- * accumulation is order-independent; ties use the lower expert id so the C
- * implementation is deterministic.
+ * Selected entries are returned in descending choice-score order; ties use the
+ * lower expert id so routing itself is deterministic.  Reduction order is a
+ * layer/numeric-profile contract, not a property of this router: the measured
+ * BF16 layer profile reorders each selected (expert id, weight) pair by expert
+ * id before accumulation, while the legacy F32 layer path retains its existing
+ * ordering.
  */
 int waste_inkling_route(const float *logits, const float *correction_bias,
                         int n_routed, int n_shared, int top_k,
                         float route_scale, float global_scale,
                         int *routed_index, float *routed_weight,
                         float *shared_weight);
+
+/* Internal numeric-profile variant.  F32 is exactly the legacy function above.
+ * BF16_REFERENCE applies the measured BF16 completion policy to router
+ * choice-score and normalized-weight arithmetic while deliberately keeping
+ * WASTE's deterministic low-ID cutoff tie rule.  It does not pretend that a
+ * platform-specific official top-k choice among numerically tied experts is
+ * portable; that ambiguity remains a separate evidence contract. */
+int waste_inkling_route_profile(
+    const float *logits, const float *correction_bias,
+    int n_routed, int n_shared, int top_k,
+    float route_scale, float global_scale,
+    int *routed_index, float *routed_weight, float *shared_weight,
+    waste_inkling_numeric_profile profile);
 
 /* One causal depthwise short-convolution update, matching Inkling's fp32
  * cached-decode path.  state is [channels][kernel] and is updated in place.

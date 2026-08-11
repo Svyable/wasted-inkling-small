@@ -1,4 +1,4 @@
-From e89522029084b822ab62419763d1957467f21a8b Mon Sep 17 00:00:00 2001
+From 64e1dba7ed525fd8987cece9ea43b5ce9c01c218 Mon Sep 17 00:00:00 2001
 From: WASTE Inkling integration <inkling@waste.invalid>
 Date: Sun, 2 Aug 2026 00:00:00 +0000
 Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
@@ -10,18 +10,19 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  docs/INKLING.md                       | 499 ++++++++++++++
  src/arch.c                            |  23 +
  src/arch.h                            |  25 +
- src/inkling.c                         | 142 ++++
- src/inkling.h                         |  57 ++
- src/inkling_attention.c               | 142 ++++
- src/inkling_attention.h               |  63 ++
+ src/inkling.c                         | 264 ++++++++
+ src/inkling.h                         |  75 +++
+ src/inkling_attention.c               | 210 ++++++
+ src/inkling_attention.h               |  78 +++
  src/inkling_bind.c                    | 135 ++++
  src/inkling_bind.h                    |  56 ++
  src/inkling_config.c                  | 190 ++++++
  src/inkling_config.h                  | 134 ++++
- src/inkling_layer.c                   | 341 ++++++++++
- src/inkling_layer.h                   | 174 +++++
+ src/inkling_layer.c                   | 543 +++++++++++++++
+ src/inkling_layer.h                   | 195 ++++++
  src/inkling_model.c                   | 282 ++++++++
  src/inkling_model.h                   | 110 +++
+ src/inkling_numeric.h                 |  43 ++
  src/inkling_private.c                 | 791 ++++++++++++++++++++++
  src/inkling_private.h                 |  70 ++
  src/inkling_public.c                  | 251 +++++++
@@ -38,7 +39,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tests/data/inkling-small-release.json |  10 +
  tests/run.sh                          |  81 +++
  tests/test_convert_inkling.py         | 230 +++++++
- tests/test_inkling.c                  | 118 ++++
+ tests/test_inkling.c                  | 179 +++++
  tests/test_inkling_attention_c.py     | 252 +++++++
  tests/test_inkling_bind_c.py          |  61 ++
  tests/test_inkling_c_math.py          | 158 +++++
@@ -60,7 +61,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tests/test_inkling_serve.py           | 470 +++++++++++++
  tests/test_inkling_stage.py           | 158 +++++
  tests/test_inkling_throughput.py      | 399 +++++++++++
- tests/test_inkling_trace_tools.py     | 107 +++
+ tests/test_inkling_trace_tools.py     | 110 +++
  tests/test_inkling_trunk.py           | 172 +++++
  tests/test_inkling_vq.py              | 209 ++++++
  tests/test_inkling_weights.py         | 182 +++++
@@ -77,7 +78,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/inkling_parity.py               | 416 ++++++++++++
  tools/inkling_plan.py                 | 563 ++++++++++++++++
  tools/inkling_qtrunk.py               | 254 +++++++
- tools/inkling_reference.py            | 163 +++++
+ tools/inkling_reference.py            | 186 ++++++
  tools/inkling_release.py              | 287 ++++++++
  tools/inkling_runtime_stage.py        | 748 +++++++++++++++++++++
  tools/inkling_serve.py                | 648 ++++++++++++++++++
@@ -89,7 +90,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/inkling_vq.py                   | 927 ++++++++++++++++++++++++++
  tools/inkling_weights.py              | 369 ++++++++++
  tools/inspect_inkling.py              | 799 ++++++++++++++++++++++
- 85 files changed, 21311 insertions(+), 7 deletions(-)
+ 86 files changed, 21887 insertions(+), 7 deletions(-)
  create mode 100644 PATCH18-HANDOFF.md
  create mode 100644 TEST-RESULTS-P18.txt
  create mode 100644 docs/INKLING.md
@@ -107,6 +108,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100644 src/inkling_layer.h
  create mode 100644 src/inkling_model.c
  create mode 100644 src/inkling_model.h
+ create mode 100644 src/inkling_numeric.h
  create mode 100644 src/inkling_private.c
  create mode 100644 src/inkling_private.h
  create mode 100644 src/inkling_public.c
@@ -920,10 +922,10 @@ index 0000000..ce387d5
 +#endif
 diff --git a/src/inkling.c b/src/inkling.c
 new file mode 100644
-index 0000000..8efc00c
+index 0000000..3c3e1e4
 --- /dev/null
 +++ b/src/inkling.c
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,264 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + *
@@ -953,29 +955,48 @@ index 0000000..8efc00c
 +    return x - log1pf(expf(x));
 +}
 +
-+int waste_inkling_route(const float *logits, const float *correction_bias,
-+                        int n_routed, int n_shared, int top_k,
-+                        float route_scale, float global_scale,
-+                        int *routed_index, float *routed_weight,
-+                        float *shared_weight)
++static int route_args_ok(const float *logits, const float *correction_bias,
++                         int n_routed, int n_shared, int top_k,
++                         int *routed_index, float *routed_weight,
++                         float *shared_weight,
++                         waste_inkling_numeric_profile profile)
 +{
-+    if (!logits || !correction_bias || !routed_index || !routed_weight ||
-+        (n_shared && !shared_weight) || n_routed <= 0 || n_shared < 0 ||
-+        top_k <= 0 || top_k > n_routed)
-+        return -1;
++    return logits && correction_bias && routed_index && routed_weight &&
++           (!n_shared || shared_weight) && n_routed > 0 && n_shared >= 0 &&
++           top_k > 0 && top_k <= n_routed &&
++           waste_inkling_numeric_profile_valid(profile);
++}
 +
-+    /* Descending insertion into a fixed top-k set.  Inkling-Small has k=6,
-+     * so this is cheaper and simpler than allocating/sorting 256 entries. */
++static int choose_routed(const float *logits, const float *correction_bias,
++                         int n_routed, int top_k,
++                         int *routed_index, float *choice_score,
++                         waste_inkling_numeric_profile profile)
++{
++    /* Descending insertion into a fixed top-k set. Inkling-Small has k=6,
++     * so this is cheaper and simpler than allocating/sorting 256 entries.
++     *
++     * BF16_REFERENCE completes the sigmoid and corrected choice score to BF16
++     * before comparison. Exact cutoff ties still use the lower expert id:
++     * that is WASTE's portable contract, intentionally distinct from a named
++     * platform-specific official top-k route. */
 +    for (int j = 0; j < top_k; j++) {
 +        routed_index[j] = -1;
-+        routed_weight[j] = -FLT_MAX; /* choice score until normalization */
++        choice_score[j] = -FLT_MAX;
 +    }
 +    for (int expert = 0; expert < n_routed; expert++) {
-+        const float choice = inkling_sigmoid(logits[expert]) + correction_bias[expert];
++        float sigmoid = inkling_sigmoid(logits[expert]);
++        float bias = correction_bias[expert];
++        if (profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE) {
++            sigmoid = waste_inkling_bf16_round(sigmoid);
++            bias = waste_inkling_bf16_round(bias);
++        }
++        float choice = sigmoid + bias;
++        if (profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE)
++            choice = waste_inkling_bf16_round(choice);
 +        int pos = top_k;
 +        for (int j = 0; j < top_k; j++) {
-+            if (choice > routed_weight[j] ||
-+                (choice == routed_weight[j] &&
++            if (choice > choice_score[j] ||
++                (choice == choice_score[j] &&
 +                 (routed_index[j] < 0 || expert < routed_index[j]))) {
 +                pos = j;
 +                break;
@@ -983,13 +1004,22 @@ index 0000000..8efc00c
 +        }
 +        if (pos == top_k) continue;
 +        for (int j = top_k - 1; j > pos; j--) {
-+            routed_weight[j] = routed_weight[j - 1];
++            choice_score[j] = choice_score[j - 1];
 +            routed_index[j] = routed_index[j - 1];
 +        }
-+        routed_weight[pos] = choice;
++        choice_score[pos] = choice;
 +        routed_index[pos] = expert;
 +    }
++    for (int j = 0; j < top_k; j++) if (routed_index[j] < 0) return -1;
++    return 0;
++}
 +
++static int normalize_route_f32(const float *logits,
++                               int n_routed, int n_shared, int top_k,
++                               float route_scale, float global_scale,
++                               const int *routed_index,
++                               float *routed_weight, float *shared_weight)
++{
 +    float max_logp = -FLT_MAX;
 +    for (int j = 0; j < top_k; j++) {
 +        const float v = inkling_logsigmoid(logits[routed_index[j]]);
@@ -1003,8 +1033,10 @@ index 0000000..8efc00c
 +    }
 +
 +    float denom = 0.0f;
-+    for (int j = 0; j < top_k; j++) denom += expf(routed_weight[j] - max_logp);
-+    for (int j = 0; j < n_shared; j++) denom += expf(shared_weight[j] - max_logp);
++    for (int j = 0; j < top_k; j++)
++        denom += expf(routed_weight[j] - max_logp);
++    for (int j = 0; j < n_shared; j++)
++        denom += expf(shared_weight[j] - max_logp);
 +    if (!(denom > 0.0f) || !isfinite(denom)) return -1;
 +
 +    const float scale = route_scale * global_scale / denom;
@@ -1013,6 +1045,98 @@ index 0000000..8efc00c
 +    for (int j = 0; j < n_shared; j++)
 +        shared_weight[j] = expf(shared_weight[j] - max_logp) * scale;
 +    return 0;
++}
++
++static int normalize_route_bf16(const float *logits,
++                                int n_routed, int n_shared, int top_k,
++                                float route_scale, float global_scale,
++                                const int *routed_index,
++                                float *routed_weight, float *shared_weight)
++{
++    /* Retained #50/#51 post-reduction policy (0x7f): BF16 log-sigmoid,
++     * stabilized deltas and exp terms; F32 denominator reduction; one BF16
++     * denominator completion; then BF16 logdenom/LSE/output delta/exp and
++     * BF16 completion after route/global scaling. */
++    float max_logp = -FLT_MAX;
++    for (int j = 0; j < top_k; j++) {
++        const float selected = waste_inkling_bf16_round(logits[routed_index[j]]);
++        const float value = waste_inkling_bf16_round(inkling_logsigmoid(selected));
++        routed_weight[j] = value;
++        if (value > max_logp) max_logp = value;
++    }
++    for (int j = 0; j < n_shared; j++) {
++        const float selected = waste_inkling_bf16_round(logits[n_routed + j]);
++        const float value = waste_inkling_bf16_round(inkling_logsigmoid(selected));
++        shared_weight[j] = value;
++        if (value > max_logp) max_logp = value;
++    }
++
++    float denom_f32 = 0.0f;
++    for (int j = 0; j < top_k; j++) {
++        const float delta = waste_inkling_bf16_round(routed_weight[j] - max_logp);
++        denom_f32 += waste_inkling_bf16_round(expf(delta));
++    }
++    for (int j = 0; j < n_shared; j++) {
++        const float delta = waste_inkling_bf16_round(shared_weight[j] - max_logp);
++        denom_f32 += waste_inkling_bf16_round(expf(delta));
++    }
++    const float denom = waste_inkling_bf16_round(denom_f32);
++    if (!(denom > 0.0f) || !isfinite(denom)) return -1;
++
++    const float logdenom = waste_inkling_bf16_round(logf(denom));
++    const float lse = waste_inkling_bf16_round(max_logp + logdenom);
++    const float route = waste_inkling_bf16_round(route_scale);
++    const float global = waste_inkling_bf16_round(global_scale);
++
++    for (int j = 0; j < top_k; j++) {
++        const float delta = waste_inkling_bf16_round(routed_weight[j] - lse);
++        float value = waste_inkling_bf16_round(expf(delta));
++        value = waste_inkling_bf16_round(value * route);
++        value = waste_inkling_bf16_round(value * global);
++        routed_weight[j] = waste_inkling_bf16_round(value);
++    }
++    for (int j = 0; j < n_shared; j++) {
++        const float delta = waste_inkling_bf16_round(shared_weight[j] - lse);
++        float value = waste_inkling_bf16_round(expf(delta));
++        value = waste_inkling_bf16_round(value * route);
++        value = waste_inkling_bf16_round(value * global);
++        shared_weight[j] = waste_inkling_bf16_round(value);
++    }
++    return 0;
++}
++
++int waste_inkling_route_profile(
++    const float *logits, const float *correction_bias,
++    int n_routed, int n_shared, int top_k,
++    float route_scale, float global_scale,
++    int *routed_index, float *routed_weight, float *shared_weight,
++    waste_inkling_numeric_profile profile)
++{
++    if (!route_args_ok(logits, correction_bias, n_routed, n_shared, top_k,
++                       routed_index, routed_weight, shared_weight, profile))
++        return -1;
++    if (choose_routed(logits, correction_bias, n_routed, top_k,
++                      routed_index, routed_weight, profile))
++        return -1;
++    return profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE
++         ? normalize_route_bf16(logits, n_routed, n_shared, top_k,
++                                 route_scale, global_scale, routed_index,
++                                 routed_weight, shared_weight)
++         : normalize_route_f32(logits, n_routed, n_shared, top_k,
++                                route_scale, global_scale, routed_index,
++                                routed_weight, shared_weight);
++}
++
++int waste_inkling_route(const float *logits, const float *correction_bias,
++                        int n_routed, int n_shared, int top_k,
++                        float route_scale, float global_scale,
++                        int *routed_index, float *routed_weight,
++                        float *shared_weight)
++{
++    return waste_inkling_route_profile(
++        logits, correction_bias, n_routed, n_shared, top_k,
++        route_scale, global_scale, routed_index, routed_weight, shared_weight,
++        WASTE_INKLING_NUMERIC_F32);
 +}
 +
 +int waste_inkling_sconv_step(const float *x, float *state,
@@ -1068,15 +1192,17 @@ index 0000000..8efc00c
 +}
 diff --git a/src/inkling.h b/src/inkling.h
 new file mode 100644
-index 0000000..7a8ee10
+index 0000000..d1ec3da
 --- /dev/null
 +++ b/src/inkling.h
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,75 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
 +#ifndef WASTE_INKLING_H
 +#define WASTE_INKLING_H
++
++#include "inkling_numeric.h"
 +
 +#ifdef __cplusplus
 +extern "C" {
@@ -1096,15 +1222,31 @@ index 0000000..7a8ee10
 + * routed_index/routed_weight: [top_k]
 + * shared_weight: [n_shared]
 + *
-+ * Selected entries are returned in descending choice-score order.  Expert
-+ * accumulation is order-independent; ties use the lower expert id so the C
-+ * implementation is deterministic.
++ * Selected entries are returned in descending choice-score order; ties use the
++ * lower expert id so routing itself is deterministic.  Reduction order is a
++ * layer/numeric-profile contract, not a property of this router: the measured
++ * BF16 layer profile reorders each selected (expert id, weight) pair by expert
++ * id before accumulation, while the legacy F32 layer path retains its existing
++ * ordering.
 + */
 +int waste_inkling_route(const float *logits, const float *correction_bias,
 +                        int n_routed, int n_shared, int top_k,
 +                        float route_scale, float global_scale,
 +                        int *routed_index, float *routed_weight,
 +                        float *shared_weight);
++
++/* Internal numeric-profile variant.  F32 is exactly the legacy function above.
++ * BF16_REFERENCE applies the measured BF16 completion policy to router
++ * choice-score and normalized-weight arithmetic while deliberately keeping
++ * WASTE's deterministic low-ID cutoff tie rule.  It does not pretend that a
++ * platform-specific official top-k choice among numerically tied experts is
++ * portable; that ambiguity remains a separate evidence contract. */
++int waste_inkling_route_profile(
++    const float *logits, const float *correction_bias,
++    int n_routed, int n_shared, int top_k,
++    float route_scale, float global_scale,
++    int *routed_index, float *routed_weight, float *shared_weight,
++    waste_inkling_numeric_profile profile);
 +
 +/* One causal depthwise short-convolution update, matching Inkling's fp32
 + * cached-decode path.  state is [channels][kernel] and is updated in place.
@@ -1129,12 +1271,13 @@ index 0000000..7a8ee10
 +}
 +#endif
 +#endif
+\ No newline at end of file
 diff --git a/src/inkling_attention.c b/src/inkling_attention.c
 new file mode 100644
-index 0000000..c9ab725
+index 0000000..49ae8ba
 --- /dev/null
 +++ b/src/inkling_attention.c
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,210 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -1147,13 +1290,30 @@ index 0000000..c9ab725
 +
 +static int positive(int value) { return value > 0; }
 +
-+static void rmsnorm_head(float *out, const float *x, const float *weight,
-+                         int dim, float eps)
++static void rmsnorm_head_profile(float *out, const float *x,
++                                 const float *weight, int dim, float eps,
++                                 waste_inkling_numeric_profile profile)
 +{
 +    double ss = 0.0;
-+    for (int i = 0; i < dim; i++) ss += (double)x[i] * (double)x[i];
++    if (profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE) {
++        for (int i = 0; i < dim; i++) {
++            const float source = waste_inkling_bf16_round(x[i]);
++            ss += (double)source * (double)source;
++        }
++    } else {
++        for (int i = 0; i < dim; i++)
++            ss += (double)x[i] * (double)x[i];
++    }
 +    const float scale = 1.0f / sqrtf((float)(ss / dim) + eps);
-+    for (int i = 0; i < dim; i++) out[i] = x[i] * scale * weight[i];
++    if (profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE) {
++        for (int i = 0; i < dim; i++) {
++            const float source = waste_inkling_bf16_round(x[i]);
++            const float normalized = waste_inkling_bf16_round(source * scale);
++            out[i] = waste_inkling_bf16_round(normalized * weight[i]);
++        }
++    } else {
++        for (int i = 0; i < dim; i++) out[i] = x[i] * scale * weight[i];
++    }
 +}
 +
 +int waste_inkling_attention_init(waste_inkling_attention_state *s,
@@ -1189,18 +1349,20 @@ index 0000000..c9ab725
 +    if (s) s->next_position = 0;
 +}
 +
-+int waste_inkling_attention_step(
++int waste_inkling_attention_step_profile(
 +    waste_inkling_attention_state *s,
 +    const float *q, const float *k, const float *v,
 +    const float *q_norm, const float *k_norm,
 +    const float *relative_state, const float *relative_proj,
 +    int position, int log_scaling_n_floor, float log_scaling_alpha,
-+    float *scores, float *out)
++    float *scores, float *out,
++    waste_inkling_numeric_profile profile)
 +{
 +    if (!s || !q || !k || !v || !q_norm || !k_norm ||
 +        !relative_state || !relative_proj || !scores || !out ||
 +        position < 0 || position != s->next_position ||
-+        log_scaling_n_floor < 0 || log_scaling_alpha < 0.0f)
++        log_scaling_n_floor < 0 || log_scaling_alpha < 0.0f ||
++        !waste_inkling_numeric_profile_valid(profile))
 +        return -1;
 +    if (!s->is_local && position >= s->capacity) return -1;
 +
@@ -1212,16 +1374,22 @@ index 0000000..c9ab725
 +    const size_t kv_stride = (size_t)KH * (size_t)D;
 +    float *kdst = s->k_cache + (size_t)slot * kv_stride;
 +    float *vdst = s->v_cache + (size_t)slot * kv_stride;
++    const int bf16 = profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE;
 +
 +    /* `out` temporarily stores normalized queries. Every score row is built
 +     * before that head's output overwrites its query row. */
 +    for (int h = 0; h < H; h++)
-+        rmsnorm_head(out + (size_t)h * D, q + (size_t)h * D,
-+                     q_norm, D, s->rms_eps);
++        rmsnorm_head_profile(out + (size_t)h * D, q + (size_t)h * D,
++                             q_norm, D, s->rms_eps, profile);
 +    for (int h = 0; h < KH; h++)
-+        rmsnorm_head(kdst + (size_t)h * D, k + (size_t)h * D,
-+                     k_norm, D, s->rms_eps);
-+    memcpy(vdst, v, kv_stride * sizeof(float));
++        rmsnorm_head_profile(kdst + (size_t)h * D, k + (size_t)h * D,
++                             k_norm, D, s->rms_eps, profile);
++    if (bf16) {
++        for (size_t i = 0; i < kv_stride; i++)
++            vdst[i] = waste_inkling_bf16_round(v[i]);
++    } else {
++        memcpy(vdst, v, kv_stride * sizeof(float));
++    }
 +
 +    const int begin = s->is_local && position + 1 > s->capacity
 +                    ? position + 1 - s->capacity : 0;
@@ -1243,15 +1411,34 @@ index 0000000..c9ab725
 +            const float *kc = s->k_cache + (size_t)key_slot * kv_stride
 +                            + (size_t)kh * D;
 +            float score = 0.0f;
-+            for (int d = 0; d < D; d++) score += qh[d] * kc[d];
-+            score *= dot_scale;
++            if (bf16) {
++                for (int d = 0; d < D; d++)
++                    score += waste_inkling_bf16_round(qh[d]) *
++                             waste_inkling_bf16_round(kc[d]);
++                score = waste_inkling_bf16_round(score);
++                score = waste_inkling_bf16_round(score * dot_scale);
++            } else {
++                for (int d = 0; d < D; d++) score += qh[d] * kc[d];
++                score *= dot_scale;
++            }
 +            const int distance = position - key_pos;
 +            if (distance >= 0 && distance < s->relative_extent) {
 +                const float *rs = relative_state + (size_t)h * s->d_rel;
 +                float bias = 0.0f;
-+                for (int r = 0; r < s->d_rel; r++)
-+                    bias += rs[r] * relative_proj[(size_t)r * s->relative_extent + distance];
-+                score += tau * bias;
++                if (bf16) {
++                    for (int r = 0; r < s->d_rel; r++)
++                        bias += waste_inkling_bf16_round(rs[r]) *
++                                waste_inkling_bf16_round(relative_proj[
++                                    (size_t)r * s->relative_extent + distance]);
++                    bias = waste_inkling_bf16_round(bias);
++                    bias = waste_inkling_bf16_round(tau * bias);
++                    score = waste_inkling_bf16_round(score + bias);
++                } else {
++                    for (int r = 0; r < s->d_rel; r++)
++                        bias += rs[r] * relative_proj[
++                            (size_t)r * s->relative_extent + distance];
++                    score += tau * bias;
++                }
 +            }
 +            row[j] = score;
 +            if (score > max_score) max_score = score;
@@ -1270,24 +1457,50 @@ index 0000000..c9ab725
 +            const int key_slot = s->is_local ? key_pos % s->capacity : key_pos;
 +            const float *vc = s->v_cache + (size_t)key_slot * kv_stride
 +                            + (size_t)kh * D;
-+            const float weight = row[j] * inv_sum;
-+            for (int d = 0; d < D; d++) oh[d] += weight * vc[d];
++            const float weight = bf16
++                ? waste_inkling_bf16_round(row[j] * inv_sum)
++                : row[j] * inv_sum;
++            if (bf16) {
++                for (int d = 0; d < D; d++)
++                    oh[d] += weight * waste_inkling_bf16_round(vc[d]);
++            } else {
++                for (int d = 0; d < D; d++) oh[d] += weight * vc[d];
++            }
 +        }
++        if (bf16)
++            for (int d = 0; d < D; d++)
++                oh[d] = waste_inkling_bf16_round(oh[d]);
 +    }
 +    s->next_position++;
 +    return 0;
 +}
++
++int waste_inkling_attention_step(
++    waste_inkling_attention_state *s,
++    const float *q, const float *k, const float *v,
++    const float *q_norm, const float *k_norm,
++    const float *relative_state, const float *relative_proj,
++    int position, int log_scaling_n_floor, float log_scaling_alpha,
++    float *scores, float *out)
++{
++    return waste_inkling_attention_step_profile(
++        s, q, k, v, q_norm, k_norm, relative_state, relative_proj,
++        position, log_scaling_n_floor, log_scaling_alpha, scores, out,
++        WASTE_INKLING_NUMERIC_F32);
++}
 diff --git a/src/inkling_attention.h b/src/inkling_attention.h
 new file mode 100644
-index 0000000..2bd3359
+index 0000000..3ec6e07
 --- /dev/null
 +++ b/src/inkling_attention.h
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,78 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
 +#ifndef WASTE_INKLING_ATTENTION_H
 +#define WASTE_INKLING_ATTENTION_H
++
++#include "inkling_numeric.h"
 +
 +#ifdef __cplusplus
 +extern "C" {
@@ -1341,6 +1554,19 @@ index 0000000..2bd3359
 +    const float *relative_state, const float *relative_proj,
 +    int position, int log_scaling_n_floor, float log_scaling_alpha,
 +    float *scores, float *out);
++
++/* Internal numeric-profile variant. F32 is the exact legacy behavior above.
++ * BF16_REFERENCE implements the retained portable attention policy: BF16-bound
++ * head RMSNorm, K/V cache operands, score reductions/scaling, probability
++ * operands, and completed attention output. */
++int waste_inkling_attention_step_profile(
++    waste_inkling_attention_state *state,
++    const float *q, const float *k, const float *v,
++    const float *q_norm, const float *k_norm,
++    const float *relative_state, const float *relative_proj,
++    int position, int log_scaling_n_floor, float log_scaling_alpha,
++    float *scores, float *out,
++    waste_inkling_numeric_profile profile);
 +
 +#ifdef __cplusplus
 +}
@@ -1887,10 +2113,10 @@ index 0000000..7af4eca
 +#endif
 diff --git a/src/inkling_layer.c b/src/inkling_layer.c
 new file mode 100644
-index 0000000..5440886
+index 0000000..29aca44
 --- /dev/null
 +++ b/src/inkling_layer.c
-@@ -0,0 +1,341 @@
+@@ -0,0 +1,543 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -1912,24 +2138,52 @@ index 0000000..5440886
 +    }
 +}
 +
-+static int apply_matvec(const waste_inkling_matrix_backend *backend,
-+                        int layer, waste_inkling_matrix_kind kind, int index,
-+                        float *out, const float *resident, const float *x,
-+                        int rows, int cols)
++static int apply_matvec_profile(const waste_inkling_matrix_backend *backend,
++                                int layer, waste_inkling_matrix_kind kind,
++                                int index, float *out, const float *resident,
++                                const float *x, int rows, int cols,
++                                waste_inkling_numeric_profile profile)
 +{
++    if (profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE) {
++        /* Exact BF16 evidence is kernel-sensitive.  Never manufacture it by
++         * widening a resident BF16 matrix and using the scalar F32 fallback. */
++        return backend && backend->matvec
++             ? backend->matvec(backend->ctx, layer, kind, index,
++                               x, out, rows, cols)
++             : -1;
++    }
 +    if (resident) { matvec(out, resident, x, rows, cols); return 0; }
 +    return backend && backend->matvec
 +         ? backend->matvec(backend->ctx, layer, kind, index, x, out, rows, cols)
 +         : -1;
 +}
 +
-+static void rmsnorm(float *out, const float *x, const float *weight,
-+                    int n, float eps)
++static int apply_matvec(const waste_inkling_matrix_backend *backend,
++                        int layer, waste_inkling_matrix_kind kind, int index,
++                        float *out, const float *resident, const float *x,
++                        int rows, int cols)
++{
++    return apply_matvec_profile(backend, layer, kind, index, out, resident,
++                                x, rows, cols, WASTE_INKLING_NUMERIC_F32);
++}
++
++static void rmsnorm_profile(float *out, const float *x, const float *weight,
++                            int n, float eps,
++                            waste_inkling_numeric_profile profile)
 +{
 +    double ss = 0.0;
 +    for (int i = 0; i < n; i++) ss += (double)x[i] * x[i];
 +    const float scale = 1.0f / sqrtf((float)(ss / n) + eps);
-+    for (int i = 0; i < n; i++) out[i] = x[i] * scale * weight[i];
++    if (profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE) {
++        /* Retained official-layer ordering: normalize, complete to BF16,
++         * multiply the BF16 weight, then complete the output again. */
++        for (int i = 0; i < n; i++) {
++            const float normalized = waste_inkling_bf16_round(x[i] * scale);
++            out[i] = waste_inkling_bf16_round(normalized * weight[i]);
++        }
++    } else {
++        for (int i = 0; i < n; i++) out[i] = x[i] * scale * weight[i];
++    }
 +}
 +
 +static float silu(float x) { return x / (1.0f + expf(-x)); }
@@ -1959,6 +2213,15 @@ index 0000000..5440886
 +    for (int i = 0; i < intermediate; i++) gate[i] = silu(gate[i]) * up[i];
 +    matvec(out, w->down, gate, hidden, intermediate);
 +    return 0;
++}
++
++static void bf16_gated_activation(float *gate, const float *up, int n)
++{
++    for (int i = 0; i < n; i++) {
++        const float activated = waste_inkling_bf16_round(silu(gate[i]));
++        gate[i] = waste_inkling_bf16_round(
++            activated * waste_inkling_bf16_round(up[i]));
++    }
 +}
 +
 +static int get_routed(const waste_inkling_config *cfg,
@@ -2073,7 +2336,7 @@ index 0000000..5440886
 +    return 0;
 +}
 +
-+int waste_inkling_layer_step_backend_trace(
++int waste_inkling_layer_step_backend_trace_profile(
 +    const waste_inkling_config *cfg, int layer,
 +    const waste_inkling_layer_weights *w,
 +    const waste_inkling_matrix_backend *backend,
@@ -2081,9 +2344,11 @@ index 0000000..5440886
 +    float *x, int position,
 +    waste_inkling_layer_scratch *s,
 +    waste_inkling_expert_get_fn expert_get, void *expert_ctx,
-+    const waste_inkling_trace *trace)
++    const waste_inkling_trace *trace,
++    waste_inkling_numeric_profile profile)
 +{
 +    if (!cfg || layer < 0 || layer >= cfg->n_layers || !w ||
++        !waste_inkling_numeric_profile_valid(profile) ||
 +        !w->input_norm || !w->post_attention_norm ||
 +        (!backend && !weights_common_ok(w)) ||
 +        !w->q_norm || !w->k_norm || !w->relative_proj ||
@@ -2100,17 +2365,30 @@ index 0000000..5440886
 +    const int qdim = l->num_heads * l->head_dim;
 +    const int kdim = l->num_kv_heads * l->head_dim;
 +    const int rdim = l->num_heads * cfg->d_rel;
++    const int bf16 = profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE;
 +
-+    rmsnorm(s->norm, x, w->input_norm, hidden, cfg->rms_eps);
++    /* The measured exact profile requires native BF16 matmuls for both dense
++     * and sparse layers.  Sparse execution additionally reuses dead Q scratch
++     * as the shared FP32 accumulator after attention; dense layers do not need
++     * that alias, so only sparse geometry must satisfy Q >= H. */
++    if (bf16 && (!backend || !backend->matvec || (expected_sparse && qdim < hidden)))
++        return -1;
++
++    rmsnorm_profile(s->norm, x, w->input_norm, hidden, cfg->rms_eps, profile);
 +    if (trace_f(trace, layer, "input_norm", s->norm, (size_t)hidden)) return -1;
-+    if (apply_matvec(backend, layer, WASTE_IK_MAT_Q, 0, s->q, w->wq, s->norm, qdim, hidden)) return -1;
-+    if (apply_matvec(backend, layer, WASTE_IK_MAT_K, 0, s->k, w->wk, s->norm, kdim, hidden)) return -1;
-+    if (apply_matvec(backend, layer, WASTE_IK_MAT_V, 0, s->v, w->wv, s->norm, kdim, hidden)) return -1;
-+    if (apply_matvec(backend, layer, WASTE_IK_MAT_R, 0, s->relative, w->wr, s->norm, rdim, hidden)) return -1;
++    if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_Q, 0,
++            s->q, w->wq, s->norm, qdim, hidden, profile)) return -1;
++    if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_K, 0,
++            s->k, w->wk, s->norm, kdim, hidden, profile)) return -1;
++    if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_V, 0,
++            s->v, w->wv, s->norm, kdim, hidden, profile)) return -1;
++    if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_R, 0,
++            s->relative, w->wr, s->norm, rdim, hidden, profile)) return -1;
 +    if (trace_f(trace, layer, "q_proj", s->q, (size_t)qdim) ||
 +        trace_f(trace, layer, "k_proj", s->k, (size_t)kdim) ||
 +        trace_f(trace, layer, "v_proj", s->v, (size_t)kdim) ||
-+        trace_f(trace, layer, "relative_proj_input", s->relative, (size_t)rdim)) return -1;
++        trace_f(trace, layer, "relative_proj_input", s->relative, (size_t)rdim))
++        return -1;
 +    if (waste_inkling_sconv_step(s->k, state->k_conv_state, w->k_sconv,
 +                                 kdim, cfg->conv_kernel, s->k) ||
 +        waste_inkling_sconv_step(s->v, state->v_conv_state, w->v_sconv,
@@ -2118,83 +2396,210 @@ index 0000000..5440886
 +        return -1;
 +    if (trace_f(trace, layer, "k_sconv", s->k, (size_t)kdim) ||
 +        trace_f(trace, layer, "v_sconv", s->v, (size_t)kdim)) return -1;
-+    if (waste_inkling_attention_step(&state->attention,
++    if (waste_inkling_attention_step_profile(&state->attention,
 +            s->q, s->k, s->v, w->q_norm, w->k_norm,
 +            s->relative, w->relative_proj, position,
 +            l->is_local ? 0 : cfg->log_scaling_n_floor,
-+            cfg->log_scaling_alpha, s->scores, s->attn_out))
++            cfg->log_scaling_alpha, s->scores, s->attn_out, profile))
 +        return -1;
-+    if (trace_f(trace, layer, "attention_out", s->attn_out, (size_t)qdim)) return -1;
-+    if (apply_matvec(backend, layer, WASTE_IK_MAT_O, 0, s->branch, w->wo, s->attn_out, hidden, qdim)) return -1;
++    if (trace_f(trace, layer, "attention_out", s->attn_out, (size_t)qdim))
++        return -1;
++    if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_O, 0,
++            s->branch, w->wo, s->attn_out, hidden, qdim, profile)) return -1;
 +    if (waste_inkling_sconv_step(s->branch, state->attn_conv_state,
 +                                 w->attn_sconv, hidden, cfg->conv_kernel,
 +                                 s->branch))
 +        return -1;
-+    if (trace_f(trace, layer, "attention_branch", s->branch, (size_t)hidden)) return -1;
-+    for (int i = 0; i < hidden; i++) x[i] += s->branch[i];
-+    if (trace_f(trace, layer, "post_attention_residual", x, (size_t)hidden)) return -1;
++    if (trace_f(trace, layer, "attention_branch", s->branch, (size_t)hidden))
++        return -1;
++    if (bf16) {
++        for (int i = 0; i < hidden; i++) {
++            const float residual = waste_inkling_bf16_round(x[i]);
++            const float branch = waste_inkling_bf16_round(s->branch[i]);
++            x[i] = waste_inkling_bf16_round(residual + branch);
++        }
++    } else {
++        for (int i = 0; i < hidden; i++) x[i] += s->branch[i];
++    }
++    if (trace_f(trace, layer, "post_attention_residual", x, (size_t)hidden))
++        return -1;
 +
-+    rmsnorm(s->norm, x, w->post_attention_norm, hidden, cfg->rms_eps);
-+    if (trace_f(trace, layer, "post_attention_norm", s->norm, (size_t)hidden)) return -1;
++    rmsnorm_profile(s->norm, x, w->post_attention_norm,
++                    hidden, cfg->rms_eps, profile);
++    if (trace_f(trace, layer, "post_attention_norm", s->norm, (size_t)hidden))
++        return -1;
 +    if (!w->sparse) {
 +        if ((!backend && (!w->dense_gate || !w->dense_up || !w->dense_down)) ||
 +            !w->dense_global_scale) return -1;
 +        const int inter = cfg->dense_intermediate;
-+        if (apply_matvec(backend, layer, WASTE_IK_MAT_DENSE_GATE, 0, s->gate, w->dense_gate, s->norm, inter, hidden)) return -1;
-+        if (apply_matvec(backend, layer, WASTE_IK_MAT_DENSE_UP, 0, s->up, w->dense_up, s->norm, inter, hidden)) return -1;
-+        for (int i = 0; i < inter; i++) s->gate[i] = silu(s->gate[i]) * s->up[i];
-+        if (apply_matvec(backend, layer, WASTE_IK_MAT_DENSE_DOWN, 0, s->ff, w->dense_down, s->gate, hidden, inter)) return -1;
-+        for (int i = 0; i < hidden; i++) s->ff[i] *= *w->dense_global_scale;
-+        if (trace_f(trace, layer, "dense_mlp_out", s->ff, (size_t)hidden)) return -1;
++        if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_DENSE_GATE, 0,
++                s->gate, w->dense_gate, s->norm, inter, hidden, profile)) return -1;
++        if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_DENSE_UP, 0,
++                s->up, w->dense_up, s->norm, inter, hidden, profile)) return -1;
++        if (bf16) {
++            bf16_gated_activation(s->gate, s->up, inter);
++        } else {
++            for (int i = 0; i < inter; i++) s->gate[i] = silu(s->gate[i]) * s->up[i];
++        }
++        if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_DENSE_DOWN, 0,
++                s->ff, w->dense_down, s->gate, hidden, inter, profile)) return -1;
++        if (bf16) {
++            const float scale = waste_inkling_bf16_round(*w->dense_global_scale);
++            for (int i = 0; i < hidden; i++)
++                s->ff[i] = waste_inkling_bf16_round(
++                    waste_inkling_bf16_round(s->ff[i]) * scale);
++        } else {
++            for (int i = 0; i < hidden; i++) s->ff[i] *= *w->dense_global_scale;
++        }
++        if (trace_f(trace, layer, "dense_mlp_out", s->ff, (size_t)hidden))
++            return -1;
 +    } else {
 +        if ((!backend && (!w->router_weight || !w->shared_gate ||
 +                          !w->shared_up || !w->shared_down)) ||
 +            !w->router_bias || !w->router_global_scale) return -1;
 +        const int total = cfg->n_routed_experts + cfg->n_shared_experts;
 +        const int inter = cfg->moe_intermediate;
-+        if (apply_matvec(backend, layer, WASTE_IK_MAT_ROUTER, 0, s->router_logits, w->router_weight, s->norm, total, hidden)) return -1;
-+        if (waste_inkling_route(s->router_logits, w->router_bias,
++        if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_ROUTER, 0,
++                s->router_logits, w->router_weight, s->norm,
++                total, hidden, profile)) return -1;
++        if (waste_inkling_route_profile(s->router_logits, w->router_bias,
 +                cfg->n_routed_experts, cfg->n_shared_experts, cfg->top_k,
 +                cfg->route_scale, *w->router_global_scale,
-+                s->routed_index, s->routed_weight, s->shared_weight))
++                s->routed_index, s->routed_weight, s->shared_weight, profile))
 +            return -1;
-+        if (trace_f(trace, layer, "router_logits", s->router_logits, (size_t)cfg->n_routed_experts) ||
-+            trace_i(trace, layer, "routed_index", s->routed_index, (size_t)cfg->top_k) ||
-+            trace_f(trace, layer, "routed_weight", s->routed_weight, (size_t)cfg->top_k) ||
-+            trace_f(trace, layer, "shared_weight", s->shared_weight, (size_t)cfg->n_shared_experts)) return -1;
-+        for (int i = 0; i < hidden; i++) s->ff[i] = 0.0f;
-+        for (int k = 0; k < cfg->top_k; k++) {
-+            waste_inkling_expert_weights ew;
-+            if (get_routed(cfg, w, layer, s->routed_index[k],
-+                           expert_get, expert_ctx, &ew) ||
-+                expert_eval(s->branch, s->gate, s->up, &ew,
-+                            s->norm, hidden, inter)) return -1;
-+            const float gamma = s->routed_weight[k];
-+            for (int i = 0; i < hidden; i++) s->ff[i] += gamma * s->branch[i];
-+        }
-+        const size_t gh = (size_t)inter * hidden;
-+        const size_t dh = (size_t)hidden * inter;
-+        for (int e = 0; e < cfg->n_shared_experts; e++) {
-+            if (w->shared_gate && w->shared_up && w->shared_down) {
-+                waste_inkling_expert_weights ew = {
-+                    w->shared_gate + (size_t)e * gh,
-+                    w->shared_up + (size_t)e * gh,
-+                    w->shared_down + (size_t)e * dh,
-+                };
-+                if (expert_eval(s->branch, s->gate, s->up, &ew,
-+                                s->norm, hidden, inter)) return -1;
-+            } else {
-+                if (apply_matvec(backend, layer, WASTE_IK_MAT_SHARED_GATE, e,
-+                                 s->gate, NULL, s->norm, inter, hidden) ||
-+                    apply_matvec(backend, layer, WASTE_IK_MAT_SHARED_UP, e,
-+                                 s->up, NULL, s->norm, inter, hidden)) return -1;
-+                for (int j = 0; j < inter; j++)
-+                    s->gate[j] = silu(s->gate[j]) * s->up[j];
-+                if (apply_matvec(backend, layer, WASTE_IK_MAT_SHARED_DOWN, e,
-+                                 s->branch, NULL, s->gate, hidden, inter)) return -1;
++        if (trace_f(trace, layer, "router_logits", s->router_logits,
++                    (size_t)cfg->n_routed_experts) ||
++            trace_i(trace, layer, "routed_index", s->routed_index,
++                    (size_t)cfg->top_k) ||
++            trace_f(trace, layer, "routed_weight", s->routed_weight,
++                    (size_t)cfg->top_k) ||
++            trace_f(trace, layer, "shared_weight", s->shared_weight,
++                    (size_t)cfg->n_shared_experts)) return -1;
++
++        if (bf16) {
++            /* Official expert reductions are ordered by expert id, not router
++             * score slot. Keep each canonical (id, weight) pair together. */
++            for (int a = 0; a < cfg->top_k; a++) {
++                for (int b = a + 1; b < cfg->top_k; b++) {
++                    if (s->routed_index[b] < s->routed_index[a]) {
++                        const int ti = s->routed_index[a];
++                        const float tw = s->routed_weight[a];
++                        s->routed_index[a] = s->routed_index[b];
++                        s->routed_weight[a] = s->routed_weight[b];
++                        s->routed_index[b] = ti;
++                        s->routed_weight[b] = tw;
++                    }
++                }
 +            }
-+            const float gamma = s->shared_weight[e];
-+            for (int i = 0; i < hidden; i++) s->ff[i] += gamma * s->branch[i];
++            for (int i = 0; i < hidden; i++) s->ff[i] = 0.0f;
++            for (int k = 0; k < cfg->top_k; k++) {
++                const int expert = s->routed_index[k];
++                /* In the BF16 profile every routed matrix is supplied by the
++                 * numeric backend. Do not require a second expert_get storage
++                 * path merely to validate an ID; that would reject the same
++                 * nonresident/quantized layout the loader is designed to bind. */
++                if (expert < 0 || expert >= cfg->n_routed_experts) return -1;
++                if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_ROUTED_GATE,
++                        expert, s->gate, NULL, s->norm,
++                        inter, hidden, profile) ||
++                    apply_matvec_profile(backend, layer, WASTE_IK_MAT_ROUTED_UP,
++                        expert, s->up, NULL, s->norm,
++                        inter, hidden, profile)) return -1;
++                if (k == 0 &&
++                    (trace_f(trace, layer, "routed_gate0", s->gate,
++                             (size_t)inter) ||
++                     trace_f(trace, layer, "routed_up0", s->up,
++                             (size_t)inter))) return -1;
++                bf16_gated_activation(s->gate, s->up, inter);
++                if (k == 0 && trace_f(trace, layer, "routed_gated0",
++                                      s->gate, (size_t)inter)) return -1;
++                if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_ROUTED_DOWN,
++                        expert, s->branch, NULL, s->gate,
++                        hidden, inter, profile)) return -1;
++                if (k == 0 && trace_f(trace, layer, "routed_down0",
++                                      s->branch, (size_t)hidden)) return -1;
++                const float gamma = waste_inkling_bf16_round(s->routed_weight[k]);
++                for (int i = 0; i < hidden; i++) {
++                    const float contribution = waste_inkling_bf16_round(
++                        waste_inkling_bf16_round(s->branch[i]) * gamma);
++                    s->ff[i] = waste_inkling_bf16_round(
++                        waste_inkling_bf16_round(s->ff[i]) + contribution);
++                }
++            }
++
++            /* Attention Q scratch is dead after the O projection and is at
++             * least H for the measured Inkling profiles (checked above). Reuse
++             * it for the independent FP32 shared-expert accumulator so the
++             * established ctypes scratch layout and public planning contract do
++             * not move during arithmetic promotion. */
++            float *shared_accum = s->q;
++            for (int i = 0; i < hidden; i++) shared_accum[i] = 0.0f;
++            for (int e = 0; e < cfg->n_shared_experts; e++) {
++                if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_SHARED_GATE,
++                        e, s->gate, NULL, s->norm, inter, hidden, profile) ||
++                    apply_matvec_profile(backend, layer, WASTE_IK_MAT_SHARED_UP,
++                        e, s->up, NULL, s->norm, inter, hidden, profile))
++                    return -1;
++                if (e == 0 &&
++                    (trace_f(trace, layer, "shared_gate0", s->gate,
++                             (size_t)inter) ||
++                     trace_f(trace, layer, "shared_up0", s->up,
++                             (size_t)inter))) return -1;
++                bf16_gated_activation(s->gate, s->up, inter);
++                if (e == 0 && trace_f(trace, layer, "shared_gated0",
++                                      s->gate, (size_t)inter)) return -1;
++                const float gamma = waste_inkling_bf16_round(s->shared_weight[e]);
++                for (int j = 0; j < inter; j++)
++                    s->gate[j] = waste_inkling_bf16_round(
++                        waste_inkling_bf16_round(s->gate[j]) * gamma);
++                if (apply_matvec_profile(backend, layer, WASTE_IK_MAT_SHARED_DOWN,
++                        e, s->branch, NULL, s->gate,
++                        hidden, inter, profile)) return -1;
++                if (e == 0 && trace_f(trace, layer, "shared_down0",
++                                      s->branch, (size_t)hidden)) return -1;
++                for (int i = 0; i < hidden; i++) shared_accum[i] += s->branch[i];
++            }
++            for (int i = 0; i < hidden; i++) {
++                const float routed = waste_inkling_bf16_round(s->ff[i]);
++                const float shared = waste_inkling_bf16_round(shared_accum[i]);
++                s->ff[i] = waste_inkling_bf16_round(routed + shared);
++            }
++        } else {
++            for (int i = 0; i < hidden; i++) s->ff[i] = 0.0f;
++            for (int k = 0; k < cfg->top_k; k++) {
++                waste_inkling_expert_weights ew;
++                if (get_routed(cfg, w, layer, s->routed_index[k],
++                               expert_get, expert_ctx, &ew) ||
++                    expert_eval(s->branch, s->gate, s->up, &ew,
++                                s->norm, hidden, inter)) return -1;
++                const float gamma = s->routed_weight[k];
++                for (int i = 0; i < hidden; i++) s->ff[i] += gamma * s->branch[i];
++            }
++            const size_t gh = (size_t)inter * hidden;
++            const size_t dh = (size_t)hidden * inter;
++            for (int e = 0; e < cfg->n_shared_experts; e++) {
++                if (w->shared_gate && w->shared_up && w->shared_down) {
++                    waste_inkling_expert_weights ew = {
++                        w->shared_gate + (size_t)e * gh,
++                        w->shared_up + (size_t)e * gh,
++                        w->shared_down + (size_t)e * dh,
++                    };
++                    if (expert_eval(s->branch, s->gate, s->up, &ew,
++                                    s->norm, hidden, inter)) return -1;
++                } else {
++                    if (apply_matvec(backend, layer, WASTE_IK_MAT_SHARED_GATE, e,
++                                     s->gate, NULL, s->norm, inter, hidden) ||
++                        apply_matvec(backend, layer, WASTE_IK_MAT_SHARED_UP, e,
++                                     s->up, NULL, s->norm, inter, hidden)) return -1;
++                    for (int j = 0; j < inter; j++)
++                        s->gate[j] = silu(s->gate[j]) * s->up[j];
++                    if (apply_matvec(backend, layer, WASTE_IK_MAT_SHARED_DOWN, e,
++                                     s->branch, NULL, s->gate,
++                                     hidden, inter)) return -1;
++                }
++                const float gamma = s->shared_weight[e];
++                for (int i = 0; i < hidden; i++) s->ff[i] += gamma * s->branch[i];
++            }
 +        }
 +        if (trace_f(trace, layer, "moe_out", s->ff, (size_t)hidden)) return -1;
 +    }
@@ -2203,9 +2608,32 @@ index 0000000..5440886
 +                                 s->ff))
 +        return -1;
 +    if (trace_f(trace, layer, "mlp_branch", s->ff, (size_t)hidden)) return -1;
-+    for (int i = 0; i < hidden; i++) x[i] += s->ff[i];
++    if (bf16) {
++        for (int i = 0; i < hidden; i++) {
++            const float residual = waste_inkling_bf16_round(x[i]);
++            const float branch = waste_inkling_bf16_round(s->ff[i]);
++            x[i] = waste_inkling_bf16_round(residual + branch);
++        }
++    } else {
++        for (int i = 0; i < hidden; i++) x[i] += s->ff[i];
++    }
 +    if (trace_f(trace, layer, "layer_out", x, (size_t)hidden)) return -1;
 +    return 0;
++}
++
++int waste_inkling_layer_step_backend_trace(
++    const waste_inkling_config *cfg, int layer,
++    const waste_inkling_layer_weights *w,
++    const waste_inkling_matrix_backend *backend,
++    waste_inkling_layer_state *state,
++    float *x, int position,
++    waste_inkling_layer_scratch *s,
++    waste_inkling_expert_get_fn expert_get, void *expert_ctx,
++    const waste_inkling_trace *trace)
++{
++    return waste_inkling_layer_step_backend_trace_profile(
++        cfg, layer, w, backend, state, x, position, s,
++        expert_get, expert_ctx, trace, WASTE_INKLING_NUMERIC_F32);
 +}
 +
 +int waste_inkling_layer_step_backend(
@@ -2232,12 +2660,13 @@ index 0000000..5440886
 +    return waste_inkling_layer_step_backend(cfg, layer, weights, NULL, state,
 +        x, position, scratch, expert_get, expert_ctx);
 +}
+\ No newline at end of file
 diff --git a/src/inkling_layer.h b/src/inkling_layer.h
 new file mode 100644
-index 0000000..5db5fa3
+index 0000000..8a48fef
 --- /dev/null
 +++ b/src/inkling_layer.h
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,195 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -2295,8 +2724,9 @@ index 0000000..5db5fa3
 +    const float *shared_up;           /* [shared][moe_intermediate][hidden] */
 +    const float *shared_down;         /* [shared][hidden][moe_intermediate] */
 +
-+    /* Optional resident routed arrays for tests/small fixtures. Production
-+     * streaming can leave these NULL and provide expert_get instead. */
++    /* Optional resident routed arrays for tests/small fixtures and the legacy
++     * F32 path. F32 streaming may leave these NULL and provide expert_get;
++     * BF16_REFERENCE routes expert matrices through the matrix backend only. */
 +    const float *routed_gate;         /* [routed][moe_intermediate][hidden] */
 +    const float *routed_up;
 +    const float *routed_down;         /* [routed][hidden][moe_intermediate] */
@@ -2306,7 +2736,11 @@ index 0000000..5db5fa3
 +    WASTE_IK_MAT_Q = 0, WASTE_IK_MAT_K, WASTE_IK_MAT_V, WASTE_IK_MAT_R,
 +    WASTE_IK_MAT_O, WASTE_IK_MAT_DENSE_GATE, WASTE_IK_MAT_DENSE_UP,
 +    WASTE_IK_MAT_DENSE_DOWN, WASTE_IK_MAT_ROUTER, WASTE_IK_MAT_SHARED_GATE,
-+    WASTE_IK_MAT_SHARED_UP, WASTE_IK_MAT_SHARED_DOWN
++    WASTE_IK_MAT_SHARED_UP, WASTE_IK_MAT_SHARED_DOWN,
++    /* Appended so every pre-promotion kind keeps its numeric value.  The BF16
++     * evidence profile uses these callbacks to avoid silently evaluating a
++     * routed expert through the scalar F32 resident matvec. */
++    WASTE_IK_MAT_ROUTED_GATE, WASTE_IK_MAT_ROUTED_UP, WASTE_IK_MAT_ROUTED_DOWN
 +} waste_inkling_matrix_kind;
 +
 +typedef int (*waste_inkling_matvec_fn)(void *ctx, int layer,
@@ -2408,10 +2842,27 @@ index 0000000..5db5fa3
 +    waste_inkling_expert_get_fn expert_get, void *expert_ctx,
 +    const waste_inkling_trace *trace);
 +
++/* Internal promotion seam. F32 delegates the exact legacy path. The measured
++ * BF16_REFERENCE profile covers dense and sparse Inkling layer classes and
++ * requires the numeric matrix backend for kernel-sensitive BF16 matmuls.
++ * Unsupported backend/geometry paths fail closed rather than falling back to
++ * a scalar F32 matvec and manufacturing a parity claim. */
++int waste_inkling_layer_step_backend_trace_profile(
++    const waste_inkling_config *cfg, int layer,
++    const waste_inkling_layer_weights *weights,
++    const waste_inkling_matrix_backend *backend,
++    waste_inkling_layer_state *state,
++    float *x, int position,
++    waste_inkling_layer_scratch *scratch,
++    waste_inkling_expert_get_fn expert_get, void *expert_ctx,
++    const waste_inkling_trace *trace,
++    waste_inkling_numeric_profile profile);
++
 +#ifdef __cplusplus
 +}
 +#endif
 +#endif
+\ No newline at end of file
 diff --git a/src/inkling_model.c b/src/inkling_model.c
 new file mode 100644
 index 0000000..98a13a1
@@ -2815,6 +3266,55 @@ index 0000000..1124994
 +#ifdef __cplusplus
 +}
 +#endif
++#endif
+diff --git a/src/inkling_numeric.h b/src/inkling_numeric.h
+new file mode 100644
+index 0000000..6c5c535
+--- /dev/null
++++ b/src/inkling_numeric.h
+@@ -0,0 +1,43 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Internal numeric execution profiles for the Inkling runtime.
++ *
++ * This header is not part of the public WASTE ABI.  F32 preserves the
++ * checked-in synthetic/runtime behavior.  BF16_REFERENCE names only the
++ * arithmetic completion policy established by the retained official-weight
++ * evidence; selecting it does not change routing tie semantics or promote
++ * public Inkling execution.
++ */
++#ifndef WASTE_INKLING_NUMERIC_H
++#define WASTE_INKLING_NUMERIC_H
++
++#include <stdint.h>
++#include <string.h>
++
++typedef enum {
++    WASTE_INKLING_NUMERIC_F32 = 0,
++    WASTE_INKLING_NUMERIC_BF16_REFERENCE = 1
++} waste_inkling_numeric_profile;
++
++static inline int waste_inkling_numeric_profile_valid(
++    waste_inkling_numeric_profile profile)
++{
++    return profile == WASTE_INKLING_NUMERIC_F32 ||
++           profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE;
++}
++
++/* Round an IEEE-754 float to the nearest-even bfloat16 value, returned as an
++ * exactly representable float.  NaN/Inf payloads are left untouched, matching
++ * the evidence helpers used to derive the BF16 completion boundaries. */
++static inline float waste_inkling_bf16_round(float value)
++{
++    uint32_t bits = 0;
++    memcpy(&bits, &value, sizeof bits);
++    if ((bits & 0x7f800000u) != 0x7f800000u) {
++        bits += 0x7fffu + ((bits >> 16) & 1u);
++        bits &= 0xffff0000u;
++        memcpy(&value, &bits, sizeof value);
++    }
++    return value;
++}
++
 +#endif
 diff --git a/src/inkling_private.c b/src/inkling_private.c
 new file mode 100644
@@ -5597,10 +6097,10 @@ index 0000000..029692d
 +    unittest.main()
 diff --git a/tests/test_inkling.c b/tests/test_inkling.c
 new file mode 100644
-index 0000000..1d6ebde
+index 0000000..5801a52
 --- /dev/null
 +++ b/tests/test_inkling.c
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,179 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -5640,6 +6140,67 @@ index 0000000..1d6ebde
 +                                    idx, rw, sw) != 0;
 +        fail += idx[0] != 0 || idx[1] != 2;
 +        fail += !closef(rw[0] + rw[1] + sw[0], 1.0f);
++    }
++
++    {
++        /* The legacy route API must remain byte-identical to the explicit F32
++         * profile.  BF16_REFERENCE is a separate internal contract. */
++        const float logits[] = { 2.0f, -1.0f, 0.5f, 1.0f };
++        const float bias[] = { 0.0f, 0.0f, 0.0f };
++        int legacy_i[2], f32_i[2];
++        float legacy_r[2], legacy_s[1], f32_r[2], f32_s[1];
++        fail += waste_inkling_route(logits, bias, 3, 1, 2, 1.0f, 1.0f,
++                                    legacy_i, legacy_r, legacy_s) != 0;
++        fail += waste_inkling_route_profile(
++                    logits, bias, 3, 1, 2, 1.0f, 1.0f,
++                    f32_i, f32_r, f32_s, WASTE_INKLING_NUMERIC_F32) != 0;
++        fail += memcmp(legacy_i, f32_i, sizeof legacy_i) != 0;
++        fail += memcmp(legacy_r, f32_r, sizeof legacy_r) != 0;
++        fail += memcmp(legacy_s, f32_s, sizeof legacy_s) != 0;
++        fail += waste_inkling_route_profile(
++                    logits, bias, 3, 1, 2, 1.0f, 1.0f,
++                    f32_i, f32_r, f32_s,
++                    (waste_inkling_numeric_profile)99) == 0;
++    }
++
++    {
++        /* These two sigmoid scores are distinct in F32 but complete to the
++         * same BF16 choice value.  The BF16 profile must therefore use the
++         * portable lower-ID tie rule rather than inherit the F32 ordering. */
++        const float logits[] = { 0.0f, 0.0001f };
++        const float bias[] = { 0.0f, 0.0f };
++        int f32_i[1], bf16_i[1];
++        float f32_r[1], bf16_r[1];
++        fail += waste_inkling_route_profile(
++                    logits, bias, 2, 0, 1, 1.0f, 1.0f,
++                    f32_i, f32_r, NULL, WASTE_INKLING_NUMERIC_F32) != 0;
++        fail += waste_inkling_route_profile(
++                    logits, bias, 2, 0, 1, 1.0f, 1.0f,
++                    bf16_i, bf16_r, NULL,
++                    WASTE_INKLING_NUMERIC_BF16_REFERENCE) != 0;
++        fail += f32_i[0] != 1;
++        fail += bf16_i[0] != 0;
++        fail += bf16_r[0] != waste_inkling_bf16_round(bf16_r[0]);
++        fail += bf16_r[0] != 1.0f;
++    }
++
++    {
++        const float logits[] = { 2.0f, -1.0f, 0.5f, 1.0f };
++        const float bias[] = { 0.0f, 0.0f, 0.0f };
++        int idx[2]; float rw[2], sw[1];
++        fail += waste_inkling_route_profile(
++                    logits, bias, 3, 1, 2, 8.0f, 0.75f,
++                    idx, rw, sw, WASTE_INKLING_NUMERIC_BF16_REFERENCE) != 0;
++        fail += rw[0] != waste_inkling_bf16_round(rw[0]);
++        fail += rw[1] != waste_inkling_bf16_round(rw[1]);
++        fail += sw[0] != waste_inkling_bf16_round(sw[0]);
++    }
++
++    {
++        /* Nearest-even BF16 completion is a shared primitive, not an ad-hoc
++         * cast hidden in one evidence harness. */
++        fail += waste_inkling_bf16_round(1.00390625f) != 1.0f;
++        fail += waste_inkling_bf16_round(1.01171875f) != 1.015625f;
 +    }
 +
 +    {
@@ -11519,10 +12080,10 @@ index 0000000..ce5f502
 +    unittest.main()
 diff --git a/tests/test_inkling_trace_tools.py b/tests/test_inkling_trace_tools.py
 new file mode 100644
-index 0000000..c47a429
+index 0000000..2ede379
 --- /dev/null
 +++ b/tests/test_inkling_trace_tools.py
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,110 @@
 +#!/usr/bin/env python3
 +# SPDX-License-Identifier: Apache-2.0
 +
@@ -11555,10 +12116,11 @@ index 0000000..c47a429
 +        super().__init__()
 +        self.q_proj = Identity(); self.k_proj = Identity(); self.v_proj = Identity()
 +        self.r_proj = Identity(); self.k_sconv = Identity(); self.v_sconv = Identity()
++        self.o_proj = Identity()
 +    def forward(self, x):
 +        x = self.q_proj(x); self.k_proj(x); self.v_proj(x); self.r_proj(x)
 +        self.k_sconv(x); self.v_sconv(x)
-+        return x + 2, None
++        return self.o_proj(x + 2), None
 +
 +
 +class MLP(nn.Module):
@@ -11619,10 +12181,12 @@ index 0000000..c47a429
 +        expected = {
 +            "token.0.model.embedding_norm", "token.0.model.final_norm",
 +            "token.0.layer.0.input_norm", "token.0.layer.0.q_proj",
-+            "token.0.layer.0.attention_out", "token.0.layer.0.dense_mlp_out",
-+            "token.0.layer.0.layer_out", "token.0.layer.1.router_logits",
-+            "token.0.layer.1.routed_index", "token.0.layer.1.moe_out",
-+            "token.0.layer.1.layer_out",
++            "token.0.layer.0.attention_out", "token.0.layer.0.attention_branch",
++            "token.0.layer.0.post_attention_residual",
++            "token.0.layer.0.post_attention_norm",
++            "token.0.layer.0.dense_mlp_out", "token.0.layer.0.layer_out",
++            "token.0.layer.1.router_logits", "token.0.layer.1.routed_index",
++            "token.0.layer.1.moe_out", "token.0.layer.1.layer_out",
 +        }
 +        self.assertTrue(expected.issubset(store))
 +        self.assertEqual(store["token.0.layer.1.routed_index"].dtype, torch.int32)
@@ -11630,6 +12194,7 @@ index 0000000..c47a429
 +
 +if __name__ == "__main__":
 +    unittest.main()
+\ No newline at end of file
 diff --git a/tests/test_inkling_trunk.py b/tests/test_inkling_trunk.py
 new file mode 100644
 index 0000000..5de0bd8
@@ -16318,10 +16883,10 @@ index 0000000..91afd73
 +    return output
 diff --git a/tools/inkling_reference.py b/tools/inkling_reference.py
 new file mode 100644
-index 0000000..c5ace0b
+index 0000000..ec42b68
 --- /dev/null
 +++ b/tools/inkling_reference.py
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,186 @@
 +#!/usr/bin/env python3
 +# SPDX-License-Identifier: Apache-2.0
 +"""Capture named activations from the official Transformers Inkling model.
@@ -16379,15 +16944,29 @@ index 0000000..c5ace0b
 +    text = _text_model(model)
 +    handles = []
 +
-+    def add(module: Any, layer: int, point: str, transform: Callable[[Any], torch.Tensor | None] = _token_vector):
++    def store_tensor(layer: int, point: str, value: Any,
++                     transform: Callable[[Any], torch.Tensor | None]) -> None:
++        tensor = transform(value)
++        if tensor is not None:
++            scope = "model" if layer < 0 else f"layer.{layer}"
++            store[f"token.{position_getter()}.{scope}.{point}"] = tensor
++
++    def add(module: Any, layer: int, point: str,
++            transform: Callable[[Any], torch.Tensor | None] = _token_vector):
 +        if module is None:
 +            return
 +        def hook(_module: Any, _inputs: Any, output: Any) -> None:
-+            tensor = transform(output)
-+            if tensor is not None:
-+                scope = "model" if layer < 0 else f"layer.{layer}"
-+                store[f"token.{position_getter()}.{scope}.{point}"] = tensor
++            store_tensor(layer, point, output, transform)
 +        handles.append(module.register_forward_hook(hook))
++
++    def add_pre(module: Any, layer: int, point: str,
++                transform: Callable[[Any], torch.Tensor | None] = _token_vector):
++        if module is None:
++            return
++        def hook(_module: Any, inputs: Any) -> None:
++            if inputs:
++                store_tensor(layer, point, inputs[0], transform)
++        handles.append(module.register_forward_pre_hook(hook))
 +
 +    add(getattr(text, "embed_norm", None), -1, "embedding_norm")
 +    add(getattr(text, "norm", None), -1, "final_norm")
@@ -16400,8 +16979,17 @@ index 0000000..c5ace0b
 +                            ("v_proj", "v_proj"), ("r_proj", "relative_proj_input"),
 +                            ("k_sconv", "k_sconv"), ("v_sconv", "v_sconv")):
 +            add(getattr(attn, attr, None), layer_id, point)
-+        add(attn, layer_id, "attention_out")
++        # C's attention_out is the value entering o_proj, not the output of the
++        # whole attention module. Keep the trusted-reference name on that exact
++        # arithmetic boundary so probes cannot compare different tensors under
++        # the same label.
++        add_pre(getattr(attn, "o_proj", None), layer_id, "attention_out")
 +        add(getattr(layer, "attn_sconv", None), layer_id, "attention_branch")
++        # The outer attention residual is the input to post-attention RMSNorm.
++        # Capture it explicitly; a forward hook on the norm only sees the
++        # normalized value and cannot reconstruct this boundary exactly.
++        add_pre(getattr(layer, "post_attention_layernorm", None), layer_id,
++                "post_attention_residual")
 +        add(getattr(layer, "post_attention_layernorm", None), layer_id, "post_attention_norm")
 +
 +        gate = getattr(mlp, "gate", None)
@@ -16485,6 +17073,7 @@ index 0000000..c5ace0b
 +
 +if __name__ == "__main__":
 +    raise SystemExit(main())
+\ No newline at end of file
 diff --git a/tools/inkling_release.py b/tools/inkling_release.py
 new file mode 100755
 index 0000000..0cb7d23

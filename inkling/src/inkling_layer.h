@@ -55,8 +55,9 @@ typedef struct {
     const float *shared_up;           /* [shared][moe_intermediate][hidden] */
     const float *shared_down;         /* [shared][hidden][moe_intermediate] */
 
-    /* Optional resident routed arrays for tests/small fixtures. Production
-     * streaming can leave these NULL and provide expert_get instead. */
+    /* Optional resident routed arrays for tests/small fixtures and the legacy
+     * F32 path. F32 streaming may leave these NULL and provide expert_get;
+     * BF16_REFERENCE routes expert matrices through the matrix backend only. */
     const float *routed_gate;         /* [routed][moe_intermediate][hidden] */
     const float *routed_up;
     const float *routed_down;         /* [routed][hidden][moe_intermediate] */
@@ -66,7 +67,11 @@ typedef enum {
     WASTE_IK_MAT_Q = 0, WASTE_IK_MAT_K, WASTE_IK_MAT_V, WASTE_IK_MAT_R,
     WASTE_IK_MAT_O, WASTE_IK_MAT_DENSE_GATE, WASTE_IK_MAT_DENSE_UP,
     WASTE_IK_MAT_DENSE_DOWN, WASTE_IK_MAT_ROUTER, WASTE_IK_MAT_SHARED_GATE,
-    WASTE_IK_MAT_SHARED_UP, WASTE_IK_MAT_SHARED_DOWN
+    WASTE_IK_MAT_SHARED_UP, WASTE_IK_MAT_SHARED_DOWN,
+    /* Appended so every pre-promotion kind keeps its numeric value.  The BF16
+     * evidence profile uses these callbacks to avoid silently evaluating a
+     * routed expert through the scalar F32 resident matvec. */
+    WASTE_IK_MAT_ROUTED_GATE, WASTE_IK_MAT_ROUTED_UP, WASTE_IK_MAT_ROUTED_DOWN
 } waste_inkling_matrix_kind;
 
 typedef int (*waste_inkling_matvec_fn)(void *ctx, int layer,
@@ -167,6 +172,22 @@ int waste_inkling_layer_step_backend_trace(
     waste_inkling_layer_scratch *scratch,
     waste_inkling_expert_get_fn expert_get, void *expert_ctx,
     const waste_inkling_trace *trace);
+
+/* Internal promotion seam. F32 delegates the exact legacy path. The measured
+ * BF16_REFERENCE profile covers dense and sparse Inkling layer classes and
+ * requires the numeric matrix backend for kernel-sensitive BF16 matmuls.
+ * Unsupported backend/geometry paths fail closed rather than falling back to
+ * a scalar F32 matvec and manufacturing a parity claim. */
+int waste_inkling_layer_step_backend_trace_profile(
+    const waste_inkling_config *cfg, int layer,
+    const waste_inkling_layer_weights *weights,
+    const waste_inkling_matrix_backend *backend,
+    waste_inkling_layer_state *state,
+    float *x, int position,
+    waste_inkling_layer_scratch *scratch,
+    waste_inkling_expert_get_fn expert_get, void *expert_ctx,
+    const waste_inkling_trace *trace,
+    waste_inkling_numeric_profile profile);
 
 #ifdef __cplusplus
 }

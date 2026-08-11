@@ -10,13 +10,30 @@
 
 static int positive(int value) { return value > 0; }
 
-static void rmsnorm_head(float *out, const float *x, const float *weight,
-                         int dim, float eps)
+static void rmsnorm_head_profile(float *out, const float *x,
+                                 const float *weight, int dim, float eps,
+                                 waste_inkling_numeric_profile profile)
 {
     double ss = 0.0;
-    for (int i = 0; i < dim; i++) ss += (double)x[i] * (double)x[i];
+    if (profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE) {
+        for (int i = 0; i < dim; i++) {
+            const float source = waste_inkling_bf16_round(x[i]);
+            ss += (double)source * (double)source;
+        }
+    } else {
+        for (int i = 0; i < dim; i++)
+            ss += (double)x[i] * (double)x[i];
+    }
     const float scale = 1.0f / sqrtf((float)(ss / dim) + eps);
-    for (int i = 0; i < dim; i++) out[i] = x[i] * scale * weight[i];
+    if (profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE) {
+        for (int i = 0; i < dim; i++) {
+            const float source = waste_inkling_bf16_round(x[i]);
+            const float normalized = waste_inkling_bf16_round(source * scale);
+            out[i] = waste_inkling_bf16_round(normalized * weight[i]);
+        }
+    } else {
+        for (int i = 0; i < dim; i++) out[i] = x[i] * scale * weight[i];
+    }
 }
 
 int waste_inkling_attention_init(waste_inkling_attention_state *s,
@@ -52,18 +69,20 @@ void waste_inkling_attention_reset(waste_inkling_attention_state *s)
     if (s) s->next_position = 0;
 }
 
-int waste_inkling_attention_step(
+int waste_inkling_attention_step_profile(
     waste_inkling_attention_state *s,
     const float *q, const float *k, const float *v,
     const float *q_norm, const float *k_norm,
     const float *relative_state, const float *relative_proj,
     int position, int log_scaling_n_floor, float log_scaling_alpha,
-    float *scores, float *out)
+    float *scores, float *out,
+    waste_inkling_numeric_profile profile)
 {
     if (!s || !q || !k || !v || !q_norm || !k_norm ||
         !relative_state || !relative_proj || !scores || !out ||
         position < 0 || position != s->next_position ||
-        log_scaling_n_floor < 0 || log_scaling_alpha < 0.0f)
+        log_scaling_n_floor < 0 || log_scaling_alpha < 0.0f ||
+        !waste_inkling_numeric_profile_valid(profile))
         return -1;
     if (!s->is_local && position >= s->capacity) return -1;
 
@@ -75,16 +94,22 @@ int waste_inkling_attention_step(
     const size_t kv_stride = (size_t)KH * (size_t)D;
     float *kdst = s->k_cache + (size_t)slot * kv_stride;
     float *vdst = s->v_cache + (size_t)slot * kv_stride;
+    const int bf16 = profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE;
 
     /* `out` temporarily stores normalized queries. Every score row is built
      * before that head's output overwrites its query row. */
     for (int h = 0; h < H; h++)
-        rmsnorm_head(out + (size_t)h * D, q + (size_t)h * D,
-                     q_norm, D, s->rms_eps);
+        rmsnorm_head_profile(out + (size_t)h * D, q + (size_t)h * D,
+                             q_norm, D, s->rms_eps, profile);
     for (int h = 0; h < KH; h++)
-        rmsnorm_head(kdst + (size_t)h * D, k + (size_t)h * D,
-                     k_norm, D, s->rms_eps);
-    memcpy(vdst, v, kv_stride * sizeof(float));
+        rmsnorm_head_profile(kdst + (size_t)h * D, k + (size_t)h * D,
+                             k_norm, D, s->rms_eps, profile);
+    if (bf16) {
+        for (size_t i = 0; i < kv_stride; i++)
+            vdst[i] = waste_inkling_bf16_round(v[i]);
+    } else {
+        memcpy(vdst, v, kv_stride * sizeof(float));
+    }
 
     const int begin = s->is_local && position + 1 > s->capacity
                     ? position + 1 - s->capacity : 0;
@@ -106,15 +131,34 @@ int waste_inkling_attention_step(
             const float *kc = s->k_cache + (size_t)key_slot * kv_stride
                             + (size_t)kh * D;
             float score = 0.0f;
-            for (int d = 0; d < D; d++) score += qh[d] * kc[d];
-            score *= dot_scale;
+            if (bf16) {
+                for (int d = 0; d < D; d++)
+                    score += waste_inkling_bf16_round(qh[d]) *
+                             waste_inkling_bf16_round(kc[d]);
+                score = waste_inkling_bf16_round(score);
+                score = waste_inkling_bf16_round(score * dot_scale);
+            } else {
+                for (int d = 0; d < D; d++) score += qh[d] * kc[d];
+                score *= dot_scale;
+            }
             const int distance = position - key_pos;
             if (distance >= 0 && distance < s->relative_extent) {
                 const float *rs = relative_state + (size_t)h * s->d_rel;
                 float bias = 0.0f;
-                for (int r = 0; r < s->d_rel; r++)
-                    bias += rs[r] * relative_proj[(size_t)r * s->relative_extent + distance];
-                score += tau * bias;
+                if (bf16) {
+                    for (int r = 0; r < s->d_rel; r++)
+                        bias += waste_inkling_bf16_round(rs[r]) *
+                                waste_inkling_bf16_round(relative_proj[
+                                    (size_t)r * s->relative_extent + distance]);
+                    bias = waste_inkling_bf16_round(bias);
+                    bias = waste_inkling_bf16_round(tau * bias);
+                    score = waste_inkling_bf16_round(score + bias);
+                } else {
+                    for (int r = 0; r < s->d_rel; r++)
+                        bias += rs[r] * relative_proj[
+                            (size_t)r * s->relative_extent + distance];
+                    score += tau * bias;
+                }
             }
             row[j] = score;
             if (score > max_score) max_score = score;
@@ -133,10 +177,34 @@ int waste_inkling_attention_step(
             const int key_slot = s->is_local ? key_pos % s->capacity : key_pos;
             const float *vc = s->v_cache + (size_t)key_slot * kv_stride
                             + (size_t)kh * D;
-            const float weight = row[j] * inv_sum;
-            for (int d = 0; d < D; d++) oh[d] += weight * vc[d];
+            const float weight = bf16
+                ? waste_inkling_bf16_round(row[j] * inv_sum)
+                : row[j] * inv_sum;
+            if (bf16) {
+                for (int d = 0; d < D; d++)
+                    oh[d] += weight * waste_inkling_bf16_round(vc[d]);
+            } else {
+                for (int d = 0; d < D; d++) oh[d] += weight * vc[d];
+            }
         }
+        if (bf16)
+            for (int d = 0; d < D; d++)
+                oh[d] = waste_inkling_bf16_round(oh[d]);
     }
     s->next_position++;
     return 0;
+}
+
+int waste_inkling_attention_step(
+    waste_inkling_attention_state *s,
+    const float *q, const float *k, const float *v,
+    const float *q_norm, const float *k_norm,
+    const float *relative_state, const float *relative_proj,
+    int position, int log_scaling_n_floor, float log_scaling_alpha,
+    float *scores, float *out)
+{
+    return waste_inkling_attention_step_profile(
+        s, q, k, v, q_norm, k_norm, relative_state, relative_proj,
+        position, log_scaling_n_floor, log_scaling_alpha, scores, out,
+        WASTE_INKLING_NUMERIC_F32);
 }

@@ -55,15 +55,29 @@ def register_reference_hooks(model: Any, layers: list[int], store: dict[str, tor
     text = _text_model(model)
     handles = []
 
-    def add(module: Any, layer: int, point: str, transform: Callable[[Any], torch.Tensor | None] = _token_vector):
+    def store_tensor(layer: int, point: str, value: Any,
+                     transform: Callable[[Any], torch.Tensor | None]) -> None:
+        tensor = transform(value)
+        if tensor is not None:
+            scope = "model" if layer < 0 else f"layer.{layer}"
+            store[f"token.{position_getter()}.{scope}.{point}"] = tensor
+
+    def add(module: Any, layer: int, point: str,
+            transform: Callable[[Any], torch.Tensor | None] = _token_vector):
         if module is None:
             return
         def hook(_module: Any, _inputs: Any, output: Any) -> None:
-            tensor = transform(output)
-            if tensor is not None:
-                scope = "model" if layer < 0 else f"layer.{layer}"
-                store[f"token.{position_getter()}.{scope}.{point}"] = tensor
+            store_tensor(layer, point, output, transform)
         handles.append(module.register_forward_hook(hook))
+
+    def add_pre(module: Any, layer: int, point: str,
+                transform: Callable[[Any], torch.Tensor | None] = _token_vector):
+        if module is None:
+            return
+        def hook(_module: Any, inputs: Any) -> None:
+            if inputs:
+                store_tensor(layer, point, inputs[0], transform)
+        handles.append(module.register_forward_pre_hook(hook))
 
     add(getattr(text, "embed_norm", None), -1, "embedding_norm")
     add(getattr(text, "norm", None), -1, "final_norm")
@@ -76,8 +90,17 @@ def register_reference_hooks(model: Any, layers: list[int], store: dict[str, tor
                             ("v_proj", "v_proj"), ("r_proj", "relative_proj_input"),
                             ("k_sconv", "k_sconv"), ("v_sconv", "v_sconv")):
             add(getattr(attn, attr, None), layer_id, point)
-        add(attn, layer_id, "attention_out")
+        # C's attention_out is the value entering o_proj, not the output of the
+        # whole attention module. Keep the trusted-reference name on that exact
+        # arithmetic boundary so probes cannot compare different tensors under
+        # the same label.
+        add_pre(getattr(attn, "o_proj", None), layer_id, "attention_out")
         add(getattr(layer, "attn_sconv", None), layer_id, "attention_branch")
+        # The outer attention residual is the input to post-attention RMSNorm.
+        # Capture it explicitly; a forward hook on the norm only sees the
+        # normalized value and cannot reconstruct this boundary exactly.
+        add_pre(getattr(layer, "post_attention_layernorm", None), layer_id,
+                "post_attention_residual")
         add(getattr(layer, "post_attention_layernorm", None), layer_id, "post_attention_norm")
 
         gate = getattr(mlp, "gate", None)

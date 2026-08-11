@@ -4,6 +4,8 @@
 #ifndef WASTE_INKLING_ATTENTION_H
 #define WASTE_INKLING_ATTENTION_H
 
+#include "inkling_numeric.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -56,6 +58,19 @@ int waste_inkling_attention_step(
     const float *relative_state, const float *relative_proj,
     int position, int log_scaling_n_floor, float log_scaling_alpha,
     float *scores, float *out);
+
+/* Internal numeric-profile variant. F32 is the exact legacy behavior above.
+ * BF16_REFERENCE implements the retained portable attention policy: BF16-bound
+ * head RMSNorm, K/V cache operands, score reductions/scaling, probability
+ * operands, and completed attention output. */
+int waste_inkling_attention_step_profile(
+    waste_inkling_attention_state *state,
+    const float *q, const float *k, const float *v,
+    const float *q_norm, const float *k_norm,
+    const float *relative_state, const float *relative_proj,
+    int position, int log_scaling_n_floor, float log_scaling_alpha,
+    float *scores, float *out,
+    waste_inkling_numeric_profile profile);
 
 #ifdef __cplusplus
 }

@@ -30,10 +30,11 @@ class Attn(nn.Module):
         super().__init__()
         self.q_proj = Identity(); self.k_proj = Identity(); self.v_proj = Identity()
         self.r_proj = Identity(); self.k_sconv = Identity(); self.v_sconv = Identity()
+        self.o_proj = Identity()
     def forward(self, x):
         x = self.q_proj(x); self.k_proj(x); self.v_proj(x); self.r_proj(x)
         self.k_sconv(x); self.v_sconv(x)
-        return x + 2, None
+        return self.o_proj(x + 2), None
 
 
 class MLP(nn.Module):
@@ -94,10 +95,12 @@ class TraceToolsTest(unittest.TestCase):
         expected = {
             "token.0.model.embedding_norm", "token.0.model.final_norm",
             "token.0.layer.0.input_norm", "token.0.layer.0.q_proj",
-            "token.0.layer.0.attention_out", "token.0.layer.0.dense_mlp_out",
-            "token.0.layer.0.layer_out", "token.0.layer.1.router_logits",
-            "token.0.layer.1.routed_index", "token.0.layer.1.moe_out",
-            "token.0.layer.1.layer_out",
+            "token.0.layer.0.attention_out", "token.0.layer.0.attention_branch",
+            "token.0.layer.0.post_attention_residual",
+            "token.0.layer.0.post_attention_norm",
+            "token.0.layer.0.dense_mlp_out", "token.0.layer.0.layer_out",
+            "token.0.layer.1.router_logits", "token.0.layer.1.routed_index",
+            "token.0.layer.1.moe_out", "token.0.layer.1.layer_out",
         }
         self.assertTrue(expected.issubset(store))
         self.assertEqual(store["token.0.layer.1.routed_index"].dtype, torch.int32)

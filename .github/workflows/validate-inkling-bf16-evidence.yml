@@ -8,6 +8,11 @@ on:
       - "experiments/inkling/*bf16*.py"
       - "docs/BF16-EVIDENCE.md"
       - ".github/workflows/evidence-inkling-bf16-dispatch-pair.yml"
+      - ".github/workflows/evidence-inkling-bf16-router-denominator.yml"
+      - ".github/workflows/evidence-inkling-checked-bf16-profile.yml"
+      - ".github/workflows/evidence-inkling-checked-bf16-stateful.yml"
+      - ".github/workflows/evidence-inkling-checked-bf16-stateful-global.yml"
+      - ".github/workflows/evidence-inkling-dense-bf16-profile.yml"
       - ".github/workflows/validate-inkling-bf16-evidence.yml"
   workflow_dispatch:
 
@@ -48,12 +53,14 @@ jobs:
           import yaml
 
           paths = (
-              Path(".github/workflows/evidence-inkling-bf16-complete-sparse-layer.yml"),
               Path(".github/workflows/evidence-inkling-bf16-dispatch-pair.yml"),
               Path(".github/workflows/evidence-inkling-bf16-router-denominator.yml"),
-              Path(".github/workflows/evidence-inkling-bf16-stateful-post-reduction.yml"),
-              Path(".github/workflows/validate-inkling-bf16-evidence.yml"),
               Path(".github/workflows/evidence-inkling-onednn-isa-probe.yml"),
+              Path(".github/workflows/evidence-inkling-checked-bf16-profile.yml"),
+              Path(".github/workflows/evidence-inkling-checked-bf16-stateful.yml"),
+              Path(".github/workflows/evidence-inkling-checked-bf16-stateful-global.yml"),
+              Path(".github/workflows/evidence-inkling-dense-bf16-profile.yml"),
+              Path(".github/workflows/validate-inkling-bf16-evidence.yml"),
           )
           for path in paths:
               value = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -62,51 +69,56 @@ jobs:
           print(f"parsed {len(paths)} durable BF16 workflows")
           PY
 
-      - name: Run each BF16 unit-contract file in isolation
+      - name: Prove rewrite-era official-fixture gates are retired
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          retired = (
+              Path('.github/workflows/evidence-inkling-bf16-complete-sparse-layer.yml'),
+              Path('.github/workflows/evidence-inkling-bf16-stateful-post-reduction.yml'),
+          )
+          for path in retired:
+              assert not path.exists(), f"rewrite-era workflow still active: {path}"
+          checked = (
+              Path('.github/workflows/evidence-inkling-checked-bf16-profile.yml'),
+              Path('.github/workflows/evidence-inkling-checked-bf16-stateful.yml'),
+              Path('.github/workflows/evidence-inkling-checked-bf16-stateful-global.yml'),
+              Path('.github/workflows/evidence-inkling-dense-bf16-profile.yml'),
+          )
+          for path in checked:
+              text = path.read_text(encoding='utf-8')
+              assert 'source_rewriting' in text, path
+          print('rewrite-era official-fixture gates retired; checked-source replacements present')
+          PY
+
+      - name: Run retained arithmetic and backend contracts in isolation
         shell: bash
         run: |
           set -euo pipefail
           tests=(
-            experiments/inkling/test_inkling_bf16_layer_residual_boundary.py
             experiments/inkling/test_inkling_bf16_logsumexp_reduction.py
-            experiments/inkling/test_inkling_bf16_moe_aggregation_lattice.py
             experiments/inkling/test_inkling_bf16_residual_boundary.py
             experiments/inkling/test_inkling_bf16_router_normalization_stages.py
             experiments/inkling/test_inkling_bf16_router_post_reduction_denom.py
             experiments/inkling/test_inkling_bf16_router_prefill_lattice.py
             experiments/inkling/test_inkling_bf16_router_weight_lattice.py
             experiments/inkling/test_inkling_bf16_silu_product.py
-            experiments/inkling/test_inkling_bf16_stateful_mlp_boundary.py
-            experiments/inkling/test_inkling_portable_bf16_attention.py
-            experiments/inkling/test_inkling_portable_bf16_complete_sparse_layer.py
-            experiments/inkling/test_inkling_portable_bf16_composed_moe.py
-            experiments/inkling/test_inkling_portable_bf16_preexpert.py
-            experiments/inkling/test_inkling_portable_bf16_runner_isolation.py
-            experiments/inkling/test_inkling_portable_bf16_single_token_moe.py
-            experiments/inkling/test_inkling_portable_bf16_single_token_moe_activation.py
-            experiments/inkling/test_inkling_portable_bf16_stateful_post_reduction.py
-            experiments/inkling/test_inkling_portable_bf16_stateful_sparse_layer.py
+            experiments/inkling/test_inkling_checked_bf16_runner_isolation.py
+            experiments/inkling/test_inkling_checked_bf16_stateful_runner_isolation.py
             experiments/inkling/test_onednn_isa_arithmetic_probe.py
             mvp/test_inkling_bf16_attention_head_norm.py
             mvp/test_inkling_bf16_attention_lattice.py
             mvp/test_inkling_bf16_attention_reductions.py
-            mvp/test_inkling_bf16_layer_probe.py
             mvp/test_inkling_bf16_projection_edges.py
             mvp/test_inkling_bf16_projection_granularity.py
             mvp/test_inkling_native_bf16_backend.py
           )
-          test "${#tests[@]}" -eq 27
+          test "${#tests[@]}" -eq 16
           for test_file in "${tests[@]}"; do
             test -f "$test_file"
             python3 -m unittest discover \
               -s "$(dirname "$test_file")" \
               -p "$(basename "$test_file")" -v
           done
-          echo "validated ${#tests[@]} isolated BF16 contract files"
-
-      - name: Prove the complete and composed runners share one interpreter
-        run: |
-          python3 -m unittest -v \
-            test_inkling_portable_bf16_complete_sparse_layer \
-            test_inkling_portable_bf16_composed_moe \
-            test_inkling_portable_bf16_runner_isolation
+          echo "validated ${#tests[@]} retained non-rewrite BF16 contract files"

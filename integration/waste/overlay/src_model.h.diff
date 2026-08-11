@@ -15,7 +15,7 @@ index 13352a4..60605ba 100644
  } waste_model;
  
  /* Everything the load needs that is not in the container. These are
-@@ -231,6 +237,12 @@ int  waste_model_load(waste_model *m, const char *dir, int kv_cap,
+@@ -231,5 +237,12 @@ int  waste_model_load(waste_model *m, const char *dir, int kv_cap,
                        const waste_load_opts *opt);
  void waste_model_free(waste_model *m);
 +

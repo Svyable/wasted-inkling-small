@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Fail closed when stacked evidence no longer matches its semantic parent.
+"""Fail closed when stacked evidence no longer matches its semantic producers.
 
-The evidence archive records the exact Git blob IDs of parent files that
-produced or define its semantics. Unrelated parent commits do not invalidate
-evidence; changes to those load-bearing files do.
+Evidence records exact Git blob IDs for the files that produced or define it.
+Parent-scoped dependencies are resolved against the current stacked parent;
+current-scoped dependencies are resolved against this evidence branch's HEAD.
+Unrelated commits are therefore allowed while load-bearing semantic drift is
+refused before numeric comparison or large fixture acquisition begins.
 
-The recorded parent head must remain an ancestor of the current parent ref, and
-every declared dependency path must resolve to the recorded blob SHA.
+The recorded parent head must also remain an ancestor of the current parent ref.
+That catches rewritten stacked history even when a dependency's bytes happen to
+return to the same value.
 """
 from __future__ import annotations
 
@@ -48,6 +51,7 @@ def check_freshness(
     parent_ref: str,
     *,
     repo: str = ".",
+    current_ref: str = "HEAD",
 ) -> dict[str, Any]:
     try:
         archive = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
@@ -63,19 +67,20 @@ def check_freshness(
     if not isinstance(dependencies, list) or not dependencies:
         raise FreshnessError("stacked_parent.dependencies must be non-empty")
 
-    current_head = _git(repo, "rev-parse", f"{parent_ref}^{{commit}}").stdout.strip()
+    current_parent = _git(repo, "rev-parse", f"{parent_ref}^{{commit}}").stdout.strip()
+    current_head = _git(repo, "rev-parse", f"{current_ref}^{{commit}}").stdout.strip()
     ancestor = _git(
         repo,
         "merge-base",
         "--is-ancestor",
         recorded_head,
-        current_head,
+        current_parent,
         check=False,
     )
     if ancestor.returncode != 0:
         raise FreshnessError(
             f"recorded parent head {recorded_head} is not an ancestor of "
-            f"current parent {parent_ref} ({current_head})"
+            f"current parent {parent_ref} ({current_parent})"
         )
 
     checked: list[dict[str, str]] = []
@@ -91,25 +96,32 @@ def check_freshness(
             or path.startswith("../")
         ):
             raise FreshnessError(f"dependency {index}: invalid path")
+        scope = item.get("scope", "parent")
+        if scope not in {"parent", "current"}:
+            raise FreshnessError(
+                f"dependency {path}: scope must be 'parent' or 'current'"
+            )
+        ref = parent_ref if scope == "parent" else current_ref
         expected = _sha(item.get("blob_sha"), label=f"dependency {path}")
-        actual_result = _git(
-            repo, "rev-parse", f"{parent_ref}:{path}", check=False
-        )
+        actual_result = _git(repo, "rev-parse", f"{ref}:{path}", check=False)
         if actual_result.returncode:
             raise FreshnessError(
-                f"dependency {path}: missing from current parent {parent_ref}"
+                f"dependency {path}: missing from {scope} ref {ref}"
             )
         actual = actual_result.stdout.strip().lower()
         if actual != expected:
             raise FreshnessError(
-                f"dependency {path}: current blob {actual} != recorded {expected}"
+                f"dependency {path} ({scope}): current blob {actual} != "
+                f"recorded {expected}"
             )
-        checked.append({"path": path, "blob_sha": actual})
+        checked.append({"scope": scope, "path": path, "blob_sha": actual})
 
     return {
         "status": "fresh",
         "parent_ref": parent_ref,
+        "current_ref": current_ref,
         "recorded_head": recorded_head,
+        "current_parent": current_parent,
         "current_head": current_head,
         "dependencies_checked": checked,
     }
@@ -119,12 +131,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", help="evidence archive JSON")
     parser.add_argument("--parent-ref", required=True, help="Git ref of stacked parent")
+    parser.add_argument("--current-ref", default="HEAD", help="Git ref of evidence branch")
     parser.add_argument("--repo", default=".", help="repository worktree")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
         result = check_freshness(
-            args.manifest, args.parent_ref, repo=os.path.abspath(args.repo)
+            args.manifest,
+            args.parent_ref,
+            repo=os.path.abspath(args.repo),
+            current_ref=args.current_ref,
         )
     except FreshnessError as exc:
         result = {"status": "stale", "error": str(exc)}
@@ -136,9 +152,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(result, sort_keys=True))
     else:
+        scopes = {item["scope"] for item in result["dependencies_checked"]}
         print(
             f"FRESH {len(result['dependencies_checked'])} dependencies "
-            f"against {result['parent_ref']} @ {result['current_head']}"
+            f"across {','.join(sorted(scopes))} scopes; parent "
+            f"{result['parent_ref']} @ {result['current_parent']}"
         )
     return 0
 

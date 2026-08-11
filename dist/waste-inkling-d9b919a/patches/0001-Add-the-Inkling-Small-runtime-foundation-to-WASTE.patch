@@ -1,4 +1,4 @@
-From 50fa3ed6b3ca412f552675eb01e992db597c405d Mon Sep 17 00:00:00 2001
+From 414da945773779b9a4c666ebc2acf99488e91ed3 Mon Sep 17 00:00:00 2001
 From: WASTE Inkling integration <inkling@waste.invalid>
 Date: Sun, 2 Aug 2026 00:00:00 +0000
 Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
@@ -18,15 +18,15 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  src/inkling_bind.h                    |  56 ++
  src/inkling_config.c                  | 190 ++++++
  src/inkling_config.h                  | 134 ++++
- src/inkling_container.c               | 443 ++++++++++++
+ src/inkling_container.c               | 448 +++++++++++++
  src/inkling_container.h               |  89 +++
- src/inkling_layer.c                   | 543 +++++++++++++++
- src/inkling_layer.h                   | 195 ++++++
+ src/inkling_layer.c                   | 533 +++++++++++++++
+ src/inkling_layer.h                   | 201 ++++++
  src/inkling_manifest.c                | 128 ++++
  src/inkling_manifest.h                |  38 ++
- src/inkling_model.c                   | 282 ++++++++
- src/inkling_model.h                   | 110 +++
- src/inkling_numeric.h                 |  43 ++
+ src/inkling_model.c                   | 345 ++++++++++
+ src/inkling_model.h                   | 145 ++++
+ src/inkling_numeric.h                 |  69 ++
  src/inkling_private.c                 | 791 ++++++++++++++++++++++
  src/inkling_private.h                 |  70 ++
  src/inkling_public.c                  | 141 ++++
@@ -53,7 +53,8 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tests/test_inkling_config_c.py        | 259 +++++++
  tests/test_inkling_container.c        | 326 +++++++++
  tests/test_inkling_expert_bench.py    | 116 ++++
- tests/test_inkling_fixture.py         | 401 +++++++++++
+ tests/test_inkling_final_head_c.py    | 492 ++++++++++++++
+ tests/test_inkling_fixture.py         | 449 +++++++++++++
  tests/test_inkling_io.c               | 256 +++++++
  tests/test_inkling_layer_c.py         | 450 +++++++++++++
  tests/test_inkling_layer_parity.py    | 384 +++++++++++
@@ -79,7 +80,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/inkling_cache_sim.c             | 179 +++++
  tools/inkling_cache_trace.py          | 271 ++++++++
  tools/inkling_expert_bench.c          | 260 ++++++++
- tools/inkling_fixture.py              | 388 +++++++++++
+ tools/inkling_fixture.py              | 428 ++++++++++++
  tools/inkling_layer_parity.py         | 597 +++++++++++++++++
  tools/inkling_parity.py               | 416 ++++++++++++
  tools/inkling_plan.py                 | 563 ++++++++++++++++
@@ -97,7 +98,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  tools/inkling_weights.py              | 369 ++++++++++
  tools/inspect_inkling.py              | 799 ++++++++++++++++++++++
  tools/make_inkling_container.py       | 322 +++++++++
- 93 files changed, 23319 insertions(+), 8 deletions(-)
+ 94 files changed, 24024 insertions(+), 8 deletions(-)
  create mode 100644 PATCH18-HANDOFF.md
  create mode 100644 TEST-RESULTS-P18.txt
  create mode 100644 docs/INKLING.md
@@ -142,6 +143,7 @@ Subject: [PATCH] Add the Inkling-Small runtime foundation to WASTE
  create mode 100644 tests/test_inkling_config_c.py
  create mode 100644 tests/test_inkling_container.c
  create mode 100644 tests/test_inkling_expert_bench.py
+ create mode 100644 tests/test_inkling_final_head_c.py
  create mode 100644 tests/test_inkling_fixture.py
  create mode 100644 tests/test_inkling_io.c
  create mode 100644 tests/test_inkling_layer_c.py
@@ -2166,10 +2168,10 @@ index 0000000..7af4eca
 +#endif
 diff --git a/src/inkling_container.c b/src/inkling_container.c
 new file mode 100644
-index 0000000..a6178ff
+index 0000000..65b3a6c
 --- /dev/null
 +++ b/src/inkling_container.c
-@@ -0,0 +1,443 @@
+@@ -0,0 +1,448 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -2271,6 +2273,11 @@ index 0000000..a6178ff
 +    case WASTE_IK_MAT_ROUTED_GATE:
 +    case WASTE_IK_MAT_ROUTED_UP:
 +    case WASTE_IK_MAT_ROUTED_DOWN:
++    /* The vocabulary projection is not a per-layer trunk matrix either: the
++     * loader binds `inkling.unembed` through a row callback, and the final
++     * head reaches a matrix backend only in the private BF16 evidence
++     * profile. There is no container name to hand back here. */
++    case WASTE_IK_MAT_UNEMBED:
 +        return NULL;
 +    }
 +    return NULL;
@@ -2710,10 +2717,10 @@ index 0000000..d7c130c
 +#endif
 diff --git a/src/inkling_layer.c b/src/inkling_layer.c
 new file mode 100644
-index 0000000..29aca44
+index 0000000..d1b40fd
 --- /dev/null
 +++ b/src/inkling_layer.c
-@@ -0,0 +1,543 @@
+@@ -0,0 +1,533 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -2764,23 +2771,13 @@ index 0000000..29aca44
 +                                x, rows, cols, WASTE_INKLING_NUMERIC_F32);
 +}
 +
++/* The policy itself lives in inkling_numeric.h so that the layer and the final
++ * head share one definition. This wrapper only keeps the call sites short. */
 +static void rmsnorm_profile(float *out, const float *x, const float *weight,
 +                            int n, float eps,
 +                            waste_inkling_numeric_profile profile)
 +{
-+    double ss = 0.0;
-+    for (int i = 0; i < n; i++) ss += (double)x[i] * x[i];
-+    const float scale = 1.0f / sqrtf((float)(ss / n) + eps);
-+    if (profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE) {
-+        /* Retained official-layer ordering: normalize, complete to BF16,
-+         * multiply the BF16 weight, then complete the output again. */
-+        for (int i = 0; i < n; i++) {
-+            const float normalized = waste_inkling_bf16_round(x[i] * scale);
-+            out[i] = waste_inkling_bf16_round(normalized * weight[i]);
-+        }
-+    } else {
-+        for (int i = 0; i < n; i++) out[i] = x[i] * scale * weight[i];
-+    }
++    waste_inkling_rmsnorm_profile(out, x, weight, n, eps, profile);
 +}
 +
 +static float silu(float x) { return x / (1.0f + expf(-x)); }
@@ -3260,10 +3257,10 @@ index 0000000..29aca44
 \ No newline at end of file
 diff --git a/src/inkling_layer.h b/src/inkling_layer.h
 new file mode 100644
-index 0000000..8a48fef
+index 0000000..e7c16d7
 --- /dev/null
 +++ b/src/inkling_layer.h
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,201 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -3337,7 +3334,13 @@ index 0000000..8a48fef
 +    /* Appended so every pre-promotion kind keeps its numeric value.  The BF16
 +     * evidence profile uses these callbacks to avoid silently evaluating a
 +     * routed expert through the scalar F32 resident matvec. */
-+    WASTE_IK_MAT_ROUTED_GATE, WASTE_IK_MAT_ROUTED_UP, WASTE_IK_MAT_ROUTED_DOWN
++    WASTE_IK_MAT_ROUTED_GATE, WASTE_IK_MAT_ROUTED_UP, WASTE_IK_MAT_ROUTED_DOWN,
++    /* Vocabulary projection of the final head.  Appended for the same reason:
++     * the BF16 evidence profile must reach the real kernel instead of widening
++     * a resident table into the scalar F32 dot product.  Callbacks for this
++     * kind receive layer -1, index 0, and exactly the selected vocabulary rows
++     * in selection order. */
++    WASTE_IK_MAT_UNEMBED
 +} waste_inkling_matrix_kind;
 +
 +typedef int (*waste_inkling_matvec_fn)(void *ctx, int layer,
@@ -3640,10 +3643,10 @@ index 0000000..96f8ac5
 +#endif
 diff --git a/src/inkling_model.c b/src/inkling_model.c
 new file mode 100644
-index 0000000..98a13a1
+index 0000000..d91ce90
 --- /dev/null
 +++ b/src/inkling_model.c
-@@ -0,0 +1,282 @@
+@@ -0,0 +1,345 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -3680,10 +3683,8 @@ index 0000000..98a13a1
 +static void rmsnorm(float *out, const float *x, const float *weight,
 +                    int n, float eps)
 +{
-+    double ss = 0.0;
-+    for (int i = 0; i < n; i++) ss += (double)x[i] * x[i];
-+    const float scale = 1.0f / sqrtf((float)(ss / n) + eps);
-+    for (int i = 0; i < n; i++) out[i] = x[i] * scale * weight[i];
++    waste_inkling_rmsnorm_profile(out, x, weight, n, eps,
++                                  WASTE_INKLING_NUMERIC_F32);
 +}
 +
 +static float dot(const float *a, const float *b, int n)
@@ -3828,6 +3829,89 @@ index 0000000..98a13a1
 +    return get ? get(ctx, row, cols, out) : -1;
 +}
 +
++int waste_inkling_final_head_profile(
++    const waste_inkling_config *cfg,
++    const waste_inkling_model_weights *w,
++    const waste_inkling_matrix_backend *backend,
++    const float *hidden_state,
++    const int *rows, int n_rows,
++    float *logits, size_t logits_count,
++    float *normalized, float *row_scratch,
++    waste_inkling_numeric_profile profile,
++    const waste_inkling_trace *trace)
++{
++    if (!cfg || !w || !hidden_state || !logits || !normalized ||
++        !row_scratch || !w->final_norm ||
++        cfg->hidden <= 0 || cfg->unpadded_vocab <= 0 ||
++        n_rows <= 0 || logits_count < (size_t)n_rows ||
++        !(cfg->logits_width_multiplier > 0.0f) ||
++        !waste_inkling_numeric_profile_valid(profile))
++        return -1;
++
++    const int bf16 = profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE;
++    /* The resident table may be shorter than the vocabulary; a callback covers
++     * exactly the unpadded vocabulary. Either way a selection that reaches
++     * past what is bound fails closed rather than reading a neighboring row. */
++    const int bound = w->unembedding ? w->unembedding_rows : cfg->unpadded_vocab;
++    if (bf16) {
++        if (!backend || !backend->matvec) return -1;
++    } else if (!w->unembedding && !w->unembedding_get) {
++        return -1;
++    } else if (n_rows > bound) {
++        return -1;
++    }
++    if (rows) {
++        const int limit = bf16 ? cfg->unpadded_vocab : bound;
++        for (int j = 0; j < n_rows; j++)
++            if (rows[j] < 0 || rows[j] >= limit) return -1;
++    }
++
++    const int hidden = cfg->hidden;
++    waste_inkling_rmsnorm_profile(normalized, hidden_state, w->final_norm,
++                                  hidden, cfg->rms_eps, profile);
++    if (trace && trace->emit_float &&
++        trace->emit_float(trace->ctx, -1, "final_norm", normalized,
++                          (size_t)hidden)) return -1;
++    if (bf16) {
++        /* The official forward divides the hidden state by this factor
++         * immediately before the vocabulary projection, so divide here rather
++         * than multiply by a reciprocal. The release multiplier is 16 and the
++         * two agree there; they diverge for any multiplier whose reciprocal is
++         * inexact, and the operation should not depend on that. */
++        for (int i = 0; i < hidden; i++)
++            normalized[i] = waste_inkling_bf16_round(
++                normalized[i] / cfg->logits_width_multiplier);
++    } else {
++        const float inv_width = 1.0f / cfg->logits_width_multiplier;
++        for (int i = 0; i < hidden; i++) normalized[i] *= inv_width;
++    }
++    if (trace && trace->emit_float &&
++        trace->emit_float(trace->ctx, -1, "final_norm_scaled", normalized,
++                          (size_t)hidden)) return -1;
++
++    if (bf16) {
++        if (backend->matvec(backend->ctx, -1, WASTE_IK_MAT_UNEMBED, 0,
++                            normalized, logits, n_rows, hidden)) return -1;
++    } else {
++        for (int j = 0; j < n_rows; j++) {
++            const int v = rows ? rows[j] : j;
++            const float *row;
++            if (w->unembedding) {
++                row = w->unembedding + (size_t)v * hidden;
++            } else {
++                if (w->unembedding_get(w->unembedding_ctx, v, hidden,
++                                       row_scratch)) return -1;
++                row = row_scratch;
++            }
++            logits[j] = dot(row, normalized, hidden);
++        }
++    }
++    if (trace && trace->emit_float &&
++        trace->emit_float(trace->ctx, -1, "logits", logits,
++                          (size_t)n_rows)) return -1;
++    return 0;
++}
++
 +int waste_inkling_model_step_backend_trace(
 +    const waste_inkling_config *cfg,
 +    const waste_inkling_model_weights *w,
@@ -3872,31 +3956,13 @@ index 0000000..98a13a1
 +            return -1;
 +    }
 +
-+    rmsnorm(scratch->row, scratch->x, w->final_norm,
-+            cfg->hidden, cfg->rms_eps);
-+    if (trace && trace->emit_float &&
-+        trace->emit_float(trace->ctx, -1, "final_norm", scratch->row,
-+                          (size_t)cfg->hidden)) return -1;
-+    const float inv_width = 1.0f / cfg->logits_width_multiplier;
-+    for (int i = 0; i < cfg->hidden; i++) scratch->row[i] *= inv_width;
-+    if (trace && trace->emit_float &&
-+        trace->emit_float(trace->ctx, -1, "final_norm_scaled", scratch->row,
-+                          (size_t)cfg->hidden)) return -1;
-+
-+    for (int v = 0; v < cfg->unpadded_vocab; v++) {
-+        const float *row;
-+        if (w->unembedding) {
-+            row = w->unembedding + (size_t)v * cfg->hidden;
-+        } else {
-+            if (w->unembedding_get(w->unembedding_ctx, v, cfg->hidden,
-+                                   scratch->x)) return -1;
-+            row = scratch->x;
-+        }
-+        logits[v] = dot(row, scratch->row, cfg->hidden);
-+    }
-+    if (trace && trace->emit_float &&
-+        trace->emit_float(trace->ctx, -1, "logits", logits,
-+                          (size_t)cfg->unpadded_vocab)) return -1;
++    /* Public stepping stays on the checked-in F32 profile. scratch->x holds the
++     * decoder output on the way in and is reused as the row staging buffer,
++     * which the primitive documents as allowed. */
++    if (waste_inkling_final_head_profile(cfg, w, NULL, scratch->x,
++            NULL, cfg->unpadded_vocab, logits, logits_count,
++            scratch->row, scratch->x, WASTE_INKLING_NUMERIC_F32, trace))
++        return -1;
 +    state->next_position++;
 +    return 0;
 +}
@@ -3928,10 +3994,10 @@ index 0000000..98a13a1
 +}
 diff --git a/src/inkling_model.h b/src/inkling_model.h
 new file mode 100644
-index 0000000..1124994
+index 0000000..539747d
 --- /dev/null
 +++ b/src/inkling_model.h
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,145 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Copyright 2026 SQLite Cloud, Inc.
 + */
@@ -4038,16 +4104,51 @@ index 0000000..1124994
 +    waste_inkling_expert_get_fn expert_get, void *expert_ctx,
 +    const waste_inkling_trace *trace);
 +
++/* The final head as one primitive: final RMS normalization, the logits-width
++ * completion, and the vocabulary projection.  Split out of the model step so
++ * the completion semantics can be validated on a supplied hidden state without
++ * executing a decoder, and so both callers share one definition.
++ *
++ * A validated hidden state is *not* a claim about model logits.  This computes
++ * the head of whatever vector it is given.
++ *
++ * Row selection: `rows` may name `n_rows` vocabulary rows, or be NULL for the
++ * first `n_rows` rows.  `logits[j]` always corresponds to selection slot `j`.
++ * A bounded selection is what makes official-weight evidence affordable — the
++ * whole table is gigabytes.
++ *
++ * F32 evaluates the projection from `weights->unembedding` or its row
++ * callback.  BF16_REFERENCE requires `backend`, because exact BF16 evidence is
++ * kernel-sensitive and must not be manufactured by widening a BF16 table into
++ * this scalar path; the backend is called once with rows = n_rows and is
++ * responsible for holding exactly the selected rows in selection order.
++ *
++ * `normalized` and `row_scratch` are caller-owned [cfg->hidden] buffers.
++ * `normalized` may alias neither `logits` nor `weights->final_norm`;
++ * `row_scratch` may alias `hidden_state`, which is fully consumed first.
++ * Trace points are emitted at layer -1 as final_norm, final_norm_scaled, and
++ * logits, matching the model step. */
++int waste_inkling_final_head_profile(
++    const waste_inkling_config *cfg,
++    const waste_inkling_model_weights *weights,
++    const waste_inkling_matrix_backend *backend,
++    const float *hidden_state,
++    const int *rows, int n_rows,
++    float *logits, size_t logits_count,
++    float *normalized, float *row_scratch,
++    waste_inkling_numeric_profile profile,
++    const waste_inkling_trace *trace);
++
 +#ifdef __cplusplus
 +}
 +#endif
 +#endif
 diff --git a/src/inkling_numeric.h b/src/inkling_numeric.h
 new file mode 100644
-index 0000000..6c5c535
+index 0000000..82287e0
 --- /dev/null
 +++ b/src/inkling_numeric.h
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,69 @@
 +/* SPDX-License-Identifier: Apache-2.0
 + * Internal numeric execution profiles for the Inkling runtime.
 + *
@@ -4060,6 +4161,7 @@ index 0000000..6c5c535
 +#ifndef WASTE_INKLING_NUMERIC_H
 +#define WASTE_INKLING_NUMERIC_H
 +
++#include <math.h>
 +#include <stdint.h>
 +#include <string.h>
 +
@@ -4088,6 +4190,31 @@ index 0000000..6c5c535
 +        memcpy(&value, &bits, sizeof value);
 +    }
 +    return value;
++}
++
++/* The single checked-in RMS normalization policy, shared by every Inkling
++ * normalization site so the layer and the final head cannot drift apart.
++ *
++ * F32 keeps the original checked-in expression exactly.  BF16_REFERENCE is the
++ * ordering the retained official-weight evidence established: normalize,
++ * complete to BF16, multiply the BF16 weight, then complete the output again.
++ * The sum of squares is accumulated in double in both profiles; that is the
++ * pre-existing behavior and the evidence was gathered against it. */
++static inline void waste_inkling_rmsnorm_profile(
++    float *out, const float *x, const float *weight, int n, float eps,
++    waste_inkling_numeric_profile profile)
++{
++    double ss = 0.0;
++    for (int i = 0; i < n; i++) ss += (double)x[i] * x[i];
++    const float scale = 1.0f / sqrtf((float)(ss / n) + eps);
++    if (profile == WASTE_INKLING_NUMERIC_BF16_REFERENCE) {
++        for (int i = 0; i < n; i++) {
++            const float normalized = waste_inkling_bf16_round(x[i] * scale);
++            out[i] = waste_inkling_bf16_round(normalized * weight[i]);
++        }
++    } else {
++        for (int i = 0; i < n; i++) out[i] = x[i] * scale * weight[i];
++    }
 +}
 +
 +#endif
@@ -8852,12 +8979,510 @@ index 0000000..521e47e
 +
 +if __name__ == "__main__":
 +    unittest.main()
+diff --git a/tests/test_inkling_final_head_c.py b/tests/test_inkling_final_head_c.py
+new file mode 100644
+index 0000000..ec09f2f
+--- /dev/null
++++ b/tests/test_inkling_final_head_c.py
+@@ -0,0 +1,492 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 SQLite Cloud, Inc.
++"""Differential tests for the checked-in Inkling final head.
++
++The head is final RMS normalization, the logits-width completion, and the
++vocabulary projection. This file pins both numeric profiles against an
++independent Python reference that models the C float and bfloat16 rounding
++explicitly, so a change to either policy has to be deliberate.
++
++Dependency-light on purpose: ctypes and the standard library only, so the
++cheap validation gate can run it before anything downloads official weights.
++Nothing here is a claim about model logits -- the primitive computes the head
++of whatever hidden state it is handed.
++"""
++
++import ctypes
++import math
++import random
++import shutil
++import struct
++import subprocess
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++
++from test_inkling_config_c import Args, Config
++
++FP = ctypes.POINTER(ctypes.c_float)
++PROFILE_F32 = 0
++PROFILE_BF16 = 1
++KIND_UNEMBED = 15
++
++RowCallback = ctypes.CFUNCTYPE(
++    ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, FP
++)
++MatvecCallback = ctypes.CFUNCTYPE(
++    ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int,
++    FP, FP, ctypes.c_int, ctypes.c_int,
++)
++TraceFloatCallback = ctypes.CFUNCTYPE(
++    ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, FP,
++    ctypes.c_size_t,
++)
++TraceIntCallback = ctypes.CFUNCTYPE(
++    ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p,
++    ctypes.POINTER(ctypes.c_int), ctypes.c_size_t,
++)
++
++
++class MatrixBackend(ctypes.Structure):
++    _fields_ = [("matvec", MatvecCallback), ("ctx", ctypes.c_void_p)]
++
++
++class Trace(ctypes.Structure):
++    _fields_ = [("emit_float", TraceFloatCallback),
++                ("emit_int", TraceIntCallback),
++                ("ctx", ctypes.c_void_p)]
++
++
++class ModelWeights(ctypes.Structure):
++    """Mirror of waste_inkling_model_weights.
++
++    Only the head fields are exercised here; `layer` stays NULL because the
++    primitive never touches a decoder layer.
++    """
++
++    _fields_ = [
++        ("embedding", FP),
++        ("embed_norm", FP),
++        ("final_norm", FP),
++        ("unembedding", FP),
++        ("unembedding_rows", ctypes.c_int),
++        ("layer", ctypes.c_void_p),
++        ("embedding_get", RowCallback),
++        ("embedding_ctx", ctypes.c_void_p),
++        ("unembedding_get", RowCallback),
++        ("unembedding_ctx", ctypes.c_void_p),
++    ]
++
++
++def f32(value):
++    """Round a Python float to float32, the way every C assignment does."""
++    return struct.unpack("f", struct.pack("f", value))[0]
++
++
++def bf16(value):
++    """Nearest-even bfloat16 rounding, mirroring waste_inkling_bf16_round."""
++    bits = struct.unpack("I", struct.pack("f", f32(value)))[0]
++    if (bits & 0x7F800000) != 0x7F800000:
++        bits = (bits + 0x7FFF + ((bits >> 16) & 1)) & 0xFFFF0000
++    return struct.unpack("f", struct.pack("I", bits & 0xFFFFFFFF))[0]
++
++
++def rms_scale(x, eps):
++    """The shared scale factor: double accumulation, float32 completion."""
++    ss = 0.0
++    for value in x:
++        ss += float(value) * float(value)
++    return f32(1.0 / f32(math.sqrt(f32(f32(ss / len(x)) + eps))))
++
++
++def reference_head(x, final_norm, unembedding, rows, eps, multiplier, profile):
++    """Return (normalized, scaled, logits) for one profile.
++
++    The F32 branch reproduces the expression order of the checked-in C. The
++    BF16 branch reproduces the retained evidence ordering: complete after the
++    normalization, after the weight multiply, and after the width division --
++    a true division, not a reciprocal multiply.
++    """
++    scale = rms_scale(x, eps)
++    if profile == PROFILE_BF16:
++        normalized = [bf16(f32(bf16(f32(value * scale)) * weight))
++                      for value, weight in zip(x, final_norm)]
++        scaled = [bf16(f32(value / multiplier)) for value in normalized]
++    else:
++        normalized = [f32(f32(value * scale) * weight)
++                      for value, weight in zip(x, final_norm)]
++        inv = f32(1.0 / multiplier)
++        scaled = [f32(value * inv) for value in normalized]
++    logits = []
++    for row in rows:
++        total = 0.0
++        for weight, value in zip(unembedding[row], scaled):
++            total += float(weight) * float(value)
++        logits.append(f32(total))
++    return normalized, scaled, logits
++
++
++def array(values):
++    return (ctypes.c_float * len(values))(*[f32(v) for v in values])
++
++
++class InklingFinalHeadCTest(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cc = shutil.which("cc")
++        if not cc:
++            raise unittest.SkipTest("C compiler unavailable")
++        cls.td = tempfile.TemporaryDirectory()
++        lib_path = Path(cls.td.name) / "libinkling_final_head.so"
++        subprocess.run(
++            [
++                cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-shared",
++                "-fPIC", f"-I{REPO / 'src'}",
++                str(REPO / "src" / "inkling_model.c"),
++                str(REPO / "src" / "inkling_layer.c"),
++                str(REPO / "src" / "inkling_attention.c"),
++                str(REPO / "src" / "inkling_config.c"),
++                str(REPO / "src" / "inkling.c"),
++                str(REPO / "src" / "inkling_wexp.c"),
++                "-lm", "-o", str(lib_path),
++            ],
++            check=True, capture_output=True,
++        )
++        cls.lib = ctypes.CDLL(str(lib_path))
++        cls.lib.waste_inkling_config_build.argtypes = [
++            ctypes.POINTER(Config), ctypes.POINTER(Args),
++        ]
++        cls.lib.waste_inkling_config_build.restype = ctypes.c_int
++        cls.lib.waste_inkling_final_head_profile.argtypes = [
++            ctypes.POINTER(Config), ctypes.POINTER(ModelWeights),
++            ctypes.POINTER(MatrixBackend), FP,
++            ctypes.POINTER(ctypes.c_int), ctypes.c_int,
++            FP, ctypes.c_size_t, FP, FP, ctypes.c_int,
++            ctypes.POINTER(Trace),
++        ]
++        cls.lib.waste_inkling_final_head_profile.restype = ctypes.c_int
++
++    @classmethod
++    def tearDownClass(cls):
++        cls.td.cleanup()
++
++    def build_config(self, hidden=32, vocab=64, unpadded=48, multiplier=3.0):
++        a = Args()
++        a.n_layers = 2
++        a.hidden = hidden
++        a.vocab = vocab
++        a.unpadded_vocab = unpadded
++        a.max_context = 128
++        a.global_kv_heads = 2
++        a.global_heads = 4
++        a.global_head_dim = 8
++        a.local_kv_heads = 2
++        a.local_heads = 4
++        a.local_head_dim = 8
++        a.sliding_window = 16
++        a.d_rel = 4
++        a.rel_extent = 32
++        a.conv_kernel = 3
++        a.dense_layers = 1
++        a.dense_intermediate = hidden * 2
++        a.moe_intermediate = hidden
++        a.n_routed_experts = 4
++        a.top_k = 2
++        a.n_shared_experts = 1
++        a.rms_eps = 1e-6
++        a.route_scale = 8.0
++        a.logits_width_multiplier = multiplier
++        a.log_scaling_n_floor = 128
++        a.log_scaling_alpha = 0.1
++        a.local_layer_ids = None
++        a.n_local_layers = 0
++        cfg = Config()
++        self.assertEqual(
++            self.lib.waste_inkling_config_build(ctypes.byref(cfg),
++                                                ctypes.byref(a)), 0)
++        return cfg
++
++    def make_tables(self, cfg, seed=11, quantize=False):
++        rng = random.Random(seed)
++        # Every value the C side sees is float32; BF16 evidence additionally
++        # arrives already completed, so the tables model that too.
++        prepare = bf16 if quantize else f32
++        x = [prepare(rng.uniform(-2.0, 2.0)) for _ in range(cfg.hidden)]
++        final_norm = [prepare(rng.uniform(0.2, 1.8)) for _ in range(cfg.hidden)]
++        unembedding = [
++            [prepare(rng.uniform(-0.5, 0.5)) for _ in range(cfg.hidden)]
++            for _ in range(cfg.unpadded_vocab)
++        ]
++        return x, final_norm, unembedding
++
++    def bind(self, cfg, final_norm, unembedding=None, keep=None):
++        keep = keep if keep is not None else []
++        w = ModelWeights()
++        keep.append(array(final_norm))
++        w.final_norm = keep[-1]
++        if unembedding is not None:
++            flat = [value for row in unembedding for value in row]
++            keep.append(array(flat))
++            w.unembedding = keep[-1]
++            w.unembedding_rows = len(unembedding)
++        return w, keep
++
++    def call(self, cfg, w, x, rows, n_rows, profile, backend=None,
++             logits_count=None, trace=None, logits=None):
++        hidden = cfg.hidden
++        xa = array(x)
++        normalized = (ctypes.c_float * hidden)()
++        row_scratch = (ctypes.c_float * hidden)()
++        out = logits if logits is not None else (ctypes.c_float * max(n_rows, 1))()
++        selection = None
++        if rows is not None:
++            selection = (ctypes.c_int * len(rows))(*rows)
++        count = logits_count if logits_count is not None else max(n_rows, 1)
++        rc = self.lib.waste_inkling_final_head_profile(
++            ctypes.byref(cfg), ctypes.byref(w),
++            ctypes.byref(backend) if backend else None,
++            xa, selection, n_rows, out, count,
++            normalized, row_scratch, profile,
++            ctypes.byref(trace) if trace else None,
++        )
++        return rc, list(out[:max(n_rows, 0)]), list(normalized)
++
++    def test_f32_profile_matches_python_reference_bit_for_bit(self):
++        cfg = self.build_config()
++        x, final_norm, unembedding = self.make_tables(cfg)
++        w, keep = self.bind(cfg, final_norm, unembedding)
++        rc, logits, scaled = self.call(cfg, w, x, None, cfg.unpadded_vocab,
++                                       PROFILE_F32)
++        self.assertEqual(rc, 0)
++        _, want_scaled, want = reference_head(
++            x, final_norm, unembedding, range(cfg.unpadded_vocab),
++            cfg.rms_eps, cfg.logits_width_multiplier, PROFILE_F32)
++        self.assertEqual(scaled, want_scaled)
++        self.assertEqual(logits, want)
++        self.assertIsNotNone(keep)
++
++    def test_bf16_profile_matches_python_reference_bit_for_bit(self):
++        cfg = self.build_config()
++        x, final_norm, unembedding = self.make_tables(cfg, quantize=True)
++        w, keep = self.bind(cfg, final_norm)
++        rows = [0, 5, 17, 47]
++        seen = {}
++
++        def matvec(_ctx, layer, kind, index, vec, out, n_rows, cols):
++            seen["layer"] = layer
++            seen["kind"] = kind
++            seen["index"] = index
++            seen["rows"] = n_rows
++            seen["cols"] = cols
++            seen["input"] = [vec[i] for i in range(cols)]
++            for j in range(n_rows):
++                total = 0.0
++                for c in range(cols):
++                    total += float(unembedding[rows[j]][c]) * float(vec[c])
++                out[j] = bf16(f32(total))
++            return 0
++
++        callback = MatvecCallback(matvec)
++        backend = MatrixBackend(matvec=callback, ctx=None)
++        rc, logits, scaled = self.call(cfg, w, x, rows, len(rows),
++                                       PROFILE_BF16, backend=backend)
++        self.assertEqual(rc, 0)
++        _, want_scaled, _ = reference_head(
++            x, final_norm, unembedding, rows, cfg.rms_eps,
++            cfg.logits_width_multiplier, PROFILE_BF16)
++        self.assertEqual(scaled, want_scaled)
++        self.assertEqual(seen["input"], want_scaled)
++        self.assertEqual((seen["layer"], seen["kind"], seen["index"]),
++                         (-1, KIND_UNEMBED, 0))
++        self.assertEqual((seen["rows"], seen["cols"]), (len(rows), cfg.hidden))
++        # Every completed value stays bfloat16-representable.
++        for value in scaled + logits:
++            self.assertEqual(value, bf16(value))
++        self.assertIsNotNone(keep)
++
++    def test_width_completion_is_a_division_not_a_reciprocal_multiply(self):
++        """Under BF16 the two differ; the official forward divides."""
++        cfg = self.build_config(multiplier=3.0)
++        x, final_norm, _ = self.make_tables(cfg, seed=23, quantize=True)
++        w, keep = self.bind(cfg, final_norm)
++        rows = [0]
++
++        def matvec(_ctx, _layer, _kind, _index, _vec, out, n_rows, _cols):
++            for j in range(n_rows):
++                out[j] = 0.0
++            return 0
++
++        callback = MatvecCallback(matvec)
++        backend = MatrixBackend(matvec=callback, ctx=None)
++        rc, _, scaled = self.call(cfg, w, x, rows, 1, PROFILE_BF16,
++                                  backend=backend)
++        self.assertEqual(rc, 0)
++        normalized, want, _ = reference_head(
++            x, final_norm, [[0.0] * cfg.hidden], rows, cfg.rms_eps,
++            cfg.logits_width_multiplier, PROFILE_BF16)
++        self.assertEqual(scaled, want)
++        inv = bf16(f32(1.0 / cfg.logits_width_multiplier))
++        reciprocal = [bf16(f32(value * inv)) for value in normalized]
++        self.assertNotEqual(reciprocal, want)
++        self.assertIsNotNone(keep)
++
++    def test_row_callback_matches_resident_table(self):
++        cfg = self.build_config()
++        x, final_norm, unembedding = self.make_tables(cfg, seed=5)
++        resident, keep = self.bind(cfg, final_norm, unembedding)
++        rc, want, _ = self.call(cfg, resident, x, None, cfg.unpadded_vocab,
++                                PROFILE_F32)
++        self.assertEqual(rc, 0)
++
++        requested = []
++
++        def row_get(_ctx, row, cols, out):
++            if row < 0 or row >= len(unembedding) or cols != cfg.hidden:
++                return -1
++            requested.append(row)
++            for c in range(cols):
++                out[c] = unembedding[row][c]
++            return 0
++
++        callback = RowCallback(row_get)
++        streamed, keep2 = self.bind(cfg, final_norm)
++        streamed.unembedding_get = callback
++        rc, got, _ = self.call(cfg, streamed, x, None, cfg.unpadded_vocab,
++                               PROFILE_F32)
++        self.assertEqual(rc, 0)
++        self.assertEqual(got, want)
++        self.assertEqual(requested, list(range(cfg.unpadded_vocab)))
++        self.assertIsNotNone(keep and keep2)
++
++    def test_bounded_selection_equals_the_same_rows_of_the_full_head(self):
++        cfg = self.build_config()
++        x, final_norm, unembedding = self.make_tables(cfg, seed=9)
++        w, keep = self.bind(cfg, final_norm, unembedding)
++        rc, full, _ = self.call(cfg, w, x, None, cfg.unpadded_vocab,
++                                PROFILE_F32)
++        self.assertEqual(rc, 0)
++        rows = [47, 0, 12, 12, 31]
++        rc, bounded, _ = self.call(cfg, w, x, rows, len(rows), PROFILE_F32)
++        self.assertEqual(rc, 0)
++        self.assertEqual(bounded, [full[row] for row in rows])
++        self.assertIsNotNone(keep)
++
++    def test_trace_reports_every_completion_point(self):
++        cfg = self.build_config()
++        x, final_norm, unembedding = self.make_tables(cfg, seed=13)
++        w, keep = self.bind(cfg, final_norm, unembedding)
++        points = []
++
++        def emit_float(_ctx, layer, point, data, count):
++            points.append((layer, point.decode(),
++                           [data[i] for i in range(count)]))
++            return 0
++
++        emit = TraceFloatCallback(emit_float)
++        trace = Trace(emit_float=emit, emit_int=TraceIntCallback(0), ctx=None)
++        rows = [3, 8]
++        rc, logits, _ = self.call(cfg, w, x, rows, len(rows), PROFILE_F32,
++                                  trace=trace)
++        self.assertEqual(rc, 0)
++        self.assertEqual([(layer, name) for layer, name, _ in points],
++                         [(-1, "final_norm"), (-1, "final_norm_scaled"),
++                          (-1, "logits")])
++        want_normalized, want_scaled, _ = reference_head(
++            x, final_norm, unembedding, rows, cfg.rms_eps,
++            cfg.logits_width_multiplier, PROFILE_F32)
++        self.assertEqual(points[0][2], want_normalized)
++        self.assertEqual(points[1][2], want_scaled)
++        # The logits trace is bounded by the selection, not by the vocabulary.
++        self.assertEqual(points[2][2], logits)
++        self.assertIsNotNone(keep)
++
++    def test_trace_failure_stops_the_head(self):
++        cfg = self.build_config()
++        x, final_norm, unembedding = self.make_tables(cfg, seed=17)
++        w, keep = self.bind(cfg, final_norm, unembedding)
++
++        def emit_float(_ctx, _layer, _point, _data, _count):
++            return -1
++
++        emit = TraceFloatCallback(emit_float)
++        trace = Trace(emit_float=emit, emit_int=TraceIntCallback(0), ctx=None)
++        rc, _, _ = self.call(cfg, w, x, None, cfg.unpadded_vocab, PROFILE_F32,
++                             trace=trace)
++        self.assertNotEqual(rc, 0)
++        self.assertIsNotNone(keep)
++
++    def test_bf16_profile_refuses_to_use_the_resident_scalar_path(self):
++        """BF16 evidence is kernel-sensitive: no backend, no result."""
++        cfg = self.build_config()
++        x, final_norm, unembedding = self.make_tables(cfg, quantize=True)
++        w, keep = self.bind(cfg, final_norm, unembedding)
++        rc, _, _ = self.call(cfg, w, x, None, cfg.unpadded_vocab, PROFILE_BF16)
++        self.assertNotEqual(rc, 0)
++        empty = MatrixBackend(matvec=MatvecCallback(0), ctx=None)
++        rc, _, _ = self.call(cfg, w, x, None, cfg.unpadded_vocab,
++                             PROFILE_BF16, backend=empty)
++        self.assertNotEqual(rc, 0)
++        self.assertIsNotNone(keep)
++
++    def test_backend_failure_propagates(self):
++        cfg = self.build_config()
++        x, final_norm, _ = self.make_tables(cfg, quantize=True)
++        w, keep = self.bind(cfg, final_norm)
++
++        def matvec(_ctx, _layer, _kind, _index, _vec, _out, _rows, _cols):
++            return -1
++
++        callback = MatvecCallback(matvec)
++        backend = MatrixBackend(matvec=callback, ctx=None)
++        rc, _, _ = self.call(cfg, w, x, [0], 1, PROFILE_BF16, backend=backend)
++        self.assertNotEqual(rc, 0)
++        self.assertIsNotNone(keep)
++
++    def test_invalid_arguments_fail_closed(self):
++        cfg = self.build_config()
++        x, final_norm, unembedding = self.make_tables(cfg, seed=3)
++        w, keep = self.bind(cfg, final_norm, unembedding)
++        vocab = cfg.unpadded_vocab
++
++        # A selection reaching past the bound table, and a negative row.
++        for rows in ([vocab], [-1], [0, vocab + 3]):
++            rc, _, _ = self.call(cfg, w, x, rows, len(rows), PROFILE_F32)
++            self.assertNotEqual(rc, 0, rows)
++        # An empty selection is not a head.
++        rc, _, _ = self.call(cfg, w, x, None, 0, PROFILE_F32)
++        self.assertNotEqual(rc, 0)
++        # More rows than the caller's logits buffer admits.
++        rc, _, _ = self.call(cfg, w, x, None, vocab, PROFILE_F32,
++                             logits_count=vocab - 1)
++        self.assertNotEqual(rc, 0)
++        # More rows than the resident table holds.
++        short, keep2 = self.bind(cfg, final_norm, unembedding[: vocab - 4])
++        rc, _, _ = self.call(cfg, short, x, None, vocab, PROFILE_F32)
++        self.assertNotEqual(rc, 0)
++        # No final norm, no unembedding source, and an unknown profile.
++        headless, keep3 = self.bind(cfg, final_norm, unembedding)
++        headless.final_norm = None
++        rc, _, _ = self.call(cfg, headless, x, None, vocab, PROFILE_F32)
++        self.assertNotEqual(rc, 0)
++        unbound, keep4 = self.bind(cfg, final_norm)
++        rc, _, _ = self.call(cfg, unbound, x, None, vocab, PROFILE_F32)
++        self.assertNotEqual(rc, 0)
++        rc, _, _ = self.call(cfg, w, x, None, vocab, 2)
++        self.assertNotEqual(rc, 0)
++        # A non-positive width multiplier cannot complete anything. The config
++        # builder already refuses one, so reach past it to prove the head does
++        # not divide by whatever it is handed.
++        zero = self.build_config()
++        zero.logits_width_multiplier = 0.0
++        rc, _, _ = self.call(zero, w, x, None, vocab, PROFILE_F32)
++        self.assertNotEqual(rc, 0)
++        self.assertIsNotNone(keep and keep2 and keep3 and keep4)
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/tests/test_inkling_fixture.py b/tests/test_inkling_fixture.py
 new file mode 100644
-index 0000000..f5891c0
+index 0000000..cfae9bb
 --- /dev/null
 +++ b/tests/test_inkling_fixture.py
-@@ -0,0 +1,401 @@
+@@ -0,0 +1,449 @@
 +#!/usr/bin/env python3
 +# SPDX-License-Identifier: Apache-2.0
 +"""Dependency-light tests for the bounded parity fixture reader.
@@ -9000,6 +9625,49 @@ index 0000000..f5891c0
 +        self.assertEqual(names, {"model.llm.layers.0.attn.q_proj.weight"})
 +        self.assertEqual(len(fixture.layer_entries(1)), 3)
 +
++    def test_vocabulary_rows_are_addressed_by_axis0(self) -> None:
++        name = "model.llm.unembed.weight"
++        builder = complete(self.root)
++        builder.add_slice(name, 0, [8], seed=31)
++        builder.add_slice(name, 17, [8], seed=31)
++        builder.write(vocab_rows=[17, 0])
++        fixture = load_fixture(self.root)
++        self.assertEqual(fixture.vocab_rows, (0, 17))
++        slices = fixture.vocab_row_slices()
++        self.assertEqual(list(slices), [0, 17])
++        self.assertNotEqual(fixture.raw(name, 0), fixture.raw(name, 17))
++        fixture.require_vocab_rows([0, 17])
++        with self.assertRaises(FixtureError):
++            fixture.require_vocab_rows([0, 5])
++
++    def test_head_only_fixture_needs_no_layer(self) -> None:
++        name = "model.llm.unembed.weight"
++        builder = FixtureBuilder(self.root)
++        builder.layers = []
++        builder.experts = {}
++        builder.add_tensor("model.llm.norm.weight", [8])
++        builder.add_slice(name, 4, [8], seed=31)
++        builder.write(vocab_rows=[4])
++        fixture = load_fixture(self.root)
++        self.assertEqual(fixture.layers, ())
++        self.assertEqual(list(fixture.vocab_row_slices()), [4])
++        self.assertEqual(fixture.verify(), fixture.payload_bytes)
++
++    def test_fixtures_without_vocabulary_rows_report_none(self) -> None:
++        complete(self.root).write()
++        fixture = load_fixture(self.root)
++        self.assertEqual(fixture.vocab_rows, ())
++        with self.assertRaises(FixtureError):
++            fixture.vocab_row_slices()
++
++    def test_declared_vocabulary_rows_must_match_the_slices(self) -> None:
++        builder = complete(self.root)
++        builder.add_slice("model.llm.unembed.weight", 0, [8], seed=31)
++        builder.write(vocab_rows=[0, 4])
++        fixture = load_fixture(self.root)
++        with self.assertRaises(FixtureError):
++            fixture.vocab_row_slices()
++
 +    def test_source_binding(self) -> None:
 +        complete(self.root).write()
 +        fixture = load_fixture(self.root)
@@ -9032,7 +9700,7 @@ index 0000000..f5891c0
 +        self.assertRejects("unsupported fixture version", version=2)
 +
 +    def test_no_layers(self) -> None:
-+        self.assertRejects("no valid layer list", layers=[])
++        self.assertRejects("covers neither layers nor vocabulary rows", layers=[])
 +
 +    def test_negative_layer(self) -> None:
 +        self.assertRejects("no valid layer list", layers=[0, -1])
@@ -9042,6 +9710,11 @@ index 0000000..f5891c0
 +
 +    def test_expert_selection_outside_layers(self) -> None:
 +        self.assertRejects("unselected layer", experts={"7": [1]})
++
++    def test_malformed_vocabulary_rows(self) -> None:
++        self.assertRejects("nonnegative integers", vocab_rows=[0, -3])
++        self.assertRejects("duplicates", vocab_rows=[2, 2])
++        self.assertRejects("not a list", vocab_rows={"0": 1})
 +
 +    def test_declared_total_must_match(self) -> None:
 +        self.assertRejects("payload bytes", total_payload_bytes=1)
@@ -15862,10 +16535,10 @@ index 0000000..e824d7a
 +}
 diff --git a/tools/inkling_fixture.py b/tools/inkling_fixture.py
 new file mode 100644
-index 0000000..86655ab
+index 0000000..bf996b2
 --- /dev/null
 +++ b/tools/inkling_fixture.py
-@@ -0,0 +1,388 @@
+@@ -0,0 +1,428 @@
 +#!/usr/bin/env python3
 +# SPDX-License-Identifier: Apache-2.0
 +# Copyright 2026 SQLite Cloud, Inc.
@@ -15908,6 +16581,10 @@ index 0000000..86655ab
 +
 +KIND_TENSOR = "tensor"
 +KIND_SLICE = "axis0-slice"
++
++# The release name of the unembedding table. Bounded final-head evidence takes
++# axis-0 rows of it; the whole table never enters a fixture.
++UNEMBED_NAME = "model.llm.unembed.weight"
 +
 +
 +class FixtureError(RuntimeError):
@@ -16045,11 +16722,23 @@ index 0000000..86655ab
 +        self.source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
 +
 +        layers = manifest.get("layers")
-+        _require(isinstance(layers, list) and layers
++        _require(isinstance(layers, list)
 +                 and all(isinstance(x, int) and x >= 0 for x in layers),
 +                 "fixture manifest has no valid layer list")
 +        _require(len(set(layers)) == len(layers), "fixture layer list has duplicates")
 +        self.layers: tuple[int, ...] = tuple(sorted(layers))
++
++        rows_raw = manifest.get("vocab_rows") or []
++        _require(isinstance(rows_raw, list), "fixture vocabulary rows are not a list")
++        _require(all(isinstance(x, int) and x >= 0 for x in rows_raw),
++                 "fixture vocabulary rows are not nonnegative integers")
++        _require(len(set(rows_raw)) == len(rows_raw),
++                 "fixture vocabulary row list has duplicates")
++        self.vocab_rows: tuple[int, ...] = tuple(sorted(rows_raw))
++        # A fixture must cover something: layers, vocabulary rows, or both. An
++        # empty layer list is legitimate for a head-only fixture.
++        _require(self.layers or self.vocab_rows,
++                 "fixture covers neither layers nor vocabulary rows")
 +
 +        experts_raw = manifest.get("experts") or {}
 +        _require(isinstance(experts_raw, dict), "fixture expert selection is not an object")
@@ -16177,6 +16866,20 @@ index 0000000..86655ab
 +        _require(out, f"fixture holds no {name_suffix} slices for layer {layer}")
 +        return dict(sorted(out.items()))
 +
++    def vocab_row_slices(self) -> dict[int, FixtureEntry]:
++        """Return `{vocabulary row: entry}` for the unembedding table.
++
++        The full table is gigabytes, so final-head evidence selects rows the
++        same way sparse-layer evidence selects experts: as axis-0 slices.
++        """
++        out = {e.axis0: e for e in self.entries()
++               if e.kind == KIND_SLICE and e.name == UNEMBED_NAME
++               and e.axis0 is not None}
++        _require(out, "fixture holds no unembedding row slices")
++        _require(tuple(sorted(out)) == self.vocab_rows,
++                 "unembedding slices disagree with the declared vocabulary rows")
++        return dict(sorted(out.items()))
++
 +    # -- fail-closed coverage checks -------------------------------------
 +
 +    def require_layers(self, layers: Iterable[int]) -> None:
@@ -16184,6 +16887,13 @@ index 0000000..86655ab
 +        if missing:
 +            raise FixtureError(
 +                f"fixture covers layers {list(self.layers)}; requested {missing} are absent")
++
++    def require_vocab_rows(self, rows: Iterable[int]) -> None:
++        missing = sorted(set(int(x) for x in rows) - set(self.vocab_rows))
++        if missing:
++            raise FixtureError(
++                f"fixture carries vocabulary rows {list(self.vocab_rows)}; "
++                f"requested {missing} are absent")
 +
 +    def require_experts(self, layer: int, ids: Iterable[int]) -> None:
 +        self.require_layers([layer])
@@ -16232,6 +16942,7 @@ index 0000000..86655ab
 +        "model_id": fixture.model_id,
 +        "layers": list(fixture.layers),
 +        "experts": {str(k): list(v) for k, v in sorted(fixture.experts.items())},
++        "vocab_rows": list(fixture.vocab_rows),
 +        "entries": len(fixture),
 +        "payload_bytes": fixture.payload_bytes,
 +        "verified_bytes": verified,
@@ -16245,6 +16956,8 @@ index 0000000..86655ab
 +        print(f"  layers     {list(fixture.layers)}")
 +        for layer, ids in sorted(fixture.experts.items()):
 +            print(f"  experts L{layer} {list(ids)}")
++        if fixture.vocab_rows:
++            print(f"  vocab rows {list(fixture.vocab_rows)}")
 +        print(f"  entries    {len(fixture)}")
 +        print(f"  payload    {fixture.payload_bytes} bytes")
 +        if args.verify:

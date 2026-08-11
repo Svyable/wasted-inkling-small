@@ -41,6 +41,10 @@ ITEM_SIZE = {"BF16": 2, "F16": 2, "F32": 4}
 KIND_TENSOR = "tensor"
 KIND_SLICE = "axis0-slice"
 
+# The release name of the unembedding table. Bounded final-head evidence takes
+# axis-0 rows of it; the whole table never enters a fixture.
+UNEMBED_NAME = "model.llm.unembed.weight"
+
 
 class FixtureError(RuntimeError):
     pass
@@ -177,11 +181,23 @@ class Fixture:
         self.source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
 
         layers = manifest.get("layers")
-        _require(isinstance(layers, list) and layers
+        _require(isinstance(layers, list)
                  and all(isinstance(x, int) and x >= 0 for x in layers),
                  "fixture manifest has no valid layer list")
         _require(len(set(layers)) == len(layers), "fixture layer list has duplicates")
         self.layers: tuple[int, ...] = tuple(sorted(layers))
+
+        rows_raw = manifest.get("vocab_rows") or []
+        _require(isinstance(rows_raw, list), "fixture vocabulary rows are not a list")
+        _require(all(isinstance(x, int) and x >= 0 for x in rows_raw),
+                 "fixture vocabulary rows are not nonnegative integers")
+        _require(len(set(rows_raw)) == len(rows_raw),
+                 "fixture vocabulary row list has duplicates")
+        self.vocab_rows: tuple[int, ...] = tuple(sorted(rows_raw))
+        # A fixture must cover something: layers, vocabulary rows, or both. An
+        # empty layer list is legitimate for a head-only fixture.
+        _require(self.layers or self.vocab_rows,
+                 "fixture covers neither layers nor vocabulary rows")
 
         experts_raw = manifest.get("experts") or {}
         _require(isinstance(experts_raw, dict), "fixture expert selection is not an object")
@@ -309,6 +325,20 @@ class Fixture:
         _require(out, f"fixture holds no {name_suffix} slices for layer {layer}")
         return dict(sorted(out.items()))
 
+    def vocab_row_slices(self) -> dict[int, FixtureEntry]:
+        """Return `{vocabulary row: entry}` for the unembedding table.
+
+        The full table is gigabytes, so final-head evidence selects rows the
+        same way sparse-layer evidence selects experts: as axis-0 slices.
+        """
+        out = {e.axis0: e for e in self.entries()
+               if e.kind == KIND_SLICE and e.name == UNEMBED_NAME
+               and e.axis0 is not None}
+        _require(out, "fixture holds no unembedding row slices")
+        _require(tuple(sorted(out)) == self.vocab_rows,
+                 "unembedding slices disagree with the declared vocabulary rows")
+        return dict(sorted(out.items()))
+
     # -- fail-closed coverage checks -------------------------------------
 
     def require_layers(self, layers: Iterable[int]) -> None:
@@ -316,6 +346,13 @@ class Fixture:
         if missing:
             raise FixtureError(
                 f"fixture covers layers {list(self.layers)}; requested {missing} are absent")
+
+    def require_vocab_rows(self, rows: Iterable[int]) -> None:
+        missing = sorted(set(int(x) for x in rows) - set(self.vocab_rows))
+        if missing:
+            raise FixtureError(
+                f"fixture carries vocabulary rows {list(self.vocab_rows)}; "
+                f"requested {missing} are absent")
 
     def require_experts(self, layer: int, ids: Iterable[int]) -> None:
         self.require_layers([layer])
@@ -364,6 +401,7 @@ def main(argv: list[str] | None = None) -> int:
         "model_id": fixture.model_id,
         "layers": list(fixture.layers),
         "experts": {str(k): list(v) for k, v in sorted(fixture.experts.items())},
+        "vocab_rows": list(fixture.vocab_rows),
         "entries": len(fixture),
         "payload_bytes": fixture.payload_bytes,
         "verified_bytes": verified,
@@ -377,6 +415,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  layers     {list(fixture.layers)}")
         for layer, ids in sorted(fixture.experts.items()):
             print(f"  experts L{layer} {list(ids)}")
+        if fixture.vocab_rows:
+            print(f"  vocab rows {list(fixture.vocab_rows)}")
         print(f"  entries    {len(fixture)}")
         print(f"  payload    {fixture.payload_bytes} bytes")
         if args.verify:

@@ -147,6 +147,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--revision", required=True)
     ap.add_argument("--layers", required=True)
     ap.add_argument("--experts", default="")
+    ap.add_argument("--vocab-rows", default="",
+                    help="bounded unembedding rows, e.g. 0-7,128")
     ap.add_argument("--out")
     ap.add_argument("--plan-only", action="store_true")
     ap.add_argument("--max-total-gib", type=float, default=8)
@@ -171,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
             _core.parse_experts(args.experts),
             int(args.max_total_gib * (1 << 30)),
             int(args.max_entry_gib * (1 << 30)),
+            _core.parse_rows(args.vocab_rows),
         )
         if args.plan_only:
             result = plan.summary()

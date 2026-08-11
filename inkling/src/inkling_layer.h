@@ -71,7 +71,13 @@ typedef enum {
     /* Appended so every pre-promotion kind keeps its numeric value.  The BF16
      * evidence profile uses these callbacks to avoid silently evaluating a
      * routed expert through the scalar F32 resident matvec. */
-    WASTE_IK_MAT_ROUTED_GATE, WASTE_IK_MAT_ROUTED_UP, WASTE_IK_MAT_ROUTED_DOWN
+    WASTE_IK_MAT_ROUTED_GATE, WASTE_IK_MAT_ROUTED_UP, WASTE_IK_MAT_ROUTED_DOWN,
+    /* Vocabulary projection of the final head.  Appended for the same reason:
+     * the BF16 evidence profile must reach the real kernel instead of widening
+     * a resident table into the scalar F32 dot product.  Callbacks for this
+     * kind receive layer -1, index 0, and exactly the selected vocabulary rows
+     * in selection order. */
+    WASTE_IK_MAT_UNEMBED
 } waste_inkling_matrix_kind;
 
 typedef int (*waste_inkling_matvec_fn)(void *ctx, int layer,

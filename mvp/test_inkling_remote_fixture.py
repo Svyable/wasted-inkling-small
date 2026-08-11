@@ -19,6 +19,7 @@ from inkling_remote_fixture import (
     _required_layer_names,
     build_remote_plan,
     extract_remote_fixture,
+    parse_rows,
 )
 
 
@@ -107,6 +108,9 @@ def make_release(root: Path):
             "num_hidden_layers": 3,
             "n_routed_experts": 4,
             "dense_mlp_idx": 1,
+            "hidden_size": 2,
+            # The matrix below has four rows; only three are real vocabulary.
+            "unpadded_vocab_size": 3,
         }
     }
     (root / "config.json").write_text(json.dumps(config))
@@ -121,6 +125,9 @@ def make_release(root: Path):
     }
     tensors_b = {
         "model.llm.norm.weight": ("F32", [2], struct.pack("<2f", 7, 8)),
+        "model.llm.unembed.weight": (
+            "F32", [4, 2], struct.pack("<8f", *range(300, 308))
+        ),
         "model.llm.layers.0.mlp.w13_dn.weight": (
             "F32", [2, 2], struct.pack("<4f", 9, 10, 11, 12)
         ),
@@ -235,6 +242,97 @@ class RemoteFixtureTest(unittest.TestCase):
                 build_remote_plan(
                     self.source(base), model_id="test/Inkling-Small", layers=[0]
                 )
+
+    def test_bounded_vocabulary_rows_are_planned_and_extracted(self):
+        out = self.root / "vocab-out"
+        with Server(self.root) as (base, _handler):
+            source = self.source(base)
+            plan = build_remote_plan(
+                source,
+                model_id="test/Inkling-Small",
+                layers=[0],
+                max_total_bytes=1 << 20,
+                vocab_rows=[2, 0, 2],
+            )
+            self.assertEqual(plan.vocab_rows, (0, 2))
+            self.assertEqual(plan.summary()["vocab_rows"], [0, 2])
+            labels = {(entry.name, entry.axis0) for entry in plan.entries}
+            self.assertIn(("model.llm.unembed.weight", 0), labels)
+            self.assertIn(("model.llm.unembed.weight", 2), labels)
+            self.assertNotIn(("model.llm.unembed.weight", None), labels)
+            manifest = extract_remote_fixture(source, plan, out)
+        self.assertEqual(manifest["vocab_rows"], [0, 2])
+        entries = {(item["name"], item.get("axis0")): item
+                   for item in manifest["entries"]}
+        row2 = entries[("model.llm.unembed.weight", 2)]
+        blob = (out / row2["path"]).read_bytes()
+        self.assertEqual(struct.unpack("<2f", blob), (304.0, 305.0))
+        self.assertEqual(zlib.crc32(blob) & 0xFFFFFFFF, row2["crc32"])
+
+    def test_head_only_plan_selects_no_layer(self):
+        with Server(self.root) as (base, _handler):
+            plan = build_remote_plan(
+                self.source(base), model_id="test/Inkling-Small",
+                layers=[], vocab_rows=[1],
+            )
+        self.assertEqual(plan.layers, ())
+        names = {entry.name for entry in plan.entries}
+        self.assertEqual(names, {"model.llm.embed_norm.weight",
+                                 "model.llm.norm.weight",
+                                 "model.llm.unembed.weight"})
+        with Server(self.root) as (base, _handler):
+            with self.assertRaisesRegex(RemoteFixtureError,
+                                        "at least one layer or vocabulary row"):
+                build_remote_plan(self.source(base),
+                                  model_id="test/Inkling-Small", layers=[])
+
+    def test_vocabulary_rows_fail_closed(self):
+        with Server(self.root) as (base, _handler):
+            # Row 3 exists in the padded matrix but is not real vocabulary.
+            with self.assertRaisesRegex(RemoteFixtureError, "outside the 3-row"):
+                build_remote_plan(
+                    self.source(base), model_id="test/Inkling-Small",
+                    layers=[0], vocab_rows=[3],
+                )
+            with self.assertRaisesRegex(RemoteFixtureError, "nonnegative"):
+                build_remote_plan(
+                    self.source(base), model_id="test/Inkling-Small",
+                    layers=[0], vocab_rows=[-1],
+                )
+
+        config_path = self.root / "config.json"
+        config = json.loads(config_path.read_text())
+        config["text_config"]["hidden_size"] = 3
+        config_path.write_text(json.dumps(config))
+        with Server(self.root) as (base, _handler):
+            with self.assertRaisesRegex(RemoteFixtureError, "width disagrees"):
+                build_remote_plan(
+                    self.source(base), model_id="test/Inkling-Small",
+                    layers=[0], vocab_rows=[0],
+                )
+
+    def test_vocabulary_rows_require_the_table_in_the_index(self):
+        index_path = self.root / "model.safetensors.index.json"
+        index = json.loads(index_path.read_text())
+        del index["weight_map"]["model.llm.unembed.weight"]
+        index_path.write_text(json.dumps(index))
+        with Server(self.root) as (base, _handler):
+            source = self.source(base)
+            # Layer-only fixtures still work; only the row selection fails.
+            build_remote_plan(source, model_id="test/Inkling-Small", layers=[0])
+            with self.assertRaisesRegex(RemoteFixtureError, "missing required"):
+                build_remote_plan(
+                    self.source(base), model_id="test/Inkling-Small",
+                    layers=[0], vocab_rows=[0],
+                )
+
+    def test_parse_rows_accepts_ranges_and_refuses_nonsense(self):
+        self.assertEqual(parse_rows(""), [])
+        self.assertEqual(parse_rows("5"), [5])
+        self.assertEqual(parse_rows("0-3,7,2"), [0, 1, 2, 3, 7])
+        for text in ("3-1", "-1", "a", "1,,x"):
+            with self.assertRaises(RemoteFixtureError):
+                parse_rows(text)
 
     def test_limits_fail_before_payload_download(self):
         with Server(self.root) as (base, handler):

@@ -107,7 +107,7 @@ index 51ef35b..73efeae 100644
  static int tensor_matrix_ok(const waste_model *m, const char *name, int rows, int cols)
  {
      const waste_tensor *t = waste_find(m, name);
-@@ -1013,6 +1085,28 @@ int waste_model_load(waste_model *m, const char *dir, int kv_cap,
+@@ -1013,6 +1085,31 @@ int waste_model_load(waste_model *m, const char *dir, int kv_cap,
          }
      }
  
@@ -125,7 +125,7 @@ index 51ef35b..73efeae 100644
 +        js_str(&d, js_get(&d, 0, "arch"), arch, sizeof arch);
 +        if (waste_arch_classify(arch) == WASTE_ARCH_INKLING) {
 +            int rc = waste_inkling_container_load(m, dir, &d, kv_cap);
-+            /* Storage is a separate promotion from execution.  Open the
++            /* Storage is a separate promotion from execution. Open the
 +             * already-validated WEXP banks through WASTE's own bounded cache
 +             * while the forward-path refusal below remains in force. */
 +            if (!rc) rc = waste_inkling_expert_store_open(m, dir, &d, opt);
@@ -138,7 +138,7 @@ index 51ef35b..73efeae 100644
      {
          int cfg = js_get(&d, 0, "config");
          /* The converter flattens K3's nested text_config into `config` and
-@@ -1292,8 +1386,8 @@ int waste_model_load(waste_model *m, const char *dir, int kv_cap,
+@@ -1292,8 +1389,8 @@ int waste_model_load(waste_model *m, const char *dir, int kv_cap,
              js_free(&d); free(src); return -2;
          }
          m->bank[L].rec_bytes = m->bank[L].n_experts ? bytes / m->bank[L].n_experts : 0;
@@ -149,7 +149,7 @@ index 51ef35b..73efeae 100644
          if (m->bank[L].fd < 0) { js_free(&d); free(src); return -1; }
      }
      js_free(&d);
-@@ -1402,6 +1496,8 @@ void waste_model_free(waste_model *m)
+@@ -1402,6 +1499,8 @@ void waste_model_free(waste_model *m)
       * clean shutdown and a read on a descriptor that has been closed and
       * possibly reused. */
      waste_ecache_io_stop(&m->cache);
@@ -158,7 +158,7 @@ index 51ef35b..73efeae 100644
  
      /* Reachable on a partially-built model now that waste_open frees what
       * a failed load left behind, so nothing here may assume the load got
-@@ -1521,7 +1617,8 @@ static int bank_probe(int fd)
+@@ -1521,7 +1620,8 @@ static int bank_probe(int fd)
  }
  #endif
  
@@ -168,7 +168,7 @@ index 51ef35b..73efeae 100644
  {
      (void)rec_bytes; (void)direct;
      /* Two separate questions, and conflating them misreports one platform
-@@ -3556,6 +3653,7 @@ const float *waste_model_prefill(waste_model *m, const int *tokens, int n,
+@@ -3556,6 +3656,7 @@ const float *waste_model_prefill(waste_model *m, const int *tokens, int n,
  {
      const waste_config *c = &m->cfg;
      const int hid = c->hidden;
@@ -176,7 +176,7 @@ index 51ef35b..73efeae 100644
      if (n <= 0) return m->logits;
      if (n == 1) return waste_model_step(m, tokens[0], pos0, NULL);
      dump_pos0 = pos0;
-@@ -3698,6 +3796,7 @@ const float *waste_model_prefill(waste_model *m, const int *tokens, int n,
+@@ -3698,6 +3799,7 @@ const float *waste_model_prefill(waste_model *m, const int *tokens, int n,
  
  const float *waste_model_step(waste_model *m, int token, int pos, int *routed)
  {

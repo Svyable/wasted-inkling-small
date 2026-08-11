@@ -1,0 +1,92 @@
+name: Finalize converged G6 bundle
+
+on:
+  push:
+    branches:
+      - agent/finalize-converged-g6-bundle
+    paths:
+      - ".github/workflows/finalize-converged-g6-bundle.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: finalize-converged-g6-bundle
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact convergence target
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/converge-g6-loader-with-bf16-main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Generate, verify, and stage deterministic bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_head=$(git rev-parse HEAD)
+          test "$target_head" = "b5ee985311ac1775a349a9b7cd4070107d14f093"
+
+          work="${RUNNER_TEMP}/waste-generated"
+          out="${RUNNER_TEMP}/patches"
+          tree=$(integration/waste/generate.sh "$work" "$out")
+          test "$tree" = "418031e9a1d02d91a8ae6a9cb39f341682bbcf6d"
+
+          patch=$(find "$out" -maxdepth 1 -type f -name '*.patch' -print)
+          test -n "$patch"
+          test "$(printf '%s\n' "$patch" | wc -l)" -eq 1
+          patch_sha=$(sha256sum "$patch" | awk '{print $1}')
+
+          verify="${RUNNER_TEMP}/verify-am"
+          git clone --quiet https://github.com/sqliteai/waste.git "$verify"
+          git -C "$verify" -c advice.detachedHead=false checkout --quiet --detach d9b919a791148b571e643d0af666bf19b4d733ab
+          git -C "$verify" am --quiet "$patch"
+          applied=$(git -C "$verify" rev-parse 'HEAD^{tree}')
+          test "$applied" = "$tree"
+
+          dest=dist/waste-inkling-d9b919a
+          mkdir -p "$dest/patches"
+          cp "$patch" "$dest/patches/0001-Add-the-Inkling-Small-runtime-foundation-to-WASTE.patch"
+          printf '%s  %s\n' "$patch_sha" \
+            'patches/0001-Add-the-Inkling-Small-runtime-foundation-to-WASTE.patch' \
+            > "$dest/SHA256SUMS"
+          cat > "$dest/BASELINE" <<EOF
+          UPSTREAM_REPOSITORY=https://github.com/sqliteai/waste
+          UPSTREAM_COMMIT=d9b919a791148b571e643d0af666bf19b4d733ab
+          UPSTREAM_TREE=85f7d7b7527f8e875c408d9a64f1268dedad0f61
+          UPSTREAM_VERSION=0.6.6
+          UPSTREAM_API_VERSION=1
+          UPSTREAM_FORMAT_VERSION=0
+          EXPECTED_APPLIED_TREE=$tree
+          PATCH_SHA256=$patch_sha
+          BUNDLE_KIND=generated-from-inkling-tree
+          BUNDLE_GENERATOR=integration/waste/generate.sh
+          SUPERSEDES=waste-inkling-patch-v18
+          EOF
+          sed -i 's/^          //' "$dest/BASELINE"
+
+          sha256sum -c "$dest/SHA256SUMS"
+          test "$(grep '^EXPECTED_APPLIED_TREE=' "$dest/BASELINE" | cut -d= -f2)" = "$tree"
+          test "$(grep '^PATCH_SHA256=' "$dest/BASELINE" | cut -d= -f2)" = "$patch_sha"
+
+          git add -- "$dest/BASELINE" "$dest/SHA256SUMS" \
+            "$dest/patches/0001-Add-the-Inkling-Small-runtime-foundation-to-WASTE.patch"
+          test -n "$(git diff --cached --name-only)"
+          test "$(git diff --cached --name-only | wc -l)" -eq 3
+          printf 'FINAL_BUNDLE tree=%s patch_sha256=%s\n' "$tree" "$patch_sha"
+
+      - name: Commit exactly the generated bundle and push non-force
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -c user.name='WASTE Inkling integration' \
+              -c user.email='inkling@waste.invalid' \
+              commit -m 'Regenerate converged G6 loader bundle'
+          git push origin HEAD:agent/converge-g6-loader-with-bf16-main

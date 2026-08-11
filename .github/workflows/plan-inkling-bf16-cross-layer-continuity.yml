@@ -35,7 +35,10 @@ jobs:
           from pathlib import Path
           archive = json.loads(Path('docs/OFFICIAL-CROSS-LAYER-ROUTES.json').read_text())
           experts = archive['layer2_expert_union']
-          assert archive['layer2_expert_union_size'] == len(experts) == 25
+          assert archive['version'] == 3
+          assert archive['reference_profile']['artifact_id'] == 9082366932
+          assert archive['reference_profile']['artifact_zip_sha256'] == '9a99aa77ac7093158dddee1e96deae5e51370ed60a6d149f512fc18734cb5cef'
+          assert archive['layer2_expert_union_size'] == len(experts) == 32
           print('2:' + ','.join(map(str, experts)))
           PY
           experts=$(cat "${RUNNER_TEMP}/experts.txt")

@@ -53,8 +53,6 @@ def _rows(section: dict[str, Any], layer: int) -> list[RouteRow]:
             raise PairContinuityError(f"layer {layer} route row {position} is malformed")
         rows.append(
             RouteRow(
-                layer=layer,
-                position=position,
                 indices=tuple(int(value) for value in ids),
                 weights=tuple(float(value) for value in values),
             )

@@ -105,6 +105,7 @@ jobs:
             experiments/inkling/test_inkling_bf16_router_weight_lattice.py
             experiments/inkling/test_inkling_bf16_silu_product.py
             experiments/inkling/test_inkling_checked_bf16_runner_isolation.py
+            experiments/inkling/test_inkling_checked_bf16_stateful_runner_isolation.py
             experiments/inkling/test_onednn_isa_arithmetic_probe.py
             mvp/test_inkling_bf16_attention_head_norm.py
             mvp/test_inkling_bf16_attention_lattice.py
@@ -113,7 +114,7 @@ jobs:
             mvp/test_inkling_bf16_projection_granularity.py
             mvp/test_inkling_native_bf16_backend.py
           )
-          test "${#tests[@]}" -eq 15
+          test "${#tests[@]}" -eq 16
           for test_file in "${tests[@]}"; do
             test -f "$test_file"
             python3 -m unittest discover \

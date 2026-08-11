@@ -53,10 +53,14 @@ jobs:
           assert route['first_output_sha256'] == prov['bound_result']['layer4_output_sha256']
           assert len(route['first_layer']['selected_experts']) == prov['bound_result']['layer4_expert_union_size'] == 37
           assert len(route['second_layer']['selected_experts']) == prov['bound_result']['layer5_expert_union_size'] == 25
-          assert prov['bound_result']['final_pair_fixture'] == {
-              'entries': 178, 'payload_bytes': 3629546504, 'requests': 50,
-          }
-          print('LOCAL_GLOBAL_ARCHIVE pair=4->5 l4=37 l5=25 final_bytes=3629546504')
+          final = prov['bound_result']['final_pair_fixture']
+          assert final['entries'] == 164
+          assert final['payload_bytes'] == 3502541832
+          assert final['requests'] == 50
+          assert final['plan_workflow_run_id'] == 31447354335
+          assert final['plan_artifact_id'] == 9085039143
+          assert final['plan_artifact_zip_sha256'] == '243b745aa70d43e41d58df71d4fd6bb3a012decbe6e1b1ceaffa530c7e5523ad'
+          print('LOCAL_GLOBAL_ARCHIVE pair=4->5 l4=37 l5=25 final_bytes=3502541832')
           PY
           git fetch --no-tags --depth=200 origin \
             +refs/heads/agent/inkling-cross-layer-continuity:refs/remotes/origin/agent/inkling-cross-layer-continuity
